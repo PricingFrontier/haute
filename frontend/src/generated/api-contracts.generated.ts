@@ -240,11 +240,39 @@ export interface PolarsStepsRenderResponse {
   step_index: number | null;
   step_lines: number[][];
 }
+export interface PipelineSettingsResponse {
+  automatic: PipelineSettingsAutomatic;
+  path: string;
+  settings: PipelineSettingsValues;
+}
 /**
- * The editor's execution settings: one value for the server process.
+ * Each pipeline setting's automatic figure now; ``null`` time limit is no limit.
  */
-export interface ExecutionSettings {
-  streaming_chunk_size: number;
+export interface PipelineSettingsAutomatic {
+  cache_size_gb: number;
+  caching: boolean;
+  chunk_rows: number;
+  kept_free_gb: number;
+  modelling_time_limit_minutes: number;
+  optimisation_time_limit_minutes: number | null;
+  pipeline_time_limit_minutes: number;
+  preview_memory_gb: number;
+}
+/**
+ * The project's pipeline settings: each key's value, ``null`` where it is automatic.
+ *
+ * The PATCH body: only the keys present change, and ``null`` restores
+ * automatic. The file ``.haute/pipeline-settings.json`` holds the same keys.
+ */
+export interface PipelineSettingsValues {
+  cache_size_gb: number | null;
+  caching: boolean | null;
+  chunk_rows: number | null;
+  kept_free_gb: number | null;
+  modelling_time_limit_minutes: number | null;
+  optimisation_time_limit_minutes: number | null;
+  pipeline_time_limit_minutes: number | null;
+  preview_memory_gb: number | null;
 }
 export interface ExplorePivotRunResponse {
   cached: boolean;

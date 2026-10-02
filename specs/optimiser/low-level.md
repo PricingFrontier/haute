@@ -499,7 +499,7 @@ and structured classification layer.
 Auto-range runs solve setup's pipeline stage and reduces its frame; it has no execution path of
 its own. `start_frontier_auto_range` calls `_prepare_frontier_auto_range` in the request thread,
 which validates config/mode (a 400 before any job exists), resolves `timeout`
-(`auto_range_timeout`, default `HAUTE_AUTO_RANGE_TIMEOUT`, 1800 s), and resolves the solve's
+(`auto_range_timeout`, else the pipeline settings' optimisation time limit, else none), and resolves the solve's
 column demand once (`_optimiser_solve_required_columns_by_node`); the job and its worker take
 these as arguments and never recompute them.
 
@@ -1177,8 +1177,8 @@ whose message already names every problem and the remedy.
   input, runs `estimate_input_metrics` (one streaming aggregation scan with the null-`quote_id`
   check folded in) and removes the job in a `finally`. In process mode the count runs on the
   warm interactive worker pool (`optimiser_estimate_worker`, the pipeline's lineage affinity
-  key, the admission's native and RSS caps, `HAUTE_OPTIMISER_ESTIMATE_TIMEOUT` seconds,
-  default 300): the job lives in the worker's private `optimiser_worker` store, and the worker
+  key, the admission's native and RSS caps, and the pipeline settings' pipeline time
+  limit): the job lives in the worker's private `optimiser_worker` store, and the worker
   returns the counts or a `(status, detail)` answer (`OptimiserEstimateOutcome`). The route
   answers a pool memory kill with the typed 507, a timeout with 504, and a crash or unexpected
   worker error as preview does. In `thread` mode the service counts in-process. An admission,

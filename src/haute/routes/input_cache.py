@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
 from fastapi import APIRouter, HTTPException, status
 
 from haute._credential_security import redact_sensitive_text
-from haute._env import float_env, int_env
+from haute._env import int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
     IsolatedExecutionBudget,
@@ -46,6 +46,7 @@ from haute._input_providers import (
 )
 from haute._logging import get_logger
 from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
+from haute._pipeline_settings import project_pipeline_settings
 from haute._polars_io_registry import PolarsIoConfigError, validate_data_input_config
 from haute._project import _toml_configured_pipeline
 from haute._source_cache import (
@@ -115,8 +116,8 @@ _building_tables: dict[str, str] = {}
 
 
 def _build_timeout() -> float:
-    """Return the cooperative snapshot-build deadline in seconds."""
-    return float_env("HAUTE_BUILD_TIMEOUT", 1800.0)
+    """Return the cooperative snapshot-build deadline in seconds: the pipeline time limit."""
+    return project_pipeline_settings().pipeline_time_limit_seconds
 
 
 def _max_concurrent_builds() -> int:

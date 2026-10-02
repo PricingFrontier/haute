@@ -50,6 +50,11 @@ from haute._execution_schemas import (
     NodeExecutionStatus,  # noqa: F401
     _validate_diagnostic_collection,
 )
+from haute._pipeline_settings import (
+    MAX_SIZE_GB,
+    MAX_STREAMING_CHUNK_SIZE,
+    MAX_TIME_LIMIT_MINUTES,
+)
 from haute._types import GraphEdge as GraphEdge  # noqa: F401
 from haute._types import GraphNode as GraphNode  # noqa: F401
 from haute._types import NodeData as GraphNodeData  # noqa: F401
@@ -57,18 +62,34 @@ from haute._types import NodeType
 from haute._types import PipelineGraph as Graph  # noqa: F401
 
 
-def _reject_bool_chunk_size(value: object) -> object:
+def _reject_bool(value: object) -> object:
     if isinstance(value, bool):
-        raise ValueError("streaming_chunk_size must not be a bool")
+        raise ValueError("must be a number, not true or false")
     return value
 
 
-# Field before the validator, so the bounds reach the JSON schema as
-# minimum/maximum; the bool check still runs first.
+# Each Field before its validator, so the bounds reach the JSON schema as
+# minimum/maximum; the bool check still runs first. The bounds are the
+# pipeline settings file's own (``haute._pipeline_settings``).
 StreamingChunkSize = Annotated[
     int,
-    Field(ge=1, le=10_000_000),
-    BeforeValidator(_reject_bool_chunk_size),
+    Field(ge=1, le=MAX_STREAMING_CHUNK_SIZE),
+    BeforeValidator(_reject_bool),
+]
+PositiveGigabytes = Annotated[
+    float,
+    Field(gt=0, le=MAX_SIZE_GB, allow_inf_nan=False),
+    BeforeValidator(_reject_bool),
+]
+Gigabytes = Annotated[
+    float,
+    Field(ge=0, le=MAX_SIZE_GB, allow_inf_nan=False),
+    BeforeValidator(_reject_bool),
+]
+TimeLimitMinutes = Annotated[
+    float,
+    Field(gt=0, le=MAX_TIME_LIMIT_MINUTES, allow_inf_nan=False),
+    BeforeValidator(_reject_bool),
 ]
 
 RevisionToken = Annotated[str, Field(min_length=1, pattern=r"^\S+$")]
@@ -1103,16 +1124,47 @@ class TraceResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# /api/execution-settings
+# /api/pipeline-settings
 # ---------------------------------------------------------------------------
 
 
-class ExecutionSettings(BaseModel):
-    """The editor's execution settings: one value for the server process."""
+class PipelineSettingsValues(BaseModel):
+    """The project's pipeline settings: each key's value, ``null`` where it is automatic.
+
+    The PATCH body: only the keys present change, and ``null`` restores
+    automatic. The file ``.haute/pipeline-settings.json`` holds the same keys.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    streaming_chunk_size: StreamingChunkSize
+    chunk_rows: StreamingChunkSize | None = None
+    caching: StrictBool | None = None
+    cache_size_gb: PositiveGigabytes | None = None
+    preview_memory_gb: PositiveGigabytes | None = None
+    kept_free_gb: Gigabytes | None = None
+    pipeline_time_limit_minutes: TimeLimitMinutes | None = None
+    modelling_time_limit_minutes: TimeLimitMinutes | None = None
+    optimisation_time_limit_minutes: TimeLimitMinutes | None = None
+
+
+class PipelineSettingsAutomatic(BaseModel):
+    """Each pipeline setting's automatic figure now; ``null`` time limit is no limit."""
+
+    chunk_rows: int
+    caching: bool
+    cache_size_gb: float
+    preview_memory_gb: float
+    kept_free_gb: float
+    pipeline_time_limit_minutes: float
+    modelling_time_limit_minutes: float
+    optimisation_time_limit_minutes: float | None
+
+
+class PipelineSettingsResponse(BaseModel):
+    settings: PipelineSettingsValues
+    automatic: PipelineSettingsAutomatic
+    path: str
+    """The settings file, relative to the project root."""
 
 
 # ---------------------------------------------------------------------------

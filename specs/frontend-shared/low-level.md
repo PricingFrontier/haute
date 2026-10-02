@@ -26,7 +26,7 @@
 | `frontend/src/hooks/useNodeDataProfile.ts` | The shared `profile` analysis of the data one consumer reads: asked for once per slot and data version while the point is `current`, fenced against a document that has moved on, stored per slot so every pane showing that data gets it, with `cancel` for the running job, and `error` plus `refresh` so a failed attempt is retried rather than left as an empty pane. Each request names the version it asks about, which the job it starts carries. |
 | `frontend/src/utils/operationToken.ts` | `nextOperationToken`: a process-unique token that tells one asynchronous operation apart from the operation that replaced it. |
 | `frontend/src/panels/dataPointIdentity.ts` | `buildNodeDataCacheIdentity`: the identity that gates a consumer's `point` request — its upstream subgraph plus the original of every instance in it, each node's data-affecting configuration (for a Banding or Rating Step consumer itself, only its column demand), every edge with its handles, the submodels, and the preamble. |
-| `frontend/src/stores/useSettingsStore.ts` | Zustand store: row limit, the server's streaming chunk size (loaded from and written to `/api/execution-settings`), section open/closed state, the MLflow destinations inventory cache (fetched once with probing, re-fetched by `invalidateMlflow()`), data sources, file-listing cache. The pure destination helpers live in `frontend/src/utils/mlflowDestinations.ts`, and the shared per-node control is the destination selector component described under the MLflow destination surface below. |
+| `frontend/src/stores/useSettingsStore.ts` | Zustand store: row limit, the pipeline settings (loaded from `GET /api/pipeline-settings` and written key by key through `PATCH /api/pipeline-settings`), section open/closed state, the MLflow destinations inventory cache (fetched once with probing, re-fetched by `invalidateMlflow()`), data sources, file-listing cache. The pure destination helpers live in `frontend/src/utils/mlflowDestinations.ts`, and the shared per-node control is the destination selector component described under the MLflow destination surface below. |
 | `frontend/src/stores/useToastStore.ts` | Zustand store: toast queue with dedup, capped at 10 entries. |
 | `frontend/src/stores/useUIStore.ts` | Zustand store: modal/panel open flags (git/utility/imports/assistant, mutually exclusive by construction — each setter clears the others), sync banner, node panel width, the modelling and optimiser results workspaces' docked heights (`modellingPreviewHeight`, `optimiserPreviewHeight`; session-only, 420px initially), per-node Explore/modelling selection memory (editor pane, preview pane, and the configured chart/pivot Configure-subview ids), hover highlight, node search open flag. |
 | `frontend/src/theme/colors.ts` | CSS-variable-backed colour token constants (`STRUCTURE_COLORS`, `STATUS_COLORS`, `MODEL_COLORS`, `CHART_COLORS`, `SYNTAX_COLORS`) plus the fixed `NODE_GROUP_COLORS`, `PIVOT_CHART_COLORS`, and `PIVOT_CONDITIONAL_FORMAT_COLORS` visualisation palettes. |
@@ -49,7 +49,7 @@
 | `frontend/src/components/KeyboardShortcuts.tsx` | `?`-triggered modal listing keyboard shortcuts, built on `ModalShell`. |
 | `frontend/src/components/Toolbar.tsx` | App top chrome: 56px 2-tier stacked column layout with package-derived browser version, source selector, undo/redo with visible text labels, integer-ms timing and memory breakdowns, Submodel/Instance selection actions, utility/imports buttons, assistant and a Help menu (external Documentation link, Hotkeys opening the keyboard-shortcuts modal, and Report a bug linking to a new GitHub issue; focus lands on the first item, arrows move, Escape closes and returns focus to Help), zoom in/out, centre/layout, and Save + Commit nested under `BranchIndicator`. Actions share the `.toolbar-btn` surface; selection actions carry `aria-disabled` rather than `disabled` so unavailable actions stay focusable with informative tooltips. Composes `BreakdownDropdown` and `BranchIndicator` (git-ui). The Source selector (on the shared `.toolbar-btn` surface and type) and a Pipeline button share a two-row grid column, so the Pipeline button is exactly as wide as the selector above it whatever the active source is named; the Pipeline button reads "Calculating" under automatic calculation and "Manual" under manual, or "Offline" in the danger colour while live sync is `reconnecting` or `disconnected`, and opens `PipelineSettingsModal` from the toolbar's own local state, unlike the MLflow modal's UI-store flag. The preview row limit and streaming chunk size live in that pane, not in the toolbar. The brand column carries no status dots, and the toolbar shows no unsaved-changes indicator. |
 | `frontend/src/components/MlflowSettingsModal.tsx` | `ModalShell`-based MLflow destinations inventory editor: an MLflow server URL field, a Local folder field showing the resolved folder, a read-only Databricks block (selected profile, the dedicated MLflow host, or the missing configuration), one Test action per remote with its inline categorised result, and Save through `PUT /api/mlflow/settings` (`tracking_uri` and `folder` only) followed by `invalidateMlflow()`. Rendered by the toolbar while the UI store's MLflow-settings-open flag is set; opened from each node's MLflow gear or greyed light. |
-| `frontend/src/components/PipelineSettingsModal.tsx` | `ModalShell`-based Pipeline settings pane: a Calculation radio group (Automatic / Manual, session-only UI-store state); a Preview section with the preview row limit (0 = no limit, negatives clamp to 0) and streaming chunk size (clamped to the backend bounds, non-numeric input ignored) fields, both writing `useSettingsStore` and suppressing native spinners. The chunk size is loaded from the server when the pane opens (reopened while a save is in flight, it shows that save's outcome instead) and committed to it on blur or Enter, never per keystroke; saves reach the server in order, and a failed commit restores the server's value and reports the error in a toast; then the Cached data inventory: every node of the open pipeline with its state, size, cached-at time, build duration and per-entry clear control; a group for cached data belonging to no node of it; and a footnote for unattributed bytes. The whole store's size (`CacheStoreSize`) sits beside the Cached data heading. No budget cards, limit variables or generation counts. Reads `POST /api/cache/nodes` on open, explicit Refresh and successful clear. Rendered by the toolbar from its own local open state and opened by the toolbar's Pipeline button. |
+| `frontend/src/components/PipelineSettingsModal.tsx` | `ModalShell`-based Pipeline settings pane: a Calculation radio group (Automatic / Manual, session-only UI-store state); a Preview section with the preview row limit (0 = no limit, negatives clamp to 0) and chunk rows; a Caching section with the caching switch and the cache size; a Memory section with the preview memory and the memory kept free; a Time limits section with the pipeline, modelling and optimisation limits; the settings file's path; then the Cached data inventory: every node of the open pipeline with its state, size, cached-at time, build duration and per-entry clear control; a group for cached data belonging to no node of it; and a footnote for unattributed bytes. The whole store's size (`CacheStoreSize`) sits beside the Cached data heading. No budget cards, limit variables or generation counts. Reads `POST /api/cache/nodes` on open, explicit Refresh and successful clear. Rendered by the toolbar from its own local open state and opened by the toolbar's Pipeline button. |
 | `frontend/src/utils/inputSnapshotSource.ts`, `frontend/src/utils/instanceOriginal.ts`, `frontend/src/utils/importedTitle.ts` | The one derivation of whether a node reads a snapshot and the input-cache source naming it; the original whose config an input instance runs; and an Import's "last imported" wording. |
 | `frontend/src/hooks/previewProgressPoller.ts` | A preview request's id and the poller of its step progress; see [frontend-graph-canvas](../frontend-graph-canvas/low-level.md). |
 | `frontend/src/stores/useInputImportStore.ts` | Imports in flight by the node that started them, and `startInputImport`, which runs one: its node's work and Stop, every outcome raising the node-data epoch, and a re-preview only for a completed, unstopped import whose node still reads the same source. |
@@ -207,7 +207,8 @@
 **Request lifecycle (`api/client.ts`)**: `request()` resolves the retry
 policy, then loops `attempt = 0..maxRetries`. Each attempt calls
 `attemptFetch`, which owns a fresh `AbortController` per attempt — a
-`setTimeout` aborts it on timeout, and an external caller signal (if any)
+`setTimeout` aborts it on timeout (no timer at all when the caller passes
+`timeout: null`), and an external caller signal (if any)
 is bridged to the same controller with its listener removed in a `finally`
 so listeners don't accumulate across retries. On failure, `shouldRetry`
 gates continuation: non-idempotent method → no; `AbortError` → no (user
@@ -217,6 +218,14 @@ provided attempts remain, in which case `backoffSleep` waits
 base·2ⁿ]`) before the next attempt, itself abortable by the external
 signal. A non-timeout `AbortError` from `backoffSleep`/`attemptFetch`
 propagates as-is.
+
+Requests the server bounds by the pipeline time limit set no browser
+deadline (`timeout: null`): `previewNode`, `previewRecoveryNode`,
+`previewInputs`, `traceCell`, `writeOutput`, `outputAssembleDryRun` and
+`estimateOptimiserSolve`. The server answers each with 504 when the limit
+passes, so a browser timer shorter than the limit would abandon work the
+server is still doing and one longer would never fire; Stop and supersession
+still abort them through their signals.
 
 `inferJsonCacheSchema` is an endpoint-specific timeout exception: ordinary
 Infer Tables calls omit `sample_size` and use a 30-minute timeout, matching the
@@ -498,10 +507,36 @@ button opens a "Pipeline settings" pane. Its first section, Calculation, is a
 radio group (one tab stop, arrow keys move and select) choosing Automatic or
 Manual calculation (`useUIStore.calculationMode`, session-only, starting
 Automatic; behaviour in the canvas spec's Manual calculation rule). Its Preview section holds the preview
-row limit, which applies to the next preview, and the streaming chunk size, an
-editor-wide server setting: the field shows the server's value when the pane opens,
-and a change is sent to the server, which applies it to every execution started
-afterwards. Requests carry no chunk size. Below it, the "Cached data" section
+row limit, which applies to the next preview, and Chunk rows. The pipeline settings follow:
+a Caching section (a Caching switch and Cache size), a Memory section (Previews and Kept
+free) and a Time limits section (Pipeline, Modelling and Optimisation), then the settings
+file's path ("Saved in .haute/pipeline-settings.json") in muted text. These fields are the
+project's pipeline settings (execution engine, "Pipeline settings"), which the server keeps in
+that file and applies to executions started afterwards; requests carry none of them.
+
+Each pipeline setting is a row: its label and a one-line hint on the left; on the right its
+field, its unit (`GB` or `min`) and, while the setting is automatic, an "Auto" marker, or
+while it is set, a reset button (`aria-label` "Use automatic <label>") that restores
+automatic. A field shows the setting when it is set and the automatic figure when it is not,
+both as ordinary values; the one automatic figure that is not a number, the Optimisation
+limit's "No limit", is the empty field's placeholder. Sizes show at most one decimal place
+(`10.3`), and so do minutes. A field edits a local draft and commits it on blur or Enter,
+never per keystroke: an empty draft restores automatic when the setting is set; Chunk rows
+clamps a number to 1,000–10,000,000; any other draft that is not a number inside its
+setting's range (more than 0 GB for Cache size and Previews, 0 GB or more for Kept free,
+more than 0 and at most 10,080 minutes for a time limit) is ignored and the field shows its
+value again; a draft equal to what the field already shows sends nothing. The Caching switch
+(`role="switch"`, `aria-checked`) saves at each toggle. While caching is off, Cache size is
+disabled, since nothing is captured for it to bound.
+
+The pane loads the settings each time it opens; reopened while a save is in flight, it shows
+that save's outcome instead of loading over it. Until the first load returns, the settings'
+fields are disabled and empty; a failed load reports the server's message (`role="alert"`)
+above them, and they stay disabled until a later open loads. Each commit sends one key in
+`PATCH /api/pipeline-settings` (`null` for automatic) and shows the new value at once; saves
+reach the server in order, the latest save's response (settings and automatic figures)
+replaces the store's copy, and a failed save restores the last settings the server confirmed
+and reports the error in a toast. Below the settings, the "Cached data" section
 lists the current pipeline's node data and cached data
 outside it, with size, status, cached-at time, build duration and per-entry clear
 controls, under a "Cached data" heading with no explanatory copy. Beside the heading,
@@ -555,7 +590,9 @@ data belonging to no node of this pipeline — a deleted node, another source, a
 input snapshot — with status "Stored", describing its presence without claiming
 freshness for a graph that is not being resolved. A footnote states any bytes that
 could not be attributed. The whole body scrolls beneath a fixed title and
-Refresh, because a large pipeline's list is longer than any viewport.
+Refresh, because a large pipeline's list is longer than any viewport. No part of the body
+shrinks to fit: the inventory keeps the height of all its rows, and the body scrolls down to
+the last one however short the window.
 
 **MLflow settings modal (`MlflowSettingsModal`).** The modal is the
 inventory editor. It fetches `GET /api/mlflow/settings` on mount, reads the
@@ -770,6 +807,12 @@ same Vitest config.
   drives the store directly (not through a hook) for its second
   describe block, pinning that `completeSolveJob`/`completeTrainJob` stamp
   the in-flight job's `source`/`structuralVersion` onto the cached result.
+- **Pipeline settings store** (`frontend/src/__tests__/stores/useSettingsStore.test.ts`): a
+  load filling the settings, automatic figures and path; a failed load keeping what the store
+  had and recording the message; a save shown at once and replaced by the server's response;
+  saves sent in order with only the latest one's outcome displayed; a failed save restoring
+  the last confirmed settings and toasting; a load during a pending save waiting for that save
+  instead of overwriting it; and a repeated save of a pending or confirmed value sending nothing.
 - **`useSettingsStore`** (`frontend/src/stores/__tests__/useSettingsStore.addSource.test.ts`):
   covers the sanitize-then-dedup `addSource` path (asserting the
   discriminated `{ok, reason, key}` result for the empty and duplicate
@@ -822,7 +865,12 @@ same Vitest config.
   `aria-describedby` wiring, the error clearing on next keystroke and on
   successful submission),
   `frontend/src/components/__tests__/PipelineSettingsModal.test.tsx` (the preview
-  row-limit and chunk-size fields' clamping and store writes; the inventory
+  row-limit and chunk-rows fields' clamping and store writes; each pipeline setting
+  showing its automatic figure with the "Auto" marker or its set value with a reset that
+  sends `null`, the Optimisation limit's "No limit" placeholder, a committed draft sending
+  one key, an empty draft restoring automatic, an out-of-range or non-numeric draft sending
+  nothing, the Caching switch saving at each toggle and disabling Cache size while off,
+  disabled fields until the load returns and the alert when it fails, and the file path; the inventory
   and clear controls without budget meters, limit variables or generation counts;
   one read on open and one per Refresh with ten minutes of fake time
   advanced on either side of the click so a poll would fail the test, the
@@ -832,7 +880,10 @@ same Vitest config.
   the canvas's label with the id as fallback, a direct read never called
   "cached", a node that reads elsewhere carrying no size and naming that node,
   cached data belonging to no node of the pipeline, the unattributed-byte
-  footnote, and one node request per read for the active source),
+  footnote, and one node request per read for the active source;
+  `frontend/e2e/pipeline-settings.spec.ts` opens the pane in a 640px-high window and
+  scrolls to the last inventory row, which must be wholly in view, with nothing in the
+  inventory clipped),
   `frontend/src/panels/__tests__/ImportsPanel.test.tsx`,
   `frontend/src/__tests__/components/BreadcrumbBar.test.tsx` (root-level),
   `frontend/src/__tests__/components/KeyboardShortcuts.test.tsx` (root-level),

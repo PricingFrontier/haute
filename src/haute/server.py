@@ -52,7 +52,12 @@ from haute._local_security import (
 )
 from haute._logging import configure_logging, get_logger
 from haute._pipeline_recovery import pipeline_document_fingerprint
-from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
+from haute._pipeline_settings import (
+    PipelineSettingsError,
+    follow_chunk_rows,
+    stop_following_chunk_rows,
+)
+from haute._sandbox import _get_project_root
 from haute.hosted import FORWARDED_USER_SCOPE_KEY
 from haute.routes._error_handlers import install_exception_handlers
 from haute.routes._helpers import (
@@ -415,6 +420,19 @@ async def _reap_stale_job_artifacts_in_background(stale_after_seconds: int) -> N
         raise
 
 
+def _follow_pipeline_settings_chunk_rows() -> None:
+    """Apply the settings' chunk rows now and follow the file's changes.
+
+    An invalid settings file must not stop the server: every admission reads
+    the file and refuses with its message, which is how the person sees what
+    to fix, and the next read after the fix applies its chunk rows.
+    """
+    try:
+        follow_chunk_rows(_get_project_root())
+    except PipelineSettingsError as exc:
+        logger.error("pipeline_settings_invalid_at_startup", error=str(exc))
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     from haute.deploy._config import _load_env
@@ -436,10 +454,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _watcher_task, _artifact_reaper_task
     _watcher_task = None
     _artifact_reaper_task = None
-    # The editor's streaming chunk size is process configuration: fix it before
-    # any worker is spawned so every child inherits it. A value already in the
-    # environment is kept; otherwise the default applies.
-    set_streaming_chunk_size(current_streaming_chunk_size())
+    # The editor's streaming chunk size is process configuration: fix it from the
+    # pipeline settings before any worker is spawned so every child inherits it,
+    # and follow the settings file from here on.
+    _follow_pipeline_settings_chunk_rows()
     try:
         open_dedicated_workers()
         start_interactive_worker_pool()
@@ -465,7 +483,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             try:
                 shutdown_dedicated_workers()
             finally:
-                shutdown_interactive_worker_pool()
+                try:
+                    shutdown_interactive_worker_pool()
+                finally:
+                    stop_following_chunk_rows()
 
 
 app = FastAPI(title="Haute", version=__version__, lifespan=_lifespan)

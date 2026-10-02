@@ -37,6 +37,7 @@
 | `frontend/e2e/box-selection.spec.ts` | Chromium witness that a box selection ends once the editor changes the selection: after a box select, a node dropped from the palette follows its first drag and opens its own context menu on the first right-click. |
 | `frontend/e2e/data-preview-scroll.spec.ts` | Chromium witness that a data preview keeps its scroll place: a preview scrolled fully right with the wheel stays fully right, with the new column in view, through two Refreshes that each add a column. |
 | `frontend/e2e/data-preview-scroll.benchmark.spec.ts` | `@benchmark` Playwright coverage for data-preview scrolling. |
+| `frontend/e2e/pipeline-settings.spec.ts` | Chromium witness that the Pipeline settings pane scrolls down to its last cached-data row in a short window: the inventory is never squeezed and clipped beneath the settings above it. |
 | `frontend/e2e/git-graph.spec.ts` | Playwright coverage for the Git graph. |
 | `frontend/e2e/git-sidebar-regression.spec.ts` | Playwright regression coverage for the Git sidebar. |
 | `frontend/e2e/save-conflict.spec.ts` | Two-page Playwright witness for the Save base-revision conflict: with live sync cut off, a stale save is rejected while the local edit survives, and a fresh save succeeds after an explicit reload. |

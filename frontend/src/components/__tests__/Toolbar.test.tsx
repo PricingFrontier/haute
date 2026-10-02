@@ -45,7 +45,6 @@ describe("Toolbar", () => {
   beforeEach(() => {
     useSettingsStore.setState({
       rowLimit: 1000,
-      streamingChunkSize: 500_000,
       sources: ["live"],
       activeSource: "live",
     })

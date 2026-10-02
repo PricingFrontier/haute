@@ -404,7 +404,7 @@ def test_response_metrics_keep_parent_preparation_with_worker_evidence(
 
 @pytest.mark.parametrize("ends", ["opened", "failed"])
 def test_parent_preparation_past_the_sink_timeout_is_a_timeout(
-    project: Path, monkeypatch: pytest.MonkeyPatch, ends: str
+    project: Path, monkeypatch: pytest.MonkeyPatch, ends: str, pipeline_settings
 ) -> None:
     from haute.errors import InputPreparationError
 
@@ -419,7 +419,7 @@ def test_parent_preparation_past_the_sink_timeout_is_a_timeout(
 
     clock = _Clock()
     monkeypatch.setattr(pipeline_route, "time", clock)
-    monkeypatch.setenv("HAUTE_SINK_TIMEOUT", "60")
+    pipeline_settings(pipeline_time_limit_minutes=60 / 60)
 
     def slow_open(*args: Any, **kwargs: Any) -> Any:
         deadlines.append(kwargs.get("deadline"))
@@ -448,7 +448,7 @@ def test_parent_preparation_past_the_sink_timeout_is_a_timeout(
 
 
 def test_parent_preparation_budget_leaves_the_worker_the_remainder(
-    project: Path, monkeypatch: pytest.MonkeyPatch
+    project: Path, monkeypatch: pytest.MonkeyPatch, pipeline_settings
 ) -> None:
     open_plan = pipeline_route.open_seed_plan
 
@@ -460,7 +460,7 @@ def test_parent_preparation_budget_leaves_the_worker_the_remainder(
 
     clock = _Clock()
     monkeypatch.setattr(pipeline_route, "time", clock)
-    monkeypatch.setenv("HAUTE_SINK_TIMEOUT", "60")
+    pipeline_settings(pipeline_time_limit_minutes=60 / 60)
 
     def slow_open(*args: Any, **kwargs: Any) -> Any:
         clock.offset += 45.0

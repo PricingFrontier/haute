@@ -15,12 +15,12 @@ from pydantic import ValidationError
 
 from haute.schemas import (
     ExecutionCacheProofPayload,
-    ExecutionSettings,
     FileItem,
     Graph,
     GraphEdge,
     GraphNode,
     GraphNodeData,
+    PipelineSettingsValues,
     PreviewNodeRequest,
     PreviewSeedPlanEntry,
     SavePipelineRequest,
@@ -235,41 +235,57 @@ class TestSavePipelineRequestDefaults:
             SavePipelineRequest()
 
 
-class TestExecutionSettings:
-    """The ``streaming_chunk_size`` field on the process-wide execution settings."""
+class TestPipelineSettingsValues:
+    """The PATCH body of ``/api/pipeline-settings``: the file's keys, each optional."""
 
-    def test_accepts_lower_boundary(self):
-        r = ExecutionSettings(streaming_chunk_size=1)
-        assert r.streaming_chunk_size == 1
+    def test_every_key_is_optional_and_null_is_distinct_from_absent(self):
+        assert PipelineSettingsValues().model_dump(exclude_unset=True) == {}
+        body = PipelineSettingsValues.model_validate({"preview_memory_gb": None})
+        assert body.model_dump(exclude_unset=True) == {"preview_memory_gb": None}
 
-    def test_accepts_upper_boundary(self):
-        r = ExecutionSettings(streaming_chunk_size=10_000_000)
-        assert r.streaming_chunk_size == 10_000_000
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("chunk_rows", 1),
+            ("chunk_rows", 10_000_000),
+            ("caching", False),
+            ("cache_size_gb", 0.5),
+            ("preview_memory_gb", 12),
+            ("kept_free_gb", 0),
+            ("pipeline_time_limit_minutes", 10_080),
+            ("modelling_time_limit_minutes", 0.25),
+            ("optimisation_time_limit_minutes", 90),
+        ],
+    )
+    def test_accepts_values_in_range(self, key, value):
+        assert getattr(PipelineSettingsValues.model_validate({key: value}), key) == value
 
-    def test_rejects_zero(self):
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("chunk_rows", 0),
+            ("chunk_rows", 10_000_001),
+            ("chunk_rows", True),
+            ("chunk_rows", "big"),
+            ("caching", "yes"),
+            ("caching", 1),
+            ("cache_size_gb", 0),
+            ("cache_size_gb", False),
+            ("preview_memory_gb", -1),
+            ("kept_free_gb", -0.5),
+            ("kept_free_gb", True),
+            ("pipeline_time_limit_minutes", 0),
+            ("pipeline_time_limit_minutes", 10_081),
+            ("optimisation_time_limit_minutes", True),
+        ],
+    )
+    def test_rejects_values_out_of_range_and_bools_for_numbers(self, key, value):
         with pytest.raises(ValidationError):
-            ExecutionSettings(streaming_chunk_size=0)
+            PipelineSettingsValues.model_validate({key: value})
 
-    def test_rejects_negative(self):
+    def test_rejects_an_unknown_key(self):
         with pytest.raises(ValidationError):
-            ExecutionSettings(streaming_chunk_size=-1)
-
-    def test_rejects_above_upper_boundary(self):
-        with pytest.raises(ValidationError):
-            ExecutionSettings(streaming_chunk_size=10_000_001)
-
-    def test_rejects_non_int(self):
-        with pytest.raises(ValidationError):
-            ExecutionSettings(streaming_chunk_size="big")
-
-    def test_requires_the_field(self):
-        with pytest.raises(ValidationError):
-            ExecutionSettings()
-
-    @pytest.mark.parametrize("bool_value", [True, False])
-    def test_rejects_bool(self, bool_value):
-        with pytest.raises(ValidationError):
-            ExecutionSettings(streaming_chunk_size=bool_value)
+            PipelineSettingsValues.model_validate({"chunk_row": 1000})
 
 
 class TestAssistantMessageRequest:

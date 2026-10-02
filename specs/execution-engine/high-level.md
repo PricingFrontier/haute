@@ -39,7 +39,16 @@ running heavy work in a child process the parent can kill on timeout or memory l
   consumed points into the shared snapshot store, which bounds Polars plan duplication
   and lets the next execution start there. An admitted preview runs under its own plan,
   capturing its joins and materialising operations; a trace runs under the plan of the
-  preview it explains.
+  preview it explains. With caching off in the [pipeline settings](low-level.md#pipeline-settings)
+  a preview runs without a plan and every other plan seeds and captures nothing, so each
+  execution runs up to its target from the inputs; an explicit cache build still builds
+  and publishes its own node.
+- Pipeline settings (`_pipeline_settings.py`): the per-clone file
+  `.haute/pipeline-settings.json` behind the Pipeline settings pane — chunk rows, caching,
+  the automatic cache size, the one preview memory budget, the memory kept free for the
+  system, and the pipeline, modelling and optimisation time limits. Each key is either set
+  or automatic, the file can be edited by hand, and every consumer reads it when its work
+  starts.
 - `ExecutionContext`/`ExecutionProfile`: the per-run cancellation token, optional
   memory budget, stage-timing/RSS-sampling instrumentation, and admission control used
   by route/service long-running operations (preview, sink, training prep, optimiser
@@ -137,9 +146,10 @@ running heavy work in a child process the parent can kill on timeout or memory l
   fallback for bounded profiles.
 - **The streaming chunk size is one editor setting.** Polars keeps its streaming chunk
   size as process-wide configuration (`POLARS_STREAMING_CHUNK_SIZE`). The editor server
-  holds one value, 500,000 rows unless the environment already sets one, applies it at
-  start-up, and applies a new value at once when the pipeline settings change it
-  (`PUT /api/execution-settings`). Server-thread executions read the process value,
+  holds one value, the pipeline settings' `chunk_rows` (500,000 when unset), applies it at
+  start-up, applies a new value at once when the pipeline settings pane changes it
+  (`PATCH /api/pipeline-settings`), and applies a hand edit of the settings file at the
+  next admission. Server-thread executions read the process value,
   spawned workers inherit it at spawn, and every task handed to a warm interactive
   worker carries the server's current value, which the worker applies before running
   the task. No execution scopes the value, so no request waits on another to apply
@@ -419,8 +429,10 @@ running heavy work in a child process the parent can kill on timeout or memory l
 - Route/service long-running operations create an admitted `ExecutionContext` bound
   to an `ExecutionProfile` (preview, lazy sink, training prep, optimiser setup and
   solve, deploy live/batch, ...). An admitted context enforces a resident-memory
-  growth budget resolved from that profile (fixed default, environment override, or
-  an adaptive fraction of currently-available system RAM), samples RSS at stage
+  growth budget resolved from that profile (for a preview, the pipeline settings'
+  preview memory; otherwise a fixed default, an environment override, or an adaptive
+  fraction of currently-available system RAM above the settings' kept-free memory),
+  samples RSS at stage
   boundaries, and raises after a sampled boundary crosses the limit. Low-level APIs
   also accept `None` or a directly-constructed context; those direct/test/library
   calls are not memory-admitted unless the caller supplies limits.
@@ -570,9 +582,12 @@ successful run does no extra work.
   10M-row training run have wildly different acceptable memory footprints and
   latency expectations. `ExecutionProfile` lets each call site (preview route,
   training service, optimiser service) get its own default budget,
-  its own environment-variable override, and — for the "heavy" batch-shaped profiles —
+  its own override, and — for the "heavy" batch-shaped profiles —
   a process-wide in-flight reservation so several concurrent heavy jobs cannot each
-  assume the full adaptive budget and collectively overrun the host.
+  assume the full adaptive budget and collectively overrun the host. Previews take one
+  budget whatever they capture, because a person sets it as one number in the pipeline
+  settings; the heavy profiles keep their environment overrides, and all of them share the
+  settings' kept-free memory as the reserve below their adaptive fractions.
 - **Chunk safety is proven, not assumed.** Silent-wrongness is worse than a hard
   failure: a `fill_null(strategy="forward")` or `is_in(full_column)` inside chunked
   user code would produce *different, wrong* numbers per chunk boundary rather than an
@@ -719,10 +734,14 @@ successful run does no extra work.
   when the caller uses an admitted/limited context; direct unbounded contexts have no
   RSS limit to exceed.
 - **Invalid admission configuration raises `RuntimeError` before admission.** An
-  unknown `HAUTE_EXECUTION_MEMORY_POLICY`, malformed/non-positive memory/RSS limit,
-  or invalid reserve setting is configuration failure, not an
+  unknown `HAUTE_EXECUTION_MEMORY_POLICY` or a malformed/non-positive memory/RSS limit
+  is configuration failure, not an
   `ExecutionAdmissionError`; no context is created. Numeric admission overrides are
   parsed from one environment read before local unit conversion.
+- **An invalid pipeline settings file raises `PipelineSettingsError` wherever it is
+  read.** Admission reads the settings first, so a hand edit that breaks the file stops
+  every run, preview and job with a message naming the file and the key until it is
+  fixed; nothing falls back to automatic values in its place.
 - **Cancellation raises `ExecutionCancelledError`** at the next checkpoint once a
   context's cancellation token has been set; the engine does not poll independently,
   so cancellation latency is bounded by the distance between checkpoints, not

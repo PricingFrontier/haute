@@ -21,7 +21,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from haute._env import float_env
 from haute._execution_admission import (
     IsolatedExecutionBudget,
     create_isolated_execution_context,
@@ -34,6 +33,7 @@ from haute._execution_context import (
 )
 from haute._logging import get_logger
 from haute._native_memory_limit import current_native_memory_backend
+from haute._pipeline_settings import project_pipeline_settings
 from haute._polars_io_registry import PolarsIoConfigError, data_input_is_direct
 from haute._source_cache import (
     SourceCacheBuildError,
@@ -58,7 +58,6 @@ logger = get_logger(component="input_preparation")
 PreparationAction = Literal["reused", "built", "refreshed"]
 PreparationExecution = Literal["in_process", "worker"]
 
-_DEFAULT_BUILD_TIMEOUT_SECONDS = 30 * 60
 _REMEDIATION = (
     "Build this Data Input's snapshot from the Data Input panel, or give the "
     "execution more memory headroom, and try again."
@@ -118,8 +117,8 @@ _SINGLE_FLIGHT: dict[str, _SingleFlightEntry] = {}
 
 
 def _build_timeout_seconds() -> float:
-    """Wall-clock budget for one automatic snapshot build."""
-    return float_env("HAUTE_INPUT_PREPARATION_TIMEOUT_SECONDS", _DEFAULT_BUILD_TIMEOUT_SECONDS)
+    """Wall-clock budget for one automatic snapshot build: the pipeline time limit."""
+    return project_pipeline_settings().pipeline_time_limit_seconds
 
 
 def _build_deadline() -> float:

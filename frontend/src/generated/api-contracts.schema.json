@@ -2533,23 +2533,6 @@
       "title": "ExecutionMetricsPayload",
       "type": "object"
     },
-    "ExecutionSettings": {
-      "additionalProperties": false,
-      "description": "The editor's execution settings: one value for the server process.",
-      "properties": {
-        "streaming_chunk_size": {
-          "maximum": 10000000,
-          "minimum": 1,
-          "title": "Streaming Chunk Size",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "streaming_chunk_size"
-      ],
-      "title": "ExecutionSettings",
-      "type": "object"
-    },
     "ExecutionStageMetricsPayload": {
       "properties": {
         "bytes_read": {
@@ -10959,6 +10942,211 @@
       "title": "OptimiserStatusResponse",
       "type": "object"
     },
+    "PipelineSettingsAutomatic": {
+      "description": "Each pipeline setting's automatic figure now; ``null`` time limit is no limit.",
+      "properties": {
+        "cache_size_gb": {
+          "title": "Cache Size Gb",
+          "type": "number"
+        },
+        "caching": {
+          "title": "Caching",
+          "type": "boolean"
+        },
+        "chunk_rows": {
+          "title": "Chunk Rows",
+          "type": "integer"
+        },
+        "kept_free_gb": {
+          "title": "Kept Free Gb",
+          "type": "number"
+        },
+        "modelling_time_limit_minutes": {
+          "title": "Modelling Time Limit Minutes",
+          "type": "number"
+        },
+        "optimisation_time_limit_minutes": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Optimisation Time Limit Minutes"
+        },
+        "pipeline_time_limit_minutes": {
+          "title": "Pipeline Time Limit Minutes",
+          "type": "number"
+        },
+        "preview_memory_gb": {
+          "title": "Preview Memory Gb",
+          "type": "number"
+        }
+      },
+      "required": [
+        "chunk_rows",
+        "caching",
+        "cache_size_gb",
+        "preview_memory_gb",
+        "kept_free_gb",
+        "pipeline_time_limit_minutes",
+        "modelling_time_limit_minutes",
+        "optimisation_time_limit_minutes"
+      ],
+      "title": "PipelineSettingsAutomatic",
+      "type": "object"
+    },
+    "PipelineSettingsResponse": {
+      "properties": {
+        "automatic": {
+          "$ref": "#/$defs/PipelineSettingsAutomatic"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "settings": {
+          "$ref": "#/$defs/PipelineSettingsValues"
+        }
+      },
+      "required": [
+        "settings",
+        "automatic",
+        "path"
+      ],
+      "title": "PipelineSettingsResponse",
+      "type": "object"
+    },
+    "PipelineSettingsValues": {
+      "additionalProperties": false,
+      "description": "The project's pipeline settings: each key's value, ``null`` where it is automatic.\n\nThe PATCH body: only the keys present change, and ``null`` restores\nautomatic. The file ``.haute/pipeline-settings.json`` holds the same keys.",
+      "properties": {
+        "cache_size_gb": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 1048576,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cache Size Gb"
+        },
+        "caching": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Caching"
+        },
+        "chunk_rows": {
+          "anyOf": [
+            {
+              "maximum": 10000000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chunk Rows"
+        },
+        "kept_free_gb": {
+          "anyOf": [
+            {
+              "maximum": 1048576,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Kept Free Gb"
+        },
+        "modelling_time_limit_minutes": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 10080,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Modelling Time Limit Minutes"
+        },
+        "optimisation_time_limit_minutes": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 10080,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Optimisation Time Limit Minutes"
+        },
+        "pipeline_time_limit_minutes": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 10080,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pipeline Time Limit Minutes"
+        },
+        "preview_memory_gb": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 1048576,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preview Memory Gb"
+        }
+      },
+      "required": [
+        "chunk_rows",
+        "caching",
+        "cache_size_gb",
+        "preview_memory_gb",
+        "kept_free_gb",
+        "pipeline_time_limit_minutes",
+        "modelling_time_limit_minutes",
+        "optimisation_time_limit_minutes"
+      ],
+      "title": "PipelineSettingsValues",
+      "type": "object"
+    },
     "PolarsStepsRenderResponse": {
       "description": "Either the rendered code with per-step line ranges or the failing step.\n\nA step validation failure is data (``ok`` false with ``step_index`` and\n``message``), never a transport error, so a half-built step list renders\nas an editor message rather than a failed request.",
       "properties": {
@@ -12972,9 +13160,6 @@
     "EditorIdentitiesResponse": {
       "$ref": "#/$defs/EditorIdentitiesResponse"
     },
-    "ExecutionSettings": {
-      "$ref": "#/$defs/ExecutionSettings"
-    },
     "ExplorePivotMembersResponse": {
       "$ref": "#/$defs/ExplorePivotMembersResponse"
     },
@@ -13131,6 +13316,9 @@
     "OptimiserStatusResponse": {
       "$ref": "#/$defs/OptimiserStatusResponse"
     },
+    "PipelineSettingsResponse": {
+      "$ref": "#/$defs/PipelineSettingsResponse"
+    },
     "PolarsStepsRenderResponse": {
       "$ref": "#/$defs/PolarsStepsRenderResponse"
     },
@@ -13243,7 +13431,7 @@
     "BrowseFilesResponse",
     "EditorIdentitiesResponse",
     "PolarsStepsRenderResponse",
-    "ExecutionSettings",
+    "PipelineSettingsResponse",
     "OptimiserSolveResponse",
     "OptimiserEstimateResponse",
     "OptimiserStatusResponse",
@@ -13269,7 +13457,7 @@
     "editor": [
       "EditorIdentitiesResponse",
       "PolarsStepsRenderResponse",
-      "ExecutionSettings"
+      "PipelineSettingsResponse"
     ],
     "explore": [
       "ExplorePivotRunResponse",

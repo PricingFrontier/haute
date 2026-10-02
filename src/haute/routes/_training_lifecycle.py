@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import polars as pl
 from fastapi import HTTPException
 
-from haute._env import int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
     IsolatedExecutionBudget,
@@ -32,6 +31,7 @@ from haute._execution_context import (
 )
 from haute._logging import get_logger
 from haute._native_memory_limit import model_thread_address_space_allowance
+from haute._pipeline_settings import project_pipeline_settings
 from haute._sandbox import _get_project_root
 from haute._seed_plans import open_seed_plan
 from haute._types import PipelineGraph
@@ -255,8 +255,9 @@ def _downsampling_warning(
     )
 
 
-def _default_train_timeout() -> int:
-    return int_env("HAUTE_TRAIN_TIMEOUT", 3600)
+def _default_train_timeout() -> float:
+    """The modelling time limit in seconds, for a job whose node config sets no ``timeout``."""
+    return project_pipeline_settings().modelling_time_limit_seconds
 
 
 def _worker_timing(job: Mapping[str, Any], *, job_id: str) -> tuple[float, float]:

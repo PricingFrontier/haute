@@ -2968,9 +2968,16 @@ class TestPipelineTimeouts:
         ids=["trace_timeout", "preview_timeout", "sink_timeout"],
     )
     def test_timeout_returns_504(
-        self, client: TestClient, pipeline_dir: Path, endpoint: str, use_parsed_graph: bool
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
+        endpoint: str,
+        use_parsed_graph: bool,
+        pipeline_settings,
     ):
         from unittest.mock import patch
+
+        pipeline_settings(pipeline_time_limit_minutes=0.001 / 60)
 
         if use_parsed_graph:
             from haute.parser import parse_pipeline_file
@@ -2996,17 +3003,7 @@ class TestPipelineTimeouts:
                 self._never_finishes,
             )
 
-        with (
-            timeout_patch,
-            patch.dict(
-                os.environ,
-                {
-                    "HAUTE_TRACE_TIMEOUT": "0.001",
-                    "HAUTE_PREVIEW_TIMEOUT": "0.001",
-                    "HAUTE_SINK_TIMEOUT": "0.001",
-                },
-            ),
-        ):
+        with timeout_patch:
             resp = client.post(f"/api/pipeline/{endpoint}", json=body)
         assert resp.status_code == 504
 
@@ -4991,7 +4988,6 @@ class TestValidateSafePath:
             contained_path(tmp_path, "../../etc/passwd")
 
     def test_symlink_escape_raises_403(self, tmp_path: Path):
-        import os
 
         from haute._sandbox import contained_path
 

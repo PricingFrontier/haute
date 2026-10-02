@@ -490,8 +490,11 @@ product to reconcile against the clicked output, trace enrichment returns its no
 artifact-configured quote-id column, including when the output row also contains a different
 literal `quote_id` field.
 
-`HAUTE_SOLVER_TIMEOUT` is optional, but when present it must be a positive integer. A malformed,
-zero, or negative value fails loudly as a server configuration error; it never disables timeouts.
+A solve's time limit is its config's `timeout` when that is set, else the pipeline settings'
+optimisation time limit, which by default sets no limit. A config `timeout` must be a positive
+integer; the settings file validates its own value, and an invalid file fails the request loudly
+rather than disabling or inventing a limit. A frontier auto-range takes its config's
+`auto_range_timeout` the same way, else the same optimisation time limit.
 
 The classification and disclosure rationale is recorded in the accepted
 [OPT-D01 error-detail policy](error-detail-policy.md).

@@ -14,7 +14,6 @@ from typing import Any, Final, Literal, cast
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from haute._env import float_env
 from haute._execution_admission import (
     create_admitted_execution_context,
     isolated_execution_budget,
@@ -40,6 +39,7 @@ from haute._mlflow_utils import (
     ensure_experiment,
     registry_uri_for_tracking,
 )
+from haute._pipeline_settings import project_pipeline_settings
 from haute._ratebook_collar import (
     COMBINED_FACTOR_BOUNDS_KEY,
     CombinedFactorBoundsError,
@@ -153,7 +153,8 @@ def _prepare_optimiser_execution_request(
 
 
 def _estimate_timeout() -> float:
-    return float_env("HAUTE_OPTIMISER_ESTIMATE_TIMEOUT", 300.0)
+    """The pipeline time limit in seconds: the estimate runs the pipeline to the optimiser."""
+    return project_pipeline_settings().pipeline_time_limit_seconds
 
 
 def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | float | None]:

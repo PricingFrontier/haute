@@ -1,5 +1,6 @@
 /**
- * The pipeline settings pane (preview settings and cache inventory), per `specs/frontend-shared/low-level.md`.
+ * The pipeline settings pane (preview rows, the project's pipeline settings and
+ * the cache inventory), per `specs/frontend-shared/low-level.md`.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react"
@@ -8,24 +9,75 @@ const mockFetchCacheNodes = vi.fn()
 
 const mockClearCacheIdentities = vi.fn()
 
-const mockGetExecutionSettings = vi.fn()
-const mockPutExecutionSettings = vi.fn()
+const mockGetPipelineSettings = vi.fn()
+const mockPatchPipelineSettings = vi.fn()
 
 vi.mock("../../api/client", () => ({
   fetchCacheNodes: (...args: unknown[]) => mockFetchCacheNodes(...args),
   fetchCacheUsage: () => Promise.resolve({ schema_version: 1, total_bytes: 5 * 1024 ** 3, automatic_bytes: 0, automatic_budget_bytes: 1 }),
   clearCacheIdentities: (...args: unknown[]) => mockClearCacheIdentities(...args),
-  getExecutionSettings: (...args: unknown[]) => mockGetExecutionSettings(...args),
-  putExecutionSettings: (...args: unknown[]) => mockPutExecutionSettings(...args),
+  getPipelineSettings: (...args: unknown[]) => mockGetPipelineSettings(...args),
+  patchPipelineSettings: (...args: unknown[]) => mockPatchPipelineSettings(...args),
 }))
 
 import PipelineSettingsModal from "../PipelineSettingsModal"
-import type { CacheNodesResponse } from "../../api/types"
+import type {
+  CacheNodesResponse,
+  PipelineSettingsResponse,
+  PipelineSettingsValues,
+} from "../../api/types"
 import useGraphStore from "../../stores/useGraphStore"
 import useSettingsStore from "../../stores/useSettingsStore"
+import useToastStore from "../../stores/useToastStore"
 import useUIStore from "../../stores/useUIStore"
 
 const GIB = 1024 * 1024 * 1024
+
+const AUTOMATIC: PipelineSettingsResponse["automatic"] = {
+  chunk_rows: 500_000,
+  caching: true,
+  cache_size_gb: 20,
+  preview_memory_gb: 10.31,
+  kept_free_gb: 2,
+  pipeline_time_limit_minutes: 30,
+  modelling_time_limit_minutes: 60,
+  optimisation_time_limit_minutes: null,
+}
+
+const NOTHING_SET: PipelineSettingsValues = {
+  chunk_rows: null,
+  caching: null,
+  cache_size_gb: null,
+  preview_memory_gb: null,
+  kept_free_gb: null,
+  pipeline_time_limit_minutes: null,
+  modelling_time_limit_minutes: null,
+  optimisation_time_limit_minutes: null,
+}
+
+/** The settings file the mocked server holds; PATCH merges into it. */
+let serverSettings: PipelineSettingsValues = NOTHING_SET
+
+function settingsResponse(settings: PipelineSettingsValues = serverSettings): PipelineSettingsResponse {
+  return { path: ".haute/pipeline-settings.json", automatic: AUTOMATIC, settings }
+}
+
+function serveSettings(settings: Partial<PipelineSettingsValues> = {}) {
+  serverSettings = { ...NOTHING_SET, ...settings }
+  mockGetPipelineSettings.mockReset()
+  mockGetPipelineSettings.mockImplementation(async () => settingsResponse())
+  mockPatchPipelineSettings.mockReset()
+  mockPatchPipelineSettings.mockImplementation(async (changes: Partial<PipelineSettingsValues>) => {
+    serverSettings = { ...serverSettings, ...changes }
+    return settingsResponse()
+  })
+  useSettingsStore.setState({
+    pipelineSettings: null,
+    pipelineSettingsError: null,
+    _confirmedPipelineSettings: null,
+    _pendingPipelineSettings: {},
+  })
+}
 
 function nodeEntry(overrides: Partial<CacheNodesResponse["nodes"][number]> = {}) {
   return {
@@ -76,10 +128,7 @@ describe("PipelineSettingsModal", () => {
     mockFetchCacheNodes.mockResolvedValue(nodes())
     mockClearCacheIdentities.mockReset()
     mockClearCacheIdentities.mockResolvedValue({ schema_version: 1, cleared: [], freed_bytes: 0 })
-    mockGetExecutionSettings.mockReset()
-    mockGetExecutionSettings.mockResolvedValue({ streaming_chunk_size: 500_000 })
-    mockPutExecutionSettings.mockReset()
-    mockPutExecutionSettings.mockImplementation(async (size: number) => ({ streaming_chunk_size: size }))
+    serveSettings()
     useGraphStore.setState({ nodes: [], edges: [], preamble: "", submodels: {} })
   })
 
@@ -498,41 +547,58 @@ describe("PipelineSettingsModal", () => {
 
 })
 
-describe("PipelineSettingsModal preview settings", () => {
+describe("PipelineSettingsModal settings fields", () => {
   beforeEach(() => {
     mockFetchCacheNodes.mockReset()
     mockFetchCacheNodes.mockResolvedValue(nodes())
-    mockGetExecutionSettings.mockReset()
-    mockGetExecutionSettings.mockResolvedValue({ streaming_chunk_size: 500_000 })
-    mockPutExecutionSettings.mockReset()
-    mockPutExecutionSettings.mockImplementation(async (size: number) => ({ streaming_chunk_size: size }))
+    serveSettings()
     useGraphStore.setState({ nodes: [], edges: [], preamble: "", submodels: {} })
-    useSettingsStore.setState({
-      rowLimit: 1000,
-      streamingChunkSize: 500_000,
-      _confirmedStreamingChunkSize: 500_000,
-      _pendingStreamingChunkSize: null,
-    })
+    useSettingsStore.setState({ rowLimit: 1000 })
+    useToastStore.setState({ toasts: [], _toastCounter: 0 })
   })
 
   afterEach(cleanup)
 
-  it("puts Preview rows above Chunk rows, ahead of the cached data", async () => {
-    render(<PipelineSettingsModal onClose={vi.fn()} />)
-    const rows = getRowLimitInput()
-    const chunk = getChunkInput()
-    expect(rows.compareDocumentPosition(chunk) & 4).toBeTruthy()
-    const cached = await screen.findByTestId("cache-node-list")
-    expect(chunk.compareDocumentPosition(cached) & 4).toBeTruthy()
-  })
+  function field(label: RegExp): HTMLInputElement {
+    return screen.getByLabelText(label) as HTMLInputElement
+  }
 
   function getRowLimitInput(): HTMLInputElement {
-    return screen.getByLabelText(/preview rows/i) as HTMLInputElement
+    return field(/^preview rows$/i)
   }
 
   function getChunkInput(): HTMLInputElement {
-    return screen.getByLabelText(/chunk rows/i) as HTMLInputElement
+    return field(/^chunk rows$/i)
   }
+
+  async function opened() {
+    render(<PipelineSettingsModal onClose={vi.fn()} />)
+    await waitFor(() => expect(getChunkInput()).not.toBeDisabled())
+  }
+
+  function commit(input: HTMLInputElement, value: string) {
+    fireEvent.change(input, { target: { value } })
+    fireEvent.blur(input)
+  }
+
+  it("orders Preview, Caching, Memory and Time limits ahead of the cached data", async () => {
+    await opened()
+    const order = [
+      getRowLimitInput(),
+      getChunkInput(),
+      screen.getByRole("switch", { name: "Caching" }),
+      field(/^cache size$/i),
+      field(/^previews$/i),
+      field(/^kept free$/i),
+      field(/^pipeline$/i),
+      field(/^modelling$/i),
+      field(/^optimisation$/i),
+      await screen.findByTestId("cache-node-list"),
+    ]
+    order.slice(1).forEach((element, index) => {
+      expect(order[index].compareDocumentPosition(element) & 4).toBeTruthy()
+    })
+  })
 
   it("row limit input changes the store value", () => {
     render(<PipelineSettingsModal onClose={vi.fn()} />)
@@ -558,88 +624,178 @@ describe("PipelineSettingsModal preview settings", () => {
     expect(getRowLimitInput().value).toBe("2000")
   })
 
-  it("chunk input renders with the current streaming chunk size", () => {
-    useSettingsStore.setState({ streamingChunkSize: 250_000 })
+  it("keeps the settings disabled and empty until they load", async () => {
+    let resolveLoad!: (response: PipelineSettingsResponse) => void
+    mockGetPipelineSettings.mockReturnValueOnce(new Promise((resolve) => { resolveLoad = resolve }))
     render(<PipelineSettingsModal onClose={vi.fn()} />)
-    expect(getChunkInput().value).toBe("250000")
+
+    expect(getChunkInput()).toBeDisabled()
+    expect(getChunkInput().value).toBe("")
+    expect(screen.getByRole("switch", { name: "Caching" })).toBeDisabled()
+
+    await act(async () => resolveLoad(settingsResponse()))
+    expect(getChunkInput()).not.toBeDisabled()
+    expect(getChunkInput().value).toBe("500000")
   })
 
-  it("loads the server's chunk size when the pane opens", async () => {
-    mockGetExecutionSettings.mockResolvedValue({ streaming_chunk_size: 777_000 })
+  it("loads the settings each time the pane opens", async () => {
+    const { unmount } = render(<PipelineSettingsModal onClose={vi.fn()} />)
+    await waitFor(() => expect(mockGetPipelineSettings).toHaveBeenCalledTimes(1))
+    unmount()
     render(<PipelineSettingsModal onClose={vi.fn()} />)
-    await waitFor(() => expect(mockGetExecutionSettings).toHaveBeenCalledTimes(1))
-    await waitFor(() => expect(getChunkInput().value).toBe("777000"))
+    await waitFor(() => expect(mockGetPipelineSettings).toHaveBeenCalledTimes(2))
   })
 
-  it("does not commit on every keystroke", () => {
-    render(<PipelineSettingsModal onClose={vi.fn()} />)
+  it("shows an automatic figure with the Auto marker and a set value with a reset", async () => {
+    serveSettings({ modelling_time_limit_minutes: 90 })
+    await opened()
+
+    expect(field(/^previews$/i).value).toBe("10.3")
+    expect(screen.getByTestId("pipeline-settings-preview-memory-gb-auto")).toHaveTextContent("Auto")
+    expect(field(/^modelling$/i).value).toBe("90")
+    expect(screen.queryByTestId("pipeline-settings-modelling-time-limit-minutes-auto")).toBeNull()
+    expect(screen.getByRole("button", { name: "Use automatic Modelling" })).toBeInTheDocument()
+  })
+
+  it("shows no limit as the Optimisation field's placeholder", async () => {
+    await opened()
+    expect(field(/^optimisation$/i).value).toBe("")
+    expect(field(/^optimisation$/i)).toHaveAttribute("placeholder", "No limit")
+  })
+
+  it("does not save on every keystroke", async () => {
+    await opened()
     fireEvent.change(getChunkInput(), { target: { value: "100000" } })
-    expect(mockPutExecutionSettings).not.toHaveBeenCalled()
-    expect(useSettingsStore.getState().streamingChunkSize).toBe(500_000)
+    expect(mockPatchPipelineSettings).not.toHaveBeenCalled()
   })
 
-  it("commits the draft on blur", async () => {
-    render(<PipelineSettingsModal onClose={vi.fn()} />)
-    fireEvent.change(getChunkInput(), { target: { value: "100000" } })
-    fireEvent.blur(getChunkInput())
-    await waitFor(() => expect(mockPutExecutionSettings).toHaveBeenCalledWith(100_000))
-    expect(useSettingsStore.getState().streamingChunkSize).toBe(100_000)
+  it("saves one key on blur and on Enter", async () => {
+    await opened()
+    commit(getChunkInput(), "100000")
+    await waitFor(() => expect(mockPatchPipelineSettings).toHaveBeenCalledWith({ chunk_rows: 100_000 }))
+    await waitFor(() => expect(getChunkInput().value).toBe("100000"))
+
+    fireEvent.change(field(/^previews$/i), { target: { value: "6.5" } })
+    fireEvent.keyDown(field(/^previews$/i), { key: "Enter" })
+    await waitFor(() =>
+      expect(mockPatchPipelineSettings).toHaveBeenLastCalledWith({ preview_memory_gb: 6.5 }),
+    )
   })
 
-  it("commits the draft on Enter", async () => {
-    render(<PipelineSettingsModal onClose={vi.fn()} />)
-    fireEvent.change(getChunkInput(), { target: { value: "100000" } })
-    fireEvent.keyDown(getChunkInput(), { key: "Enter" })
-    await waitFor(() => expect(mockPutExecutionSettings).toHaveBeenCalledWith(100_000))
-    expect(useSettingsStore.getState().streamingChunkSize).toBe(100_000)
+  it("clamps chunk rows to the server's bounds", async () => {
+    await opened()
+    commit(getChunkInput(), "5")
+    await waitFor(() => expect(mockPatchPipelineSettings).toHaveBeenCalledWith({ chunk_rows: 1000 }))
+    commit(getChunkInput(), "15000000")
+    await waitFor(() =>
+      expect(mockPatchPipelineSettings).toHaveBeenLastCalledWith({ chunk_rows: 10_000_000 }),
+    )
   })
 
-  it("clamps sub-1000 drafts up to 1000 on commit", async () => {
-    render(<PipelineSettingsModal onClose={vi.fn()} />)
-    fireEvent.change(getChunkInput(), { target: { value: "5" } })
-    fireEvent.blur(getChunkInput())
-    await waitFor(() => expect(mockPutExecutionSettings).toHaveBeenCalledWith(1000))
+  it.each([
+    [/^chunk rows$/i, "abc"],
+    [/^previews$/i, "0"],
+    [/^previews$/i, "-2"],
+    [/^kept free$/i, "-1"],
+    [/^pipeline$/i, "0"],
+    [/^pipeline$/i, "10081"],
+  ])("ignores an invalid draft for %s (%s)", async (label, draft) => {
+    await opened()
+    const input = field(label)
+    const before = input.value
+    commit(input, draft)
+    expect(mockPatchPipelineSettings).not.toHaveBeenCalled()
+    expect(input.value).toBe(before)
   })
 
-  it("clamps over-max drafts down to the backend bound (10_000_000) on commit", async () => {
-    render(<PipelineSettingsModal onClose={vi.fn()} />)
-    fireEvent.change(getChunkInput(), { target: { value: "15000000" } })
-    fireEvent.blur(getChunkInput())
-    await waitFor(() => expect(mockPutExecutionSettings).toHaveBeenCalledWith(10_000_000))
+  it("accepts keeping nothing free", async () => {
+    await opened()
+    commit(field(/^kept free$/i), "0")
+    await waitFor(() => expect(mockPatchPipelineSettings).toHaveBeenCalledWith({ kept_free_gb: 0 }))
   })
 
-  it("ignores a non-numeric draft, falling back to the store value", () => {
-    useSettingsStore.setState({ streamingChunkSize: 250_000 })
-    render(<PipelineSettingsModal onClose={vi.fn()} />)
-    fireEvent.change(getChunkInput(), { target: { value: "abc" } })
-    fireEvent.blur(getChunkInput())
-    expect(mockPutExecutionSettings).not.toHaveBeenCalled()
-    expect(getChunkInput().value).toBe("250000")
-    expect(useSettingsStore.getState().streamingChunkSize).toBe(250_000)
+  it("sends nothing for a draft equal to what the field shows", async () => {
+    await opened()
+    commit(field(/^previews$/i), "10.3")
+    commit(getChunkInput(), "500000")
+    expect(mockPatchPipelineSettings).not.toHaveBeenCalled()
   })
 
-  it("ignores an empty draft, falling back to the store value", () => {
-    useSettingsStore.setState({ streamingChunkSize: 250_000 })
-    render(<PipelineSettingsModal onClose={vi.fn()} />)
-    fireEvent.change(getChunkInput(), { target: { value: "" } })
-    fireEvent.blur(getChunkInput())
-    expect(mockPutExecutionSettings).not.toHaveBeenCalled()
-    expect(getChunkInput().value).toBe("250000")
+  it("an empty draft restores automatic when set and is ignored when automatic", async () => {
+    serveSettings({ preview_memory_gb: 6 })
+    await opened()
+
+    commit(getChunkInput(), "")
+    expect(mockPatchPipelineSettings).not.toHaveBeenCalled()
+    expect(getChunkInput().value).toBe("500000")
+
+    commit(field(/^previews$/i), "")
+    await waitFor(() =>
+      expect(mockPatchPipelineSettings).toHaveBeenCalledWith({ preview_memory_gb: null }),
+    )
+    await waitFor(() => expect(field(/^previews$/i).value).toBe("10.3"))
   })
 
-  it("restores the previous value and toasts an error when the commit fails", async () => {
-    useSettingsStore.setState({ streamingChunkSize: 500_000 })
-    mockPutExecutionSettings.mockRejectedValue(new Error("boom"))
-    render(<PipelineSettingsModal onClose={vi.fn()} />)
-    fireEvent.change(getChunkInput(), { target: { value: "100000" } })
-    fireEvent.blur(getChunkInput())
-    await waitFor(() => expect(mockPutExecutionSettings).toHaveBeenCalled())
-    await waitFor(() => expect(useSettingsStore.getState().streamingChunkSize).toBe(500_000))
+  it("the reset button restores automatic", async () => {
+    serveSettings({ optimisation_time_limit_minutes: 120 })
+    await opened()
+    expect(field(/^optimisation$/i).value).toBe("120")
+
+    fireEvent.click(screen.getByRole("button", { name: "Use automatic Optimisation" }))
+
+    await waitFor(() =>
+      expect(mockPatchPipelineSettings).toHaveBeenCalledWith({ optimisation_time_limit_minutes: null }),
+    )
+    await waitFor(() => expect(field(/^optimisation$/i).value).toBe(""))
+    expect(screen.getByTestId("pipeline-settings-optimisation-time-limit-minutes-auto")).toBeInTheDocument()
   })
 
-  it("chunk input has max attribute matching the backend bound", () => {
+  it("restores the shown value and toasts when a save fails", async () => {
+    await opened()
+    mockPatchPipelineSettings.mockRejectedValueOnce(new Error("disk full"))
+
+    commit(getChunkInput(), "100000")
+
+    await waitFor(() => expect(getChunkInput().value).toBe("500000"))
+    expect(useToastStore.getState().toasts.map((toast) => toast.text)).toEqual(["disk full"])
+  })
+
+  it("the Caching switch saves at each toggle and disables Cache size while off", async () => {
+    await opened()
+    const toggle = screen.getByRole("switch", { name: "Caching" })
+    expect(toggle).toHaveAttribute("aria-checked", "true")
+    expect(field(/^cache size$/i)).not.toBeDisabled()
+
+    fireEvent.click(toggle)
+    await waitFor(() => expect(mockPatchPipelineSettings).toHaveBeenCalledWith({ caching: false }))
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "false"))
+    expect(field(/^cache size$/i)).toBeDisabled()
+
+    fireEvent.click(toggle)
+    await waitFor(() => expect(mockPatchPipelineSettings).toHaveBeenLastCalledWith({ caching: true }))
+    await waitFor(() => expect(field(/^cache size$/i)).not.toBeDisabled())
+  })
+
+  it("reports a failed load and keeps the settings disabled", async () => {
+    mockGetPipelineSettings.mockReset()
+    mockGetPipelineSettings.mockRejectedValue(
+      new Error(".haute/pipeline-settings.json: preview_memory_gb must be a number of GB greater than 0"),
+    )
     render(<PipelineSettingsModal onClose={vi.fn()} />)
-    expect(getChunkInput()).toHaveAttribute("max", "10000000")
+
+    expect(await screen.findByTestId("pipeline-settings-error")).toHaveTextContent(
+      "preview_memory_gb must be a number of GB greater than 0",
+    )
+    expect(getChunkInput()).toBeDisabled()
+    expect(field(/^previews$/i)).toBeDisabled()
+    expect(screen.getByRole("switch", { name: "Caching" })).toBeDisabled()
+  })
+
+  it("names the file the settings are saved in", async () => {
+    await opened()
+    expect(screen.getByTestId("pipeline-settings-path")).toHaveTextContent(
+      "Saved in .haute/pipeline-settings.json",
+    )
   })
 })
 
@@ -647,6 +803,7 @@ describe("PipelineSettingsModal calculation mode", () => {
   beforeEach(() => {
     mockFetchCacheNodes.mockReset()
     mockFetchCacheNodes.mockResolvedValue(nodes())
+    serveSettings()
     useGraphStore.setState({ nodes: [], edges: [], preamble: "", submodels: {} })
     useUIStore.setState({ calculationMode: "automatic" })
   })

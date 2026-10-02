@@ -120,7 +120,6 @@ describe("useExplorePivotActions", () => {
     })
     useSettingsStore.setState({
       activeSource: "pricing",
-      streamingChunkSize: 250_000,
     })
     useGraphStore.setState({ structuralVersion: 0 })
     useDocumentStatusStore.getState().reset()

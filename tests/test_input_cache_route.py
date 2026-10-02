@@ -329,6 +329,7 @@ def test_cancel_requests_cooperative_stop(
 def test_build_deadline_owns_timeout_status_and_error_code(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
+    pipeline_settings,
 ) -> None:
     from haute._source_cache import SourceCacheBuildError
     from haute.routes import input_cache
@@ -340,7 +341,7 @@ def test_build_deadline_owns_timeout_status_and_error_code(
         assert cancellation.wait(timeout=5)
         raise SourceCacheBuildError("source-cache build exceeded its deadline")
 
-    monkeypatch.setenv("HAUTE_BUILD_TIMEOUT", "0.01")
+    pipeline_settings(pipeline_time_limit_minutes=0.01 / 60)
     monkeypatch.setattr(input_cache, "build_input_snapshot", timed_build)
     started = client.post(
         "/api/input-cache/build",
@@ -1375,6 +1376,7 @@ def test_a_stopped_api_input_build_kills_its_worker_and_discards_its_staging(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     stop: str,
+    pipeline_settings,
 ) -> None:
     """A real capped worker, stopped by cancellation or its deadline, publishes nothing."""
     from haute._json_shred import _snapshots
@@ -1386,7 +1388,7 @@ def test_a_stopped_api_input_build_kills_its_worker_and_discards_its_staging(
         # child exists; termination and settlement do not depend on the cap.
         monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
     if stop == "timed_out":
-        monkeypatch.setenv("HAUTE_BUILD_TIMEOUT", "6")
+        pipeline_settings(pipeline_time_limit_minutes=6 / 60)
     set_project_root(tmp_path)
     source = _write_quotes(tmp_path)
     monkeypatch.setattr(_snapshots, "build_api_input_tables_worker", _blocking_table_worker)

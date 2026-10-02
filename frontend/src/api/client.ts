@@ -61,13 +61,14 @@ import type {
   InputCacheBuildResponse,
   InputCacheCancelResponse,
   InputCacheJobStatusResponse,
-  ExecutionSettings,
   InputCacheSnapshotResponse,
   InputCacheSourceRequest,
   MlflowDestinationKey,
   MlflowDestinationsResponse,
   MlflowSettingsResponse,
   MlflowSettingsUpdateRequest,
+  PipelineSettingsResponse,
+  PipelineSettingsValues,
   MlflowTestConnectionRequest,
   MlflowTestConnectionResponse,
   MlflowExperiment,
@@ -285,7 +286,8 @@ export interface RetryPolicy {
 
 export interface ApiClientOptions {
   signal?: AbortSignal
-  timeout?: number
+  /** Milliseconds before the browser gives up; `null` sets no browser deadline. */
+  timeout?: number | null
   retry?: RetryPolicy
 }
 
@@ -478,7 +480,7 @@ function backoffSleep(ms: number, signal?: AbortSignal): Promise<void> {
 async function attemptFetch<T>(
   url: string,
   fetchOptions: RequestInit,
-  timeout: number,
+  timeout: number | null,
   externalSignal: AbortSignal | undefined,
   read: (response: Response) => Promise<T>,
 ): Promise<T> {
@@ -488,9 +490,12 @@ async function attemptFetch<T>(
     abortSource ??= source
     controller.abort()
   }
-  const timeoutId = setTimeout(() => {
-    abortAttempt("timeout")
-  }, timeout)
+  // A request the server bounds by its own time limit sets no browser timer.
+  const timeoutId = timeout === null
+    ? undefined
+    : setTimeout(() => {
+      abortAttempt("timeout")
+    }, timeout)
 
   // If an external signal is provided, abort our controller when it fires.
   // We track the listener so we can remove it in the finally block below —
@@ -520,7 +525,8 @@ async function attemptFetch<T>(
     }
     return await read(res)
   } catch (err) {
-    if (abortSource === "timeout" && isAbortError(err)) {
+    // Only a timer can abort with "timeout", so a timeout is set here.
+    if (abortSource === "timeout" && timeout !== null && isAbortError(err)) {
       throw new ApiTimeoutError(url, timeout)
     }
     throw err
@@ -775,7 +781,7 @@ export interface PreviewNodeArgs {
   /** Chosen by the caller so it can poll this request's step progress. */
   requestId?: string
   signal?: AbortSignal
-  timeout?: number
+  timeout?: number | null
 }
 
 export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse> {
@@ -788,7 +794,7 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
     portLabel,
     requestId,
     signal,
-    timeout = 120_000,
+    timeout = null,
   } = args
   return post<unknown>(
     "/api/pipeline/preview",
@@ -854,7 +860,8 @@ export function previewInputs(args: PreviewInputsArgs): Promise<PreviewInputsRes
         : {}),
       ...(args.portLabel !== undefined ? { port_label: args.portLabel } : {}),
     },
-    { signal: args.signal },
+    // Bounded by the server's pipeline time limit, which answers 504.
+    { signal: args.signal, timeout: null },
   ).then(parsePreviewInputsResponse)
 }
 
@@ -885,7 +892,7 @@ export interface RecoveryPreviewNodeArgs {
   portLabel?: string
   requestId?: string
   signal?: AbortSignal
-  timeout?: number
+  timeout?: number | null
 }
 
 export function previewRecoveryNode(
@@ -901,7 +908,7 @@ export function previewRecoveryNode(
     portLabel,
     requestId,
     signal,
-    timeout = 120_000,
+    timeout = null,
   } = args
   return post<unknown>(
     "/api/pipeline/recovery-preview",
@@ -947,7 +954,7 @@ export interface OutputAssembleDryRunArgs {
   rowLimit?: number
   source?: string
   signal?: AbortSignal
-  timeout?: number
+  timeout?: number | null
 }
 
 /**
@@ -972,7 +979,7 @@ export function outputAssembleDryRun(
     rowLimit,
     source,
     signal,
-    timeout = 120_000,
+    timeout = null,
   } = args
   return post<unknown>(
     "/api/output-assemble/dry-run",
@@ -1000,11 +1007,11 @@ export interface TraceCellArgs {
    * those generations, and none when it is empty. */
   seed_plan: TraceSeedPlanEntry[]
   signal?: AbortSignal
-  timeout?: number
+  timeout?: number | null
 }
 
 export function traceCell(args: TraceCellArgs): Promise<TraceResponse> {
-  const { signal, timeout = 120_000, ...payload } = args
+  const { signal, timeout = null, ...payload } = args
   return post<unknown>("/api/pipeline/trace", payload, { signal, timeout }).then(parseTraceResponse)
 }
 
@@ -1014,7 +1021,7 @@ export interface WriteOutputArgs {
   source?: string
   overwrite?: boolean
   signal?: AbortSignal
-  timeout?: number
+  timeout?: number | null
 }
 
 export interface ResolveOutputDestinationArgs {
@@ -1045,7 +1052,7 @@ export function writeOutput(args: WriteOutputArgs): Promise<WriteOutputResponse>
     source,
     overwrite,
     signal,
-    timeout = 300_000,
+    timeout = null,
   } = args
   return post<unknown>(
     "/api/pipeline/write-output",
@@ -1537,13 +1544,13 @@ export interface EstimateOptimiserSolveArgs {
   node_id: string
   source?: string
   signal?: AbortSignal
-  timeout?: number
+  timeout?: number | null
 }
 
 export function estimateOptimiserSolve(
   args: EstimateOptimiserSolveArgs,
 ): Promise<OptimiserEstimate> {
-  const { signal, timeout = 30_000, ...payload } = args
+  const { signal, timeout = null, ...payload } = args
   return post<unknown>(
     "/api/optimiser/estimate",
     {
@@ -1763,25 +1770,26 @@ export function inferJsonCacheSchema(
 }
 
 // ---------------------------------------------------------------------------
-// Execution settings (server-owned, editor-wide: the streaming chunk size)
+// Pipeline settings (the project's .haute/pipeline-settings.json on this machine)
 // ---------------------------------------------------------------------------
 
-export function getExecutionSettings(
+export function getPipelineSettings(
   options?: { signal?: AbortSignal },
-): Promise<ExecutionSettings> {
-  return request<unknown>("/api/execution-settings", options).then(async (data) => expectGeneratedContract("ExecutionSettings", (await editorValidators()).validateExecutionSettings, data))
+): Promise<PipelineSettingsResponse> {
+  return request<unknown>("/api/pipeline-settings", options).then(async (data) => expectGeneratedContract("PipelineSettingsResponse", (await editorValidators()).validatePipelineSettingsResponse, data))
 }
 
-export function putExecutionSettings(
-  streamingChunkSize: number,
+/** Change the keys in `changes`; `null` restores a key to automatic. */
+export function patchPipelineSettings(
+  changes: Partial<PipelineSettingsValues>,
   options?: { signal?: AbortSignal },
-): Promise<ExecutionSettings> {
-  return request<unknown>("/api/execution-settings", {
-    method: "PUT",
+): Promise<PipelineSettingsResponse> {
+  return request<unknown>("/api/pipeline-settings", {
+    method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ streaming_chunk_size: streamingChunkSize }),
+    body: JSON.stringify(changes),
     ...options,
-  }).then(async (data) => expectGeneratedContract("ExecutionSettings", (await editorValidators()).validateExecutionSettings, data))
+  }).then(async (data) => expectGeneratedContract("PipelineSettingsResponse", (await editorValidators()).validatePipelineSettingsResponse, data))
 }
 
 // ---------------------------------------------------------------------------

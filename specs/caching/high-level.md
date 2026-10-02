@@ -102,9 +102,10 @@ cannot install the cap reuses a ready-but-stale generation with warning code
 `HAUTE_INPUT_CACHE_RETIRE_GRACE_SECONDS` (default 1800) have elapsed since the current
 generation was published; explicit clear bypasses this grace while preserving live
 cross-process leases. Input snapshots and explicit builds have no byte/count storage limit
-and are never evicted. Automatic node-output captures share a byte budget: by default the
-smaller of 20 GiB and a tenth of free disk, configurable with
-`HAUTE_AUTOMATIC_CAPTURE_MAX_BYTES`. The least recently leased unpinned, unleased capture
+and are never evicted. Automatic node-output captures share a byte budget: the pipeline
+settings' cache size (`cache_size_gb` in `.haute/pipeline-settings.json`, see the
+[execution engine](../execution-engine/low-level.md#pipeline-settings)), automatically the
+smaller of 20 GiB and a tenth of free disk. The least recently leased unpinned, unleased capture
 is evicted first ([IO layer](../io-layer/high-level.md)). The preview status bar shows the
 store's size; users inspect and clear stored datasets through the cache inventory.
 
@@ -152,6 +153,17 @@ response cache's field set and stat-gated caches are otherwise independent of th
 that governs this.
 Analysis results are stored by point identity and data version, so a refreshed or widened
 generation never serves a previous generation's results.
+
+**Caching can be turned off.** With `caching` off in the pipeline settings, previews and
+runs (Data Output, training, optimiser setup and auto-range) neither read nor write
+node-output snapshots: each runs up to its target from the inputs. A preview runs without
+a seed plan, and every other plan seeds nothing and captures nothing, so nothing is written
+for later and nothing earlier is reused. The Cache buttons keep working: an explicit build
+computes its node from the inputs and publishes that node alone, and Explore, Banding and
+Rating read the data their buttons built. Input snapshots are unaffected, because a
+snapshot-backed input is read only through its snapshot. A trace still reads exactly the
+generations its preview listed. Turning caching back on starts reusing whatever fresh
+generations the store still holds; turning it off deletes nothing.
 
 ## Design rationale
 

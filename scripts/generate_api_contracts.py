@@ -31,7 +31,6 @@ from haute.schemas import (
     DispersionEstimateResponse,
     DispersionEstimateStatusResponse,
     EditorIdentitiesResponse,
-    ExecutionSettings,
     ExplorePivotMembersResponse,
     ExplorePivotRunResponse,
     ExplorePivotStatusResponse,
@@ -84,6 +83,7 @@ from haute.schemas import (
     OptimiserSegmentsResponse,
     OptimiserSolveResponse,
     OptimiserStatusResponse,
+    PipelineSettingsResponse,
     PolarsStepsRenderResponse,
     RatingLevelsResponse,
     SaveModelResponse,
@@ -193,7 +193,7 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
     "editor": (
         EditorIdentitiesResponse,
         PolarsStepsRenderResponse,
-        ExecutionSettings,
+        PipelineSettingsResponse,
     ),
     "optimiser": (
         OptimiserSolveResponse,

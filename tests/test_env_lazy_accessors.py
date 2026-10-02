@@ -89,19 +89,9 @@ class TestEnvHelpers:
 # (accessor, env var, override string, expected parsed value, default) for every
 # knob that used to be captured at import. Setting the env var AFTER import must
 # change the accessor's result — that is exactly the frozen-constant regression.
+# The time limits are pipeline settings, read from the settings file per call
+# (tests/test_pipeline_settings.py), not environment variables.
 _ACCESSOR_CASES = [
-    ("haute.routes.pipeline", "_trace_timeout", "HAUTE_TRACE_TIMEOUT", "5", 5.0, 120.0),
-    ("haute.routes.pipeline", "_preview_timeout", "HAUTE_PREVIEW_TIMEOUT", "5", 5.0, 120.0),
-    ("haute.routes.pipeline", "_sink_timeout", "HAUTE_SINK_TIMEOUT", "5", 5.0, 300.0),
-    (
-        "haute.routes.output_assemble",
-        "_dry_run_timeout",
-        "HAUTE_OUTPUT_DRY_RUN_TIMEOUT",
-        "5",
-        5.0,
-        120.0,
-    ),
-    ("haute.routes.input_cache", "_build_timeout", "HAUTE_BUILD_TIMEOUT", "5", 5.0, 1800.0),
     (
         "haute.routes.input_cache",
         "_max_concurrent_builds",
@@ -112,27 +102,11 @@ _ACCESSOR_CASES = [
     ),
     (
         "haute.routes._optimiser_service",
-        "_default_auto_range_timeout",
-        "HAUTE_AUTO_RANGE_TIMEOUT",
-        "60",
-        60,
-        1800,
-    ),
-    (
-        "haute.routes._optimiser_service",
         "_default_reducer_budget_mb",
         "HAUTE_OPTIMISER_REDUCER_BUDGET_MB",
         "64",
         64,
         512,
-    ),
-    (
-        "haute.routes._train_service",
-        "_default_train_timeout",
-        "HAUTE_TRAIN_TIMEOUT",
-        "60",
-        60,
-        3600,
     ),
     (
         "haute.routes._optimiser_solver",
@@ -189,48 +163,6 @@ def test_accessor_malformed_value_fails_loudly(
     monkeypatch.setenv(env_var, "not-a-number")
     with pytest.raises(RuntimeError, match=env_var):
         fn()
-
-
-def test_solver_timeout_optional_semantics(monkeypatch):
-    """The optional timeout is absent by default and strict when configured."""
-    from haute.routes import _optimiser_service as opt
-
-    monkeypatch.delenv("HAUTE_SOLVER_TIMEOUT", raising=False)
-    assert opt._default_solver_timeout() is None
-    monkeypatch.setenv("HAUTE_SOLVER_TIMEOUT", "42")
-    assert opt._default_solver_timeout() == 42
-    # Malformed must not silently remove the timeout.
-    monkeypatch.setenv("HAUTE_SOLVER_TIMEOUT", "not-an-int")
-    with pytest.raises(RuntimeError, match="HAUTE_SOLVER_TIMEOUT.*positive integer"):
-        opt._default_solver_timeout()
-
-
-@pytest.mark.parametrize(
-    ("module_name", "accessor", "env_var"),
-    [
-        ("haute.routes.input_cache", "_build_timeout", "HAUTE_BUILD_TIMEOUT"),
-    ],
-)
-@pytest.mark.parametrize("raw", ["0", "-1", "nan", "inf"])
-def test_build_timeout_has_one_positive_finite_policy(
-    module_name, accessor, env_var, raw, monkeypatch
-):
-    fn = _resolve(module_name, accessor)
-    monkeypatch.setenv(env_var, raw)
-    with pytest.raises(RuntimeError, match=env_var):
-        fn()
-
-
-@pytest.mark.parametrize(
-    ("module_name", "accessor"),
-    [
-        ("haute.routes.input_cache", "_build_timeout"),
-    ],
-)
-def test_build_timeout_accepts_positive_values_below_old_clamp(module_name, accessor, monkeypatch):
-    fn = _resolve(module_name, accessor)
-    monkeypatch.setenv("HAUTE_BUILD_TIMEOUT", "0.0005")
-    assert fn() == 0.0005
 
 
 def test_auto_range_context_default_reflects_env(monkeypatch):

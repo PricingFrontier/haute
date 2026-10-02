@@ -158,7 +158,7 @@ compatibility facade and route own no duplicate state or worker implementation.
   `error_code`, `http_status_code`, and structured `error_detail` on this status
   response. A failure raised inside the isolated training worker also carries the
   worker's formatted traceback as `worker_remote_traceback`, so the UI can show what
-  the error message calls "the job's error details". Polling also enforces the configured/default training timeout: an overdue
+  the error message calls "the job's error details". Polling also enforces the job's time limit — the node config's `timeout` when set, else the pipeline settings' modelling time limit (60 minutes unless set), stamped at job creation for training and dispersion estimation alike: an overdue
   running job requests preparation/child termination and atomically transitions to
   `timed_out`.
 - `GET /api/modelling/gpu` reports whether XGBoost can train on a GPU in this server

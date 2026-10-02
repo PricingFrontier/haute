@@ -19,7 +19,8 @@
 | `src/haute/_polars_call_shapes.py` | The literal call-shape rules shared by the chunk classifier, the row-semantics classifier and the planner's recompute analysis: `replace_call_has_literal_mapping`, `replace_strict_call_has_literal_mapping`, and the literal-scalar, literal-collection and `pl`-dtype helpers. |
 | `src/haute/_polars_selectors.py` | Literal Polars column selectors: `preamble_selector_aliases` (the preamble's `polars.selectors` import aliases), `literal_selector` (the closed grammar that rebuilds a selector written with literal arguments as the Polars object, accepted only when Polars reports a pure column selection), `selector_root` (the selector a computation starts from), and `expand_literal_selector` (expansion against a column set by Polars, refusing positional selectors and dtype-dependent selectors without every dtype). |
 | `src/haute/_execution_context.py` | `ExecutionContext`, the thin per-run composition, and its parts: `ExecutionCancellationToken`, `ExecutionMemoryBudget` (limits, RSS probe, enforcement and memory-pressure thresholds), `ExecutionLease` (cleanup precedence and the one admission release), `ExecutionMetricsRecorder`, `ExecutionEvidence` (aggregate counters, cancellation latency and estimate calibration), `ExecutionProvenance` (input preparation, snapshot seeds and captures, write outcomes and warnings, exchanged with workers) and `ExecutionTelemetry` (bounded opt-in terminal telemetry); plus `ExecutionProfile`. No class in the module exceeds 300 lines. Contexts created directly may be unbudgeted; admitted contexts carry the resolved limits. |
-| `src/haute/_execution_admission.py` | Resolves an `ExecutionBudget` per `ExecutionProfile` (fixed default / explicit env override / adaptive fraction of available RAM), performs pre-flight admission (`create_admitted_execution_context`), and tracks a process-wide in-flight reservation for "heavy" profiles. |
+| `src/haute/_execution_admission.py` | Resolves an `ExecutionBudget` per `ExecutionProfile` (the pipeline settings' preview memory / fixed default / explicit env override / adaptive fraction of available RAM above the settings' kept-free memory), performs pre-flight admission (`create_admitted_execution_context`), and tracks a process-wide in-flight reservation for "heavy" profiles. |
+| `src/haute/_pipeline_settings.py` | The per-clone pipeline settings file `.haute/pipeline-settings.json`: the `PipelineSettings` keys and their validation, stat-gated reads (`read_pipeline_settings`), locked atomic updates (`update_pipeline_settings`), the current automatic figures (`automatic_pipeline_settings`), the time limits and byte sizes its consumers read, `PipelineSettingsError`, and the server process following the file's chunk rows (`follow_chunk_rows`). See "Pipeline settings" below. |
 | `src/haute/_chunked_writes.py` | Bounded chunked writes: `sliceable` (positive proof on Polars' optimised IR that slicing a frame equals slicing its single Parquet/IPC scan or in-memory input), `write_parts` (a node output as ordered `part-NNNNN.parquet` files: a chunked edge join, one native sink per slice, an input-sliced write, or one native sink), `JoinRecipe`, `WriteRecipe`, `part_paths`/`scan_parts`. |
 | `src/haute/_polars_utils.py` | Shared with [io-layer](../io-layer/low-level.md): Polars materialisation seams. `execution_collect` selects `auto` or streaming execution and automatically polls a native background query whenever an execution context is active; without one it remains synchronous. `streaming_collect` and `cancellable_streaming_collect` are streaming-engine wrappers over that same contract. All three preserve checkpoint, collect-count, and typed-error telemetry. `bounded_collect_batches` streams batches from a query run on a dedicated thread, so an engine panic raises instead of ending the stream early. It also owns the Python scans that expose opaque Python steps to Polars pushdown (`row_local_python_scan`, `fanout_python_scan`, `limited_python_scan`, `key_prefix_python_scan`) and the parked scan-failure registry every collect seam re-raises from. |
 | `src/haute/_node_apply.py` | Config-driven implementations of `liveSwitch` input selection, `scenarioExpander` row expansion (`expand_scenarios_from_config`, and `expand_scenarios_bounded` for the interactive form a preview row limit reaches through), `optimiserApply` artifact dispatch, and output response-document assembly (`assemble_output_from_config`) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
@@ -359,12 +360,14 @@ When the caller omits an execution context, `execute_graph()` creates its admitt
 and miss stages therefore always use a concrete context and always record telemetry;
 there is no silent no-op stage path.
 
-**Previews under a seed plan.** With `shared_snapshots=True` (the preview route) and a
+**Previews under a seed plan.** With `shared_snapshots=True` (the preview route), caching
+on in the pipeline settings of the graph's project (read inside its
+`runtime_project_root_scope`, in whichever process runs the preview), and a
 target whose lineage `preview_lineage_admitted` accepts, `execute_graph()` opens a
 `PREVIEW_EAGER` seed plan — preparing only the inputs it executes, under the caller's
 `staging_token` — holds it for the rest of the request, and runs `_execute_graph_core()`
-under it; any other preview runs the same core without a plan, preparing its lineage as
-before. Under a plan the strategy is planned for what the plan builds only
+under it; any other preview, including every preview while caching is off, runs the same
+core without a plan, preparing its lineage as before. Under a plan the strategy is planned for what the plan builds only
 (`materialising_node_ids`), estimated from its seeds' generations (`estimation_graph`),
 so a seed covering work that could not be admitted if recomputed keeps the preview
 admitted. The core reads the lineage's runtime-input identity once
@@ -872,16 +875,25 @@ from the graph source using the same canonical project-root resolver as runtime 
 There is no uncontained direct-executor output mode or separate sink-path façade.
 
 **Admission (`_execution_admission.create_admitted_execution_context`).**
-`execution_budget_for_profile()` resolves an `ExecutionBudget` for the run's profile, or for
-its `budget_profile` when one is given (admission and in-flight reservation still follow the
-run's own profile, so a preview budgeted as a cache build is still admitted, and never
-reserved, as a preview): checks profile-specific
-then global environment overrides first (`budget_policy="explicit_env"`), else — for
+Admission first reads the [pipeline settings](#pipeline-settings) of the execution's
+project (`current_runtime_project_root()`), so an invalid settings file refuses the run
+with `PipelineSettingsError` before anything is sampled or reserved.
+`execution_budget_for_profile()` then resolves an `ExecutionBudget` for the run's profile.
+`PREVIEW_EAGER` — every preview, trace, Output dry run and other interactive eager
+execution, whether or not it captures node output — has one budget: the settings'
+`preview_memory_gb` when set (`budget_policy="pipeline_settings"`,
+`config_key="preview_memory_gb"`), else the profile's adaptive or fixed default below. No
+environment variable sizes a preview budget. Every other profile checks profile-specific
+then global environment overrides first (`budget_policy="explicit_env"`). Otherwise — for
 profiles in `_ADAPTIVE_LOCAL_PROFILES` under the default `local_adaptive` memory
-policy — computes `usable = available_ram_bytes() - min(os_reserve, available/2)` then
-`limit = usable * basis_points / 10_000`, clamped to the profile's floor/ceiling
-(`budget_policy="adaptive_local"`), else the fixed per-profile default
-(`_DEFAULT_MEMORY_LIMIT_BYTES`). Both `fixed` and `strict_server` select the fixed
+policy — admission computes `usable = available_ram_bytes() - os_reserve` then
+`limit = usable * basis_points / 10_000`, clamped to the profile's floor/ceiling and to
+`usable` (`budget_policy="adaptive_local"`); otherwise it takes the fixed per-profile default
+(`_DEFAULT_MEMORY_LIMIT_BYTES`). `PREVIEW_EAGER` is adaptive at 7,000 basis points with a
+4 GiB floor and no ceiling, and its fixed default is 4 GiB: the budget a preview that
+captures a join needs, so no preview is admitted with less. `os_reserve` is the settings'
+`kept_free_gb` exactly when set, else `min(2 GiB, available/2)`; no environment variable
+sets it. Both `fixed` and `strict_server` select the fixed
 defaults; an unknown `HAUTE_EXECUTION_MEMORY_POLICY` value raises `RuntimeError`.
 Admission then samples current RSS; refuses
 (`ExecutionAdmissionError`) if the sampler is unavailable or RSS already exceeds any
@@ -911,7 +923,8 @@ budget's as before. The optimiser's choice queries and in-process frontier point
 (OPT-W01, profile `OPTIMISER_SOLVE`) admits each command with a grant instead of a whole budget,
 so a command gets as much of the machine as is free when it starts. The grant waits out its
 `wait_out_holders` first and only then, under `_IN_FLIGHT_LOCK`, samples a fresh
-`available_ram_bytes()`, computes `usable_now = available - min(os_reserve, available/2)` and
+`available_ram_bytes()`, computes `usable_now = available - os_reserve` (the reserve resolved
+as above) and
 grants `G = min(profile_limit(usable_now), usable_now - Σ other reservations, process-RSS
 headroom when an absolute process-RSS limit is configured)`, where `profile_limit` is the
 adaptive, fixed or env-resolved limit recomputed from `usable_now`. Any positive `G` is reserved
@@ -968,7 +981,9 @@ policy to automatic and verify HighQoS from within the actual worker workload.
 
 **Streaming chunk size (`_polars_utils.py`).** `current_streaming_chunk_size()` reads
 Polars' process value (`POLARS_STREAMING_CHUNK_SIZE`), falling back to
-`DEFAULT_STREAMING_CHUNK_SIZE` (500,000). `set_streaming_chunk_size(n)` validates `n`
+`DEFAULT_STREAMING_CHUNK_SIZE` (500,000). The server process sets that value from the
+pipeline settings' `chunk_rows` (see Pipeline settings below); a `POLARS_STREAMING_CHUNK_SIZE`
+already in the environment is not a setting and is replaced. `set_streaming_chunk_size(n)` validates `n`
 (an integer from 1 to 10,000,000; a bool is refused) and sets it with
 `pl.Config.set_streaming_chunk_size`, which writes the environment variable a spawned
 child inherits. `streaming_chunk_size_cap(rows)` lowers the value Polars sees while its
@@ -986,9 +1001,8 @@ it. Under an active cap the child inherits the capped variable but is also hande
 setting as `HAUTE_SPAWN_STREAMING_CHUNK_SIZE`, which the isolated-worker and worker-protocol
 entry points apply first (`apply_spawned_streaming_chunk_size`); warm interactive and
 dedicated workers already apply the server's setting with every task. The server lifespan
-applies `current_streaming_chunk_size()` once,
-before the interactive worker pool starts, so a value already in the environment is
-kept. `InteractiveWorkerPool.run` captures the current value with each task, and the
+applies the settings' chunk rows (500,000 when unset) once, before the interactive worker
+pool starts. `InteractiveWorkerPool.run` captures the current value with each task, and the
 warm worker applies it before running that task. `bounded_sink` and
 `bounded_hashed_sink` take no chunk size: native sinks run under the process value, and
 a chunked write slices at it unless its caller names `chunk_rows`. No production code
@@ -1146,6 +1160,74 @@ once). It reports `done=0` with that total, then each step's start ("Caching X",
 "Computing X") and completion. A failed capture or skipped collection simply never
 completes, so progress stops short and the response carries the error; a walk without
 a reporter reports nothing.
+
+### Pipeline settings
+
+`src/haute/_pipeline_settings.py` owns the pipeline settings: one JSON object in
+`<project root>/.haute/pipeline-settings.json` holding what the Pipeline settings pane
+shows. `.haute/` is the per-clone directory the git guards keep untracked, so the settings
+belong to this clone on this machine and survive a server restart; nothing else stores them.
+The file may be edited by hand, and the pane writes the same file. Every key is optional, and
+an absent key or `null` means automatic:
+
+| Key | Value | Automatic | Governs |
+|---|---|---|---|
+| `chunk_rows` | integer, 1 to 10,000,000 | 500,000 | the Polars streaming chunk size |
+| `caching` | boolean | `true` | whether previews and runs read and write node-output snapshots ([caching](../caching/high-level.md)) |
+| `cache_size_gb` | number > 0 | 20, or a tenth of the free disk under the project's `.haute_cache` when that is smaller | the automatic captures' byte budget ([IO layer](../io-layer/low-level.md)) |
+| `preview_memory_gb` | number > 0 | the `PREVIEW_EAGER` adaptive limit (above) | every `PREVIEW_EAGER` admission |
+| `kept_free_gb` | number >= 0 | 2, or half the available memory when that is smaller | the OS reserve under every adaptive budget and in-flight limit |
+| `pipeline_time_limit_minutes` | number > 0, at most 10,080 | 30 | previews, traces, preview input resolution, Output dry runs, Data Output runs, input imports and automatic input preparation, node cache builds, Explore profiles, and the optimiser input estimate |
+| `modelling_time_limit_minutes` | number > 0, at most 10,080 | 60 | a training job whose node config sets no `timeout` |
+| `optimisation_time_limit_minutes` | number > 0, at most 10,080 | no limit | an optimiser solve whose config sets no `timeout`, and a frontier auto-range whose config sets no `auto_range_timeout` |
+
+A GB here is 1024³ bytes. A number is a JSON integer or finite float, never a bool; a time
+limit is converted to seconds and a size to whole bytes where it is used. No environment
+variable sets or overrides any of these keys; the variables that used to
+(`HAUTE_PREVIEW_MEMORY_LIMIT_*`, `HAUTE_EXECUTION_OS_RESERVE_*`,
+`HAUTE_AUTOMATIC_CAPTURE_MAX_BYTES`, `HAUTE_PREVIEW_TIMEOUT`, `HAUTE_TRACE_TIMEOUT`,
+`HAUTE_SINK_TIMEOUT`, `HAUTE_BUILD_TIMEOUT`, `HAUTE_INPUT_PREPARATION_TIMEOUT_SECONDS`,
+`HAUTE_NODE_SNAPSHOT_TIMEOUT`, `HAUTE_NODE_DATA_PROFILE_TIMEOUT`,
+`HAUTE_OUTPUT_DRY_RUN_TIMEOUT`, `HAUTE_OPTIMISER_ESTIMATE_TIMEOUT`, `HAUTE_TRAIN_TIMEOUT`,
+`HAUTE_SOLVER_TIMEOUT`, `HAUTE_AUTO_RANGE_TIMEOUT`) are gone and nothing reads them.
+
+`read_pipeline_settings(project_root)` returns the frozen `PipelineSettings` (each key's
+value, `None` when automatic). Reads are cheap and current: the parsed file is kept per
+resolved path with its stat signature (`st_mtime_ns`, `st_size`, `st_ino`), and a read
+parses the file again only when that signature changes, so a hand edit, or an atomic
+replacement within one timestamp tick, reaches the next read. A
+missing file, or a missing `.haute/`, is all automatic. An unreadable file, invalid JSON,
+anything but a JSON object, an unknown key, or an invalid value raises
+`PipelineSettingsError` (a `ValueError`) whose message names the file
+(`.haute/pipeline-settings.json`) and the offending key — never a partial result and never
+automatic in its place. Readers propagate it, so a broken file stops admission, previews and
+runs with that message until it is fixed, and the server answers it as 409.
+
+`update_pipeline_settings(project_root, changes)` takes a mapping of keys to new values
+(`None` restores automatic) and, under one process lock, reads the current file (an invalid
+file refuses the update with the same error), applies the changes, validates the whole
+result, and replaces the file atomically (`atomic_write_text`), creating `.haute/` when it
+is missing. The file lists only the keys that are set, in the table's order, as two-space
+indented JSON with a trailing newline (`{}` when none is set). It returns the new settings.
+
+`automatic_pipeline_settings(project_root)` computes each key's automatic figure now, the way
+its consumer does: `chunk_rows` 500,000; `caching` true; `cache_size_gb` from the free
+disk under `.haute_cache/inputs` (the project root when that does not exist yet); `kept_free_gb`
+`min(2 GiB, available/2)`; `preview_memory_gb` the `PREVIEW_EAGER` limit admission would
+compute now under the current memory policy, against the effective reserve (the
+`kept_free_gb` override when set); the three time limits 30, 60 and none. An unobservable
+available memory propagates as admission's own error does.
+
+The server process follows the file's `chunk_rows`. The lifespan applies them before any
+worker spawns; `PATCH /api/pipeline-settings` applies them after writing; and every read of
+the server's own project settings that parses a changed file applies its chunk rows when
+they differ from the process value, so a hand edit reaches the next admission, which reads
+the settings first. Only the server process does this (the lifespan marks it with
+`follow_chunk_rows(project_root)`); a worker takes the server's value from its spawn
+environment or its task, as above, never from the file. A file that is invalid when the
+server starts is logged (`pipeline_settings_invalid_at_startup`) and the server starts with
+the default chunk rows, so the pane can show the error; every admission refuses until the
+file is fixed, and the first read of the fixed file applies its chunk rows.
 
 ### Dedicated workers
 
@@ -2449,10 +2531,17 @@ present a structural or schema result as execution evidence.
   those labels ("reserved by ...") so a refusal identifies the work it lost to.
 - `RuntimeError` from admission configuration — raised before context creation for
   an unknown `HAUTE_EXECUTION_MEMORY_POLICY`, a malformed/non-positive explicit
-  memory or RSS limit, an invalid OS-reserve override, or a non-positive RAM sample.
+  memory or RSS limit, or a non-positive RAM sample.
   Each numeric environment candidate is read once through `_env.optional_int_env`
   before its byte/megabyte multiplier is applied, so a concurrent environment
   mutation cannot race a presence check against a second read.
+- `PipelineSettingsError` (`_pipeline_settings.py`, extends `ValueError`) — the
+  pipeline settings file is unreadable, is not a JSON object, names an unknown key, or
+  holds an invalid value. The message names `.haute/pipeline-settings.json` and the key
+  ("`.haute/pipeline-settings.json`: preview_memory_gb must be a number greater than 0").
+  Raised by every read, so admission refuses before context creation and every time
+  limit, caching and cache-size consumer stops with it; the server's exception handler
+  answers 409 with the message as `detail`, and a job records it as its error.
 - `IsolatedWorkerError` hierarchy (`_worker_isolation.py`) —
   `IsolatedWorkerStartError` (process failed to start), `IsolatedWorkerRemoteError`
   (child raised a Python exception; carries `remote_type`/`remote_message`/
@@ -2759,10 +2848,28 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   `replace` shape; the inventory test fails when an allowlist entry has no proof or
   a proof cites a retired entry. Selector forms carry their own chunked-equals-full cases (`selector_*`, including
   `polars.selectors` under a preamble alias) and rejection pins.
-- **`test_streaming_chunk_size_setting.py`** — the editor setting's reach: a changed
+- **`test_streaming_chunk_size_setting.py`** — the chunk rows setting's reach: a changed
   value is observed by the server process, by a newly spawned isolated worker and by the
-  next task on an already warm interactive worker; the settings route validates it; and
-  an optimiser estimate completes while a solve blocks on another thread.
+  next task on an already warm interactive worker; a hand edit of the settings file reaches
+  the server process at its next admission, and a worker's own settings read never changes
+  its chunk size; and an optimiser estimate completes while a solve blocks on another thread.
+- **`test_pipeline_settings.py`** — the settings file: a missing file is all automatic; a
+  written file round-trips; each key refuses its invalid values (a bool for a number, zero
+  or a negative where a positive is required, a time limit past 10,080, a fractional or
+  out-of-range `chunk_rows`, a non-boolean `caching`), an unknown key, a non-object and
+  invalid JSON, every message naming the file and the key; an update merges into the
+  existing keys, `None` removes a key, an invalid existing file refuses the update without
+  rewriting it, and the written file lists only set keys in order; a hand edit is read on
+  the next read (a changed size or mtime) and an unchanged file is not parsed again. The
+  routes: `GET` returns the settings, the automatic figures and the path; `PATCH` changes
+  only the keys it carries, restores automatic for `null`, refuses an invalid body with 422
+  and an invalid file with 409; and an invalid file makes a preview answer 409 with the
+  same message. Each consumer reads the file when it starts: every `PREVIEW_EAGER`
+  admission takes the one preview budget (`preview_memory_gb`, else 70% of the memory above
+  the kept-free reserve), the kept-free memory sets the reserve exactly, and the three time
+  limits reach the routes and jobs that read them, a node `timeout` still winning over the
+  setting. `test_optimiser_setup_worker.py` covers a frontier auto-range with no time limit
+  running its worker unbounded.
 - **`test_topo.py`**, **`test_topo_contracts.py`** — strict topological sort ordering,
   unknown-endpoint failure, explicit filtered-traversal evidence, cycle
   detection/reporting, and ancestor traversal.

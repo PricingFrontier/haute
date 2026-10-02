@@ -13368,18 +13368,25 @@ class TestLaunchBackground:
         ]
         assert len(registries) == 1
 
-    @pytest.mark.parametrize("raw_value", ["not-an-int", "0", "-1"])
-    def test_configured_solver_timeout_env_fails_loudly(
+    @pytest.mark.parametrize("raw_value", ['"not-a-number"', "0", "-1"])
+    def test_an_invalid_optimisation_time_limit_fails_loudly(
         self,
-        monkeypatch,
+        tmp_path,
         raw_value,
     ):
-        from haute.routes._optimiser_service import _default_solver_timeout
+        """An invalid limit in the settings file never silently removes the solve's limit."""
+        from haute._pipeline_settings import PipelineSettingsError
+        from haute._sandbox import set_project_root
+        from haute.routes._optimiser_service import _solve_timeout_from_config
 
-        monkeypatch.setenv("HAUTE_SOLVER_TIMEOUT", raw_value)
+        (tmp_path / ".haute").mkdir()
+        (tmp_path / ".haute" / "pipeline-settings.json").write_text(
+            f'{{"optimisation_time_limit_minutes": {raw_value}}}', encoding="utf-8"
+        )
+        set_project_root(tmp_path)
 
-        with pytest.raises(RuntimeError, match="HAUTE_SOLVER_TIMEOUT.*positive integer"):
-            _default_solver_timeout()
+        with pytest.raises(PipelineSettingsError, match="optimisation_time_limit_minutes"):
+            _solve_timeout_from_config({})
 
     def test_background_sets_start_time_and_timeout(self, clean_job_store):
         """_launch_background sets start_time and timeout on the job."""
