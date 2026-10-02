@@ -53,7 +53,7 @@ from haute._node_snapshots import (
     NodeSnapshotSlot,
     NodeSnapshotStore,
 )
-from haute._pipeline_settings import project_pipeline_settings
+from haute._pipeline_settings import PipelineSettingsError, project_pipeline_settings
 from haute._polars_io_registry import PolarsIoConfigError
 from haute._seed_plans import (
     SeedPlan,
@@ -1311,6 +1311,15 @@ class NodeDataService:
                 to="contract_error",
                 message=str(exc),
                 fields={"error": str(exc), "error_code": exc.error_code},
+                elapsed_seconds=elapsed,
+            )
+        elif isinstance(exc, PipelineSettingsError):
+            # Admission refused: the settings file's message names what to fix.
+            self._lifecycle.transition(
+                job_id,
+                to="error",
+                message=str(exc),
+                fields={"error": str(exc), "error_code": "pipeline_settings_invalid"},
                 elapsed_seconds=elapsed,
             )
         else:

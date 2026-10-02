@@ -94,6 +94,34 @@ def test_build_job_publishes_snapshot_and_snapshot_status(
     assert status.json()["freshness"] == "fresh"
 
 
+def test_an_invalid_settings_file_refuses_a_build_without_leaving_a_job(
+    client: TestClient,
+    haute_scratch: Path,
+) -> None:
+    from haute._pipeline_settings import SETTINGS_PATH, settings_file
+    from haute.routes import input_cache
+
+    (haute_scratch / "input.csv").write_text("id,value\n1,a\n2,b\n", encoding="utf-8")
+    settings = settings_file(haute_scratch)
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text('{"pipeline_time_limit_minutes": 0}', encoding="utf-8")
+    body = {"schema_version": 1, "config": _file_config()}
+
+    refused = client.post("/api/input-cache/build", json=body)
+
+    assert refused.status_code == 409
+    assert refused.json()["detail"].startswith(SETTINGS_PATH)
+    assert "pipeline_time_limit_minutes" in refused.json()["detail"]
+    assert input_cache._active_builds == 0
+    # Fixed, the next request starts a build of its own: the refused one left
+    # nothing holding the source or a build slot.
+    settings.unlink()
+    started = client.post("/api/input-cache/build", json=body)
+    assert started.status_code == 202
+    assert started.json()["joined"] is False
+    assert _wait_for_terminal(client, started.json()["job_id"])["status"] == "completed"
+
+
 @pytest.mark.parametrize(
     "path",
     ["../outside.csv", "../../../etc/passwd"],

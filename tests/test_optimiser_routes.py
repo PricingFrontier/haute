@@ -655,6 +655,37 @@ class TestSolveRoute:
         assert resp.status_code == 400
         assert "timeout must be a positive integer" in resp.json()["detail"]
 
+    @pytest.mark.parametrize(
+        ("route", "config"),
+        [
+            # The solve's own timeout check reads the optimisation time limit.
+            ("/api/optimiser/solve", None),
+            # With the solve timeout set, auto-range's own timeout check reads it.
+            ("/api/optimiser/frontier/auto-range/start", {"timeout": 60}),
+        ],
+    )
+    def test_an_invalid_settings_file_answers_409_rather_than_a_config_error(
+        self, client, scored_data, monkeypatch, route, config
+    ):
+        """A broken settings file is the application's 409 with its message, not a 400."""
+        from haute import _pipeline_settings
+
+        message = (
+            f"{_pipeline_settings.SETTINGS_PATH}: optimisation_time_limit_minutes must be "
+            "a number of minutes greater than 0"
+        )
+
+        def refuse(_root):
+            raise _pipeline_settings.PipelineSettingsError(message)
+
+        monkeypatch.setattr(_pipeline_settings, "read_pipeline_settings", refuse)
+        graph = _make_optimiser_graph(scored_data, config=config)
+
+        resp = client.post(route, json={"graph": graph, "node_id": "opt"})
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == message
+
     def test_solve_rejects_concurrent(self, client, scored_data, clean_job_store):
         """A second solve request while one is running returns 409."""
         from haute.routes.optimiser import _solve_service

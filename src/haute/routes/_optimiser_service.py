@@ -51,7 +51,7 @@ from haute._interactive_workers import (
 )
 from haute._logging import get_logger
 from haute._memory_errors import memory_error_in
-from haute._pipeline_settings import project_pipeline_settings
+from haute._pipeline_settings import PipelineSettingsError, project_pipeline_settings
 from haute._polars_utils import (
     bounded_collect_batches,
     current_streaming_chunk_size,
@@ -2584,6 +2584,9 @@ class OptimiserSolveService:
         mode = self._validate_config(config)
         try:
             timeout = _auto_range_timeout_from_config(config)
+        except PipelineSettingsError:
+            # The settings file, not this config, is invalid: the application answers 409.
+            raise
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return node, {
@@ -3222,6 +3225,9 @@ class OptimiserSolveService:
 
         try:
             _solve_timeout_from_config(config)
+        except PipelineSettingsError:
+            # The settings file, not this config, is invalid: the application answers 409.
+            raise
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:

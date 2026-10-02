@@ -603,6 +603,30 @@ def test_worker_contract_and_memory_failures_use_the_job_failure_envelope(
     assert _poll(client, run["job_id"])["status"] == "memory_limited"
 
 
+def test_an_invalid_settings_file_fails_the_job_with_its_message(
+    client: TestClient,
+    project: Path,
+) -> None:
+    from haute._pipeline_settings import SETTINGS_PATH, settings_file
+    from haute.routes.node_data import _store
+
+    graph = _graph(project)
+    settings = settings_file(project)
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text('{"preview_memory_gb": 0}', encoding="utf-8")
+
+    run = client.post("/api/node-data/run", json=_body(graph, "banding")).json()
+    final = _poll(client, run["job_id"])
+    stored = _store.require_job(run["job_id"])
+
+    # Admission refuses, and the job keeps the file's message: it names what to fix.
+    assert (final["status"], final["terminal_reason"]) == ("error", "error")
+    assert final["message"].startswith(SETTINGS_PATH)
+    assert "preview_memory_gb" in final["message"]
+    assert stored["error"] == final["message"]
+    assert stored["error_code"] == "pipeline_settings_invalid"
+
+
 def test_a_remote_worker_failure_reports_only_the_fixed_internal_detail(
     client: TestClient,
     project: Path,

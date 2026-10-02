@@ -523,9 +523,12 @@ def test_patch_applies_chunk_rows_at_once(project: Path, client) -> None:
     [
         {"preview_memory_gb": 0},
         {"preview_memory_gb": True},
+        # Refused as the file refuses them, not converted.
+        {"preview_memory_gb": "6"},
         {"kept_free_gb": -1},
         {"chunk_rows": 0},
         {"chunk_rows": True},
+        {"chunk_rows": 500000.0},
         {"caching": "yes"},
         {"pipeline_time_limit_minutes": 10_081},
         {"chunk_row": 1000},

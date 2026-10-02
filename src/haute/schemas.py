@@ -70,25 +70,27 @@ def _reject_bool(value: object) -> object:
 
 # Each Field before its validator, so the bounds reach the JSON schema as
 # minimum/maximum; the bool check still runs first. The bounds are the
-# pipeline settings file's own (``haute._pipeline_settings``).
+# pipeline settings file's own (``haute._pipeline_settings``), and so is the
+# strictness: a numeric string, or a fraction for chunk rows, is refused rather
+# than converted.
 StreamingChunkSize = Annotated[
     int,
-    Field(ge=1, le=MAX_STREAMING_CHUNK_SIZE),
+    Field(ge=1, le=MAX_STREAMING_CHUNK_SIZE, strict=True),
     BeforeValidator(_reject_bool),
 ]
 PositiveGigabytes = Annotated[
     float,
-    Field(gt=0, le=MAX_SIZE_GB, allow_inf_nan=False),
+    Field(gt=0, le=MAX_SIZE_GB, allow_inf_nan=False, strict=True),
     BeforeValidator(_reject_bool),
 ]
 Gigabytes = Annotated[
     float,
-    Field(ge=0, le=MAX_SIZE_GB, allow_inf_nan=False),
+    Field(ge=0, le=MAX_SIZE_GB, allow_inf_nan=False, strict=True),
     BeforeValidator(_reject_bool),
 ]
 TimeLimitMinutes = Annotated[
     float,
-    Field(gt=0, le=MAX_TIME_LIMIT_MINUTES, allow_inf_nan=False),
+    Field(gt=0, le=MAX_TIME_LIMIT_MINUTES, allow_inf_nan=False, strict=True),
     BeforeValidator(_reject_bool),
 ]
 
