@@ -27,45 +27,9 @@ the Utility pane until they exist); and assistant support for constants.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| GCONST-04 | Planned | P2 | The toolbar's Constants button opens a pane that edits the constants, per source where split. |
 | GCONST-05 | Planned | P2 | The step editor offers constants wherever it offers variables, and in typed function arguments. |
 
 ## Planned improvements
-
-### GCONST-04 — The Constants pane
-**Why:** Analysts set and compare constants per source in the editor, without
-editing JSON, and the toolbar slot the user chose for them is the Imports
-button's.
-
-**Plan:** The toolbar's Imports button becomes Constants, and the Utility
-pane's file list gains a fixed `Imports` entry that edits the preamble as the
-Imports pane did. The graph store holds the constants beside the preamble, in
-the dirty fingerprint and the save request, and both graph builders read them
-from the store when called, so the graph of every execution request (preview,
-training, optimiser, Explore, Data Output and Output) carries them and their
-load error. The pane edits names, types and values as the contract states, marks
-missing and invalid values, lists the nodes that read each constant, confirms
-a delete or rename of a constant that is read, and shows a constants file that
-failed to load, read-only. Removing a source confirms and then removes its
-values from split constants.
-
-**Acceptance:** Component tests cover the toolbar slot, the Utility pane's
-`Imports` entry, adding, editing, splitting and joining constants, the type
-change rules, the missing and invalid markers, the read-only load error and the
-confirmations; graph store tests prove a constants edit marks the pipeline
-unsaved and reaches the save and execution payloads; request tests prove the
-training, optimiser and Explore requests carry a constant edited after their
-panel mounted; and a browser test defines
-a split constant, previews a node that reads it under `live` and `nb_batch`,
-and sees each value.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/components/Toolbar.tsx`;
-`frontend/src/panels/ImportsPanel.tsx`;
-`frontend/src/panels/UtilityPanel.tsx`;
-`frontend/src/stores/useGraphStore.ts`;
-`frontend/src/stores/useSettingsStore.ts`.
 
 ### GCONST-05 — Constants in the step editor
 **Why:** The user asked for constants in the Polars and Transform step
@@ -89,7 +53,7 @@ value; the step catalogue parity test includes the new operand kind; field,
 formula and completion component tests pass; and a browser test filters on a
 split constant and previews a different row count under each source.
 
-**Dependencies:** GCONST-04.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/_polars_steps.py::render_polars_steps`;
 `frontend/src/panels/editors/polarsSteps/fields.tsx::OperandField`;

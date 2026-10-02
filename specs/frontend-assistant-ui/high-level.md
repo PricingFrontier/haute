@@ -45,7 +45,7 @@ Out of scope:
 ## Behaviour
 
 **Opening the panel.** The assistant surface sits in the right-panel area alongside the
-existing inspector surfaces (node config, trace, imports, utility scripts, git), opened from
+existing inspector surfaces (node config, trace, constants, utility scripts, git), opened from
 the same chrome that opens those. Its body is lazy-loaded on first open, like the node
 editors, so the chat feature costs the initial bundle nothing. The panel header names the
 configured model and provider (for example `databricks-qwen35-122b-a10b · databricks`)
@@ -173,7 +173,7 @@ while a turn runs, so the turn's own live-sync updates always apply.
 **The canvas is read-only while a turn runs.** From the moment a send acquires the turn
 until the turn ends, the canvas takes the same editing fence as a read-only document: nodes
 cannot be moved, connected, added, deleted, renamed or configured; the palette, Undo, Redo,
-Layout, Utility, Imports, Save and Commit are disabled; and the node panel opens read-only.
+Layout, Utility, Constants, Save and Commit are disabled; and the node panel opens read-only.
 Selection, pan, zoom, previews and traces stay usable, and the turn's saves still reach the
 canvas through live sync, which the fence never blocks. A pill over the canvas reads
 "Assistant is working" with a Stop button that stops the turn exactly as the composer's

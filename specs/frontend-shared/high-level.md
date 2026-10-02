@@ -55,8 +55,8 @@ In scope:
   consumer-facing view of the token layer, not the layer itself.
 - Chrome widgets and app-shell surfaces: `ErrorBoundary`, `Toast`,
   `ModalShell`, `Tooltip`, `ContextMenu`, `KeyboardShortcuts`, `Toolbar`,
-  `ImportsPanel`, `BackgroundJobPolling`, `NodeSearch`, `BreadcrumbBar`.
-  `ImportsPanel` is the sole pipeline-imports editor.
+  `GlobalConstantsPanel`, `BackgroundJobPolling`, `NodeSearch`, `BreadcrumbBar`.
+  `GlobalConstantsPanel` is the sole global-constants editor.
 - Small generic hooks with no domain knowledge: `useClickOutside`,
   `useDragResize`, `useJobPolling` (+ its orchestrator
   `useBackgroundJobs`), `useMlflowBrowser`, `useSchemaFetch`,
@@ -225,7 +225,7 @@ package-derived browser version, aligned to the node palette
 boundary (x = 181px). Adjacent columns house the source selector stacked above a
 Pipeline control that shares its width and opens the pipeline settings pane
 (preview/chunk row limits and the cached-data inventory), integer-ms timing and memory breakdowns, undo/redo with
-text labels, zoom in/out, centre/layout, Submodel/Instance selection actions, utility/imports,
+text labels, zoom in/out, centre/layout, Submodel/Instance selection actions, Utility above Constants,
 assistant and a Help menu (Documentation, Hotkeys, Report a bug), and the working branch indicator stacked above
 equal-width Save and Commit buttons. The Pipeline control reports the pipeline's live state:
 the calculation mode while the server is reachable, and "Offline" once live sync has lost
@@ -247,11 +247,45 @@ tooltip. The shared form primitives associate labels with controls, honour
 disabled state, and buffer text locally until an explicit commit boundary, so typing into a
 graph-backed configuration cannot create one undo entry per character.
 
-**Pipeline imports.** The active imports UI is the right-side `ImportsPanel`, opened from the
-toolbar and rendered by the app's mutually-exclusive right-panel cascade. It delegates editing
-to `CodeEditor` and calls its parent for every editor change; the app applies those changes with
-the graph store's raw preamble setter, so importing text immediately affects derived dirty state
-without making an undo entry per keystroke.
+**Pipeline imports.** The Utility pane's file list starts with a fixed `Imports` entry, which
+edits the pipeline's preamble with `CodeEditor`, notes that `import polars as pl` and
+`import haute` are always included, has no delete button and never goes through the utility
+file routes. The app applies every change with the graph store's raw preamble setter, so
+importing text immediately affects derived dirty state without making an undo entry per
+keystroke.
+
+**Global constants pane.** The toolbar's Constants button, under Utility, opens the Global
+Constants pane in the right-hand panel; it edits the pipeline's
+[global constants](../pipeline-config/high-level.md#behaviour). The pane lists the constants in
+file order. Each shows its name, its type, a "Split by source" switch and its value: one value
+for a uniform constant, or one labelled value per pipeline source, in the toolbar's source
+order, for a split one. An Add button appends an empty uniform `float` constant with a
+generated free name (`constant_1`, `constant_2`, …), and each constant can be deleted. Values
+are edited with the input that fits the type (a number field, text, true/false, a date). The
+pane validates as the analyst types, and marks each invalid name, duplicate name and invalid
+value with its reason. It marks a split constant's empty source value as missing, and the
+toolbar's Save stays available. Save is refused while any constant is invalid.
+
+- Switching "Split by source" on fills every source's value with the uniform value. Switching it
+  off keeps the `live` value; when another source's value differs, the pane first asks for
+  confirmation, naming the values it discards.
+- Changing the type keeps each value that converts exactly (an integer to a float, a whole
+  float to an integer, any value to text) and empties the rest, which the pane then marks.
+- Each constant lists the nodes that read it, through code or steps, in the canvas and in
+  every submodel. Deleting or renaming a constant that is read first asks for confirmation,
+  naming those nodes; a name commits when its field loses focus. A rename leaves code text
+  alone, so save refuses the old name's code reads until they are edited.
+- Adding a source gives each split constant an empty, missing value for it. Removing a source
+  whose values some split constants hold first asks for confirmation, naming them, and then
+  removes those values. A `by_source` key that is not a pipeline source is listed in the pane's
+  warning line, with a button that removes it.
+- When the constants file failed to load, the pane shows the load error and is read-only, and
+  save sends no constants.
+
+Constants edits are not on the canvas undo stack, but they are in the dirty state, so an edit
+marks the pipeline unsaved. Every execution request (preview, training, the optimiser, Explore,
+Data Output and Output) carries the valid constants and the load error, and a save carries the
+constants.
 
 **Leaf helpers.** Chart ticks and optimiser-mode inference are deterministic and side-effect
 free. Trace formatting makes special values and calculation substitution visible rather than

@@ -620,6 +620,74 @@ describe("usePipelineAPI", () => {
     expect(useDocumentStatusStore.getState().sourceRevision).toBe("revision-save")
   })
 
+  describe("global constants", () => {
+    const saved = { file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save" }
+
+    async function loadAndSave(fixture: Parameters<typeof makeLoadedPipeline>[0]) {
+      mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [], ...fixture }))
+      mockSave.mockResolvedValue(saved)
+      const params = makeParams()
+      params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+      const { result } = renderHook(() => usePipelineAPI(params))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+      useGraphStore.getState().setNodesRaw(params.graphRef.current.nodes)
+      return result
+    }
+
+    it("loads the constants, and a save sends an edited constant and marks it saved", async () => {
+      const result = await loadAndSave({
+        global_constants: [{ name: "rate", type: "float", by_source: { live: 1.5 } }],
+      })
+      expect(useGraphStore.getState().globalConstants).toEqual([
+        { name: "rate", type: "float", split: true, value: "", bySource: { live: "1.5" } },
+      ])
+
+      useGraphStore.getState().setGlobalConstantsRaw([
+        { name: "rate", type: "float", split: true, value: "", bySource: { live: "2" } },
+      ])
+      await act(async () => {
+        await result.current.handleSave()
+      })
+
+      expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({
+        graph: expect.objectContaining({
+          global_constants: [{ name: "rate", type: "float", by_source: { live: 2 } }],
+        }),
+      }))
+      expect(useGraphStore.getState().isDirty()).toBe(false)
+    })
+
+    it("refuses a save while a constant is invalid", async () => {
+      const result = await loadAndSave({})
+      useGraphStore.getState().setGlobalConstantsRaw([
+        { name: "rate", type: "float", split: false, value: "abc", bySource: {} },
+      ])
+
+      let ok: boolean | undefined
+      await act(async () => {
+        ok = await result.current.handleSave()
+      })
+
+      expect(ok).toBe(false)
+      expect(mockSave).not.toHaveBeenCalled()
+      expect(useToastStore.getState().toasts.some((toast) =>
+        toast.type === "error" && toast.text.includes("global constant rate is invalid"),
+      )).toBe(true)
+    })
+
+    it("sends no constants while the constants file failed to load", async () => {
+      const result = await loadAndSave({ global_constants_error: "bad JSON" })
+      expect(useGraphStore.getState().globalConstantsError).toBe("bad JSON")
+
+      await act(async () => {
+        await result.current.handleSave()
+      })
+
+      const graph = mockSave.mock.calls[0][0].graph
+      expect(graph).not.toHaveProperty("global_constants")
+    })
+  })
+
   it("sends the loaded source revision as base_revision", async () => {
     mockLoad.mockResolvedValue(makeLoadedPipeline({
       nodes: [],

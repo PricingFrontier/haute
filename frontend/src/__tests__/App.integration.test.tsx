@@ -26,7 +26,7 @@
  *     useSubmodelNavigation, useKeyboardShortcuts, useBackgroundJobs,
  *     useNodeHandlers, useEdgeHandlers — all real).
  *   - Sub-components (Toolbar, NodePalette, NodePanel, DataPreview,
- *     TracePanel, UtilityPanel, ImportsPanel, GitPanel, Toast — all real).
+ *     TracePanel, UtilityPanel, GlobalConstantsPanel, GitPanel, Toast — all real).
  *
  * The tradeoff: these tests are slower than the stub-heavy unit tests they
  * replace, but they cover integration — hook wiring, store plumbing, prop
@@ -284,7 +284,7 @@ function resetAllStores(): void {
   useUIStore.setState({
     paletteOpen: true,
     utilityOpen: false,
-    importsOpen: false,
+    constantsOpen: false,
     gitOpen: false,
     assistantOpen: false,
     assistantTurn: null,
@@ -819,13 +819,13 @@ describe("App integration - empty pipeline state", () => {
   it("exposes the toolbar's primary palette + utility affordances", async () => {
     render(<App />)
     await waitForAppReady()
-    // Utility + Imports buttons are clickable (not disabled). The standalone
+    // Utility + Constants buttons are clickable (not disabled). The standalone
     // Git button was removed in favour of VC's branch indicator, which is the
     // single entry point into the version-control pane.
     const utility = screen.getByRole("button", { name: /^utility$/i })
-    const imports = screen.getByRole("button", { name: /^imports$/i })
+    const constants = screen.getByRole("button", { name: /^constants$/i })
     expect(utility).toBeEnabled()
-    expect(imports).toBeEnabled()
+    expect(constants).toBeEnabled()
     expect(screen.queryByRole("button", { name: /^git$/i })).not.toBeInTheDocument()
   })
 
@@ -2476,7 +2476,7 @@ describe("App integration - read-only submodel instance", () => {
     expect(screen.getByTestId("toolbar-redo")).toBeDisabled()
     expect(screen.getByTestId("toolbar-layout")).toBeDisabled()
     expect(screen.getByTestId("toolbar-utility")).toBeDisabled()
-    expect(screen.getByTestId("toolbar-imports")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-constants")).toBeDisabled()
     expect(screen.getByTestId("toolbar-assistant")).toBeDisabled()
     expect(document.querySelector('nav[aria-label="Node palette"]')).toHaveAttribute("inert")
 
@@ -2588,7 +2588,7 @@ describe("App integration - panel open/close", () => {
     })
   })
 
-  it("clicking Imports opens the ImportsPanel (mutually exclusive with Utility)", async () => {
+  it("clicking Constants opens the Constants pane (mutually exclusive with Utility)", async () => {
     render(<App />)
     await waitForAppReady()
 
@@ -2596,9 +2596,9 @@ describe("App integration - panel open/close", () => {
     fireEvent.click(screen.getByRole("button", { name: /^utility$/i }))
     await waitFor(() => expect(useUIStore.getState().utilityOpen).toBe(true))
 
-    fireEvent.click(screen.getByRole("button", { name: /^imports$/i }))
+    fireEvent.click(screen.getByRole("button", { name: /^constants$/i }))
     await waitFor(() => {
-      expect(useUIStore.getState().importsOpen).toBe(true)
+      expect(useUIStore.getState().constantsOpen).toBe(true)
       // The UIStore setter resets the other panels' flags.
       expect(useUIStore.getState().utilityOpen).toBe(false)
     })
@@ -2843,7 +2843,7 @@ describe("App integration - panel open/close", () => {
     expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["pricing", "polars_1"])
   })
 
-  it("the branch indicator opens the Version Control pane (mutually exclusive with Utility/Imports)", async () => {
+  it("the branch indicator opens the Version Control pane (mutually exclusive with Utility/Constants)", async () => {
     render(<App />)
     await waitForAppReady()
 
@@ -2852,7 +2852,7 @@ describe("App integration - panel open/close", () => {
     await waitFor(() => {
       expect(useUIStore.getState().gitOpen).toBe(true)
       expect(useUIStore.getState().utilityOpen).toBe(false)
-      expect(useUIStore.getState().importsOpen).toBe(false)
+      expect(useUIStore.getState().constantsOpen).toBe(false)
     })
   })
 })

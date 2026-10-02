@@ -674,9 +674,17 @@ export interface InputCacheCancelResponse {
 // ---------------------------------------------------------------------------
 
 import type { Node } from "@xyflow/react"
+import type { GlobalConstant } from "../utils/globalConstants"
 
 /** Graph payload accepted by most pipeline endpoints. */
-export type GraphPayload = { nodes: Node[]; edges: PipelineEdge[]; submodels?: Record<string, unknown>; preamble?: string }
+export type GraphPayload = {
+  nodes: Node[]
+  edges: PipelineEdge[]
+  submodels?: Record<string, unknown>
+  preamble?: string
+  global_constants?: GlobalConstant[]
+  global_constants_error?: string | null
+}
 
 // ---------------------------------------------------------------------------
 // OUTPUT assemble dry-run (/api/output-assemble/dry-run)

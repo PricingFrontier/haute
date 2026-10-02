@@ -496,9 +496,11 @@ values. Deploy validation refuses a deployed graph that reads a constant with no
 naming it. A constant read only on a branch that deployment prunes away does not need a `live`
 value.
 
-How the editor edits constants and how structured steps read them is the
+The editor edits constants in the Constants pane
+([frontend-shared](../frontend-shared/high-level.md)), whose every execution request and save
+carries them. How structured steps read them is the
 [approved change contract](#approved-change-contract--global-constants) below until its
-packages land.
+package lands.
 
 ## Design rationale
 
@@ -607,27 +609,22 @@ parse errors naming the line.
 ## Approved change contract — global constants
 
 This section specifies the parts of global constants still to be built. Declaring, storing,
-generating, saving and reading them in code is present behaviour, described under
+generating, saving, editing and reading them in code is present behaviour, described under
 [Global constants](#behaviour) above and in [codegen](../codegen/high-level.md),
 [expression-parsing](../expression-parsing/high-level.md) and
 [server-api](../server-api/high-level.md). Every record here is unresolved until its roadmap
 package lands. Each package folds its part into the present-tense specification of the
-component that owns it (this one, [frontend-shared](../frontend-shared/high-level.md),
-[frontend-graph-canvas](../frontend-graph-canvas/high-level.md) and
+component that owns it (this one and
 [frontend-node-editors](../frontend-node-editors/high-level.md)), and the last package to land
 removes this section. The [low-level contract](low-level.md#approved-change-contract--global-constants)
 names the seams, shapes and tests.
 
-- **Current limitation.** Every run reads node code's constants for its source, as
-  [Global constants](#behaviour) describes, but no editor surface edits them: the toolbar opens
-  Imports, the editor's requests carry no constants (so code that reads one fails in the editor
-  as undefined), and a save from the editor removes a hand-written constants file. The step
-  editor has no Constant operand.
-- **Unresolved target.** The toolbar's Imports button becomes Constants and opens the pane that
-  edits them, the editor's saves and execution requests carry them, and every structured step
-  reads a constant as `global_constants.<name>` through a Constant operand.
-  [GCONST-04](../roadmap/global-constants.md#gconst-04--the-constants-pane) and
-  [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor) build
+- **Current limitation.** Code reads constants, and the Constants pane edits them
+  ([frontend-shared](../frontend-shared/high-level.md)), but the step editor has no Constant
+  operand.
+- **Unresolved target.** Every structured step reads a constant as `global_constants.<name>`
+  through a Constant operand.
+  [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor) builds
   it.
 - **Non-goals.** The Constant node keeps its behaviour. Config fields outside the step editor
   (banding edges, rating tables, optimiser bounds, file paths) and Explore pivot formulas do
@@ -641,44 +638,11 @@ names the seams, shapes and tests.
   constant (unless the file failed to load, when the definitions are unavailable) and one whose
   constant has a type its slot does not take. A step's constant read fails at run time as a
   code read does. Nothing migrates.
-- **Acceptance evidence.** Each roadmap package's acceptance tests, extending the modules the
-  low-level contract names, and one browser test that defines a split constant in the pane and
-  previews a Transform and a filter step that read it, under `live` and under `nb_batch`,
-  seeing each source's value.
-- **Roadmap package.** [GCONST-04](../roadmap/global-constants.md#gconst-04--the-constants-pane)
-  and [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor), in
-  that order.
+- **Acceptance evidence.** The roadmap package's acceptance tests, extending the modules the
+  low-level contract names, and one browser test that filters on a split constant and previews
+  a different row count under each source.
+- **Roadmap package.** [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor).
 
 **Reading a constant in a step.** A structured step reads a constant through a Constant
 operand, offered wherever the step editor offers a variable, and in a typed function argument,
 where the constant's type must fit the argument; the step renders as `global_constants.<name>`.
-
-**The Constants pane.** The toolbar's Imports button becomes Constants, in the same column
-under Utility, and opens the Global Constants pane in the right-hand panel. The preamble editor
-moves into the Utility pane, as a fixed `Imports` entry at the top of its file list that edits
-the preamble exactly as the Imports pane did.
-
-The pane lists the constants in file order. Each shows its name, its type, a "Split by source"
-switch and its value: one value for a uniform constant, or one labelled value per pipeline
-source, in the toolbar's source order, for a split one. An Add button appends an empty uniform
-`float` constant with a generated free name (`constant_1`, `constant_2`, …), and each constant
-can be deleted. Values are edited with the input that fits the type (number, text, true/false,
-date). The pane validates as the analyst types, and marks each invalid name, duplicate name and
-invalid value with its reason. It marks a split constant's empty source value as missing, and
-the toolbar's Save stays available. Save is refused while any constant is invalid.
-
-- Switching "Split by source" on fills every source's value with the uniform value. Switching it
-  off keeps the `live` value; when another source's value differs, the pane first asks for
-  confirmation, naming the values it discards.
-- Changing the type keeps each value that converts exactly (an integer to a float, a whole
-  float to an integer, any value to text) and empties the rest, which the pane then marks.
-- Each constant lists the nodes that read it, through code or steps. Deleting or renaming a
-  constant that is read first asks for confirmation, naming those nodes. A rename rewrites the
-  Constant operands that name it and leaves code text alone, so save refuses the old name's code
-  reads until they are edited.
-- Adding a source gives each split constant an empty, missing value for it. Removing a source
-  whose values some split constants hold first asks for confirmation, naming them, and then
-  removes those values. A `by_source` key that is not a pipeline source is listed in the pane's
-  warning line, with a button that removes it.
-- When the constants file failed to load, the pane shows the load error and is read-only, and
-  save sends no constants.

@@ -3,6 +3,20 @@ import type { SimpleNode, SimpleEdge } from "../panels/editors/_shared"
 import type { PipelineEdge } from "../types/node"
 import { toCanonicalGraphPayload } from "./graphSnapshot"
 import { isPlainObject } from "../types/guards"
+import useGraphStore from "../stores/useGraphStore"
+import { constantsPayload } from "./globalConstants"
+
+/**
+ * The global constants every execution graph carries, read from the graph
+ * store when the graph is built, so no caller can leave them out.
+ */
+function storeGlobalConstants() {
+  const { globalConstants, globalConstantsError } = useGraphStore.getState()
+  return {
+    global_constants: globalConstantsError === null ? constantsPayload(globalConstants) : [],
+    global_constants_error: globalConstantsError,
+  }
+}
 
 /** Build the graph payload expected by backend API calls. */
 export function buildGraph(
@@ -21,6 +35,7 @@ export function buildGraph(
     edges: edges as PipelineEdge[],
     submodels,
     preamble,
+    ...storeGlobalConstants(),
   })
 }
 
@@ -105,5 +120,6 @@ export function resolveGraphFromRefs(
   return toCanonicalGraphPayload({
     ...graph,
     edges: graph.edges as PipelineEdge[],
+    ...storeGlobalConstants(),
   })
 }

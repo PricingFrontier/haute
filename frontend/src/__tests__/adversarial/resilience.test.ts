@@ -51,7 +51,7 @@ function resetStores() {
   useUIStore.setState({
     paletteOpen: true,
     utilityOpen: false,
-    importsOpen: false,
+    constantsOpen: false,
     gitOpen: false,
     shortcutsOpen: false,
     submodelDialog: null,
@@ -533,6 +533,8 @@ describe("6. Empty graph", () => {
       edges: [],
       submodels: undefined,
       preamble: undefined,
+      global_constants: [],
+      global_constants_error: null,
     })
   })
 

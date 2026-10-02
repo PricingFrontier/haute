@@ -1,6 +1,7 @@
 import type { Edge, Node } from "@xyflow/react"
 
 import type { LoadedPipeline } from "../api/client"
+import type { GlobalConstant } from "../utils/globalConstants"
 
 import type {
   PipelineDiagnostic,
@@ -27,6 +28,8 @@ export interface PipelineDocumentFixture extends CanonicalGraphFixture {
   pipeline_description?: string | null
   preamble?: string | null
   preserved_blocks?: string[]
+  global_constants?: GlobalConstant[]
+  global_constants_error?: string | null
   source_file?: string
   source_revision?: string | null
   source_text?: string
@@ -230,6 +233,8 @@ export function makePipelineEditorDocument(
     pipeline_description: fixture.pipeline_description ?? null,
     preamble: fixture.preamble ?? "",
     preserved_blocks: fixture.preserved_blocks ?? [],
+    global_constants: fixture.global_constants ?? [],
+    global_constants_error: fixture.global_constants_error ?? null,
     source_file: fixture.source_file ?? "",
     source_revision: fixture.source_revision ?? "revision-test",
     source_text: fixture.source_text ?? "",

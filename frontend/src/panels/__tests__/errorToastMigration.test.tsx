@@ -530,7 +530,7 @@ describe("#83 behavioral: UtilityPanel file load failure surfaces a toast", () =
     })
     H.readUtilityFile.mockRejectedValueOnce(new Error("disk read failure"))
 
-    render(<UtilityPanel onClose={vi.fn()} onImportAdded={vi.fn()} />)
+    render(<UtilityPanel onClose={vi.fn()} onImportAdded={vi.fn()} preamble="" onPreambleChange={vi.fn()} />)
 
     await waitFor(() => {
       const toasts = useToastStore.getState().toasts

@@ -215,6 +215,30 @@ describe("useExplorePivotActions", () => {
     expect(useNodeResultsStore.getState().pivotJobs).toEqual({})
   })
 
+  it("sends a global constant edited after the hook mounted", async () => {
+    mockRunExplorePivot.mockResolvedValueOnce({
+      status: "started",
+      job_id: "constants-job",
+      cached: false,
+      message: "Started",
+      result: null,
+      failure: null,
+    })
+    const { result: hook } = renderActions()
+    act(() => {
+      useGraphStore.getState().setGlobalConstantsRaw([
+        { name: "rate", type: "float", split: false, value: "1.5", bySource: {} },
+      ])
+    })
+
+    await act(() => hook.current.updatePivot(pivot()))
+
+    expect(mockRunExplorePivot.mock.calls[0][0].graph.global_constants).toEqual([
+      { name: "rate", type: "float", value: 1.5 },
+    ])
+    act(() => useGraphStore.getState().setGlobalConstantsRaw([]))
+  })
+
   it("uses the node id as the stored label when the Explore label is empty", async () => {
     const unlabelledNode: SimpleNode = {
       ...node,

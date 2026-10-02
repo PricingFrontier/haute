@@ -124,12 +124,13 @@ const SUBMODELS: Record<string, unknown> = {
  */
 const EXPECTED_FINGERPRINT =
   '{"edges":[{"id":"e1","source":"n1","sourceHandle":"out","sourcePort":null,"target":"n0","targetHandle":"in"}],' +
+  '"globalConstants":[],' +
   '"nodes":[{"data":{"alpha":1,"label":"price"},"id":"n1","position":{"x":10,"y":20},"type":"expression"},' +
   '{"data":{"config":{"_kept":true},"label":"src"},"id":"n0","position":{"x":0,"y":0},"type":"dataInput"}],' +
   '"preamble":"import polars as pl",' +
   '"submodels":{"sub1":{"edges":[{"source":"s1","target":"s2"}],"nodes":[{"data":{"kind":"input"},"id":"s1","position":{"x":0,"y":0}}]}}}'
 
-const EXPECTED_EMPTY = '{"edges":[],"nodes":[],"preamble":"","submodels":{}}'
+const EXPECTED_EMPTY = '{"edges":[],"globalConstants":[],"nodes":[],"preamble":"","submodels":{}}'
 
 describe("persisted-fingerprint serialized format", () => {
   it("preserves user dictionary keys that resemble JavaScript or editor metadata", () => {
@@ -363,6 +364,15 @@ describe("graph store produces the pinned format", () => {
 
     store.setSubmodelsRaw(SUBMODELS)
     expect(fingerprint()).toBe(EXPECTED_FINGERPRINT)
+
+    const constants = [
+      { name: "rate", type: "float" as const, split: false, value: "1.5", bySource: {} },
+    ]
+    store.setGlobalConstantsRaw(constants)
+    expect(fingerprint()).toBe(EXPECTED_FINGERPRINT.replace(
+      '"globalConstants":[]',
+      '"globalConstants":[{"bySource":{},"name":"rate","split":false,"type":"float","value":"1.5"}]',
+    ))
   })
 
   it("retains server identities in live undo snapshots", () => {

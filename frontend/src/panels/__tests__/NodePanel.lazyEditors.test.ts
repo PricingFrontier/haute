@@ -23,7 +23,7 @@ describe("NodePanel lazy editor loading", () => {
   })
 
   it("keeps App-mounted utility panels off the editor barrel runtime path", () => {
-    for (const panel of ["UtilityPanel.tsx", "ImportsPanel.tsx"]) {
+    for (const panel of ["UtilityPanel.tsx"]) {
       const source = readFileSync(path.resolve(__dirname, "..", panel), "utf8")
 
       expect(source).not.toMatch(/from\s*["']\.\/editors["']/)

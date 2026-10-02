@@ -5,7 +5,7 @@ import type { PipelineEditorDocument } from "../pipelineDocument"
 function document(): PipelineEditorDocument {
   return {
     document_kind: "haute.pipeline_editor_document", schema_version: 1, load_status: "degraded",
-    pipeline_name: "Main", pipeline_description: null, preamble: null, preserved_blocks: [], source_file: "main.py",
+    pipeline_name: "Main", pipeline_description: null, preamble: null, preserved_blocks: [], global_constants: [], global_constants_error: null, source_file: "main.py",
     source_revision: "abc", source_text: "", sources: ["live"], active_source: "live", source_selection_trusted: true,
     has_authored_content: true, nodes: [{ recovery_id: "node:a", authored_id: "a", label: "A", function_name: "A", default_input_name: "A", source_handle_input_names: {}, decorator_name: "source", node_type: "dataInput", description: "", availability: "ready", display_position: { x: 1, y: 2 }, config: { nested: [1] }, config_reference: null, source_file: null, source_span: null, diagnostic_ids: ["d1"], blocking_path: [], scoped_editable: true }],
     edges: [], unresolved_connections: [], submodels: null,

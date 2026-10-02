@@ -752,17 +752,17 @@ generated graphs.
 This section names the seams, shapes and tests for the parts of the
 [high-level contract](high-level.md#approved-change-contract--global-constants) still to be
 built; that section owns the behaviour and this one does not restate it. The model, the file,
-parsing, generation, the runtime sentinel, the reads analysis, save and every run's binding are
-present behaviour,
+parsing, generation, the runtime sentinel, the reads analysis, save, every run's binding and
+the editor's Constants pane are present behaviour,
 described in the sections above and in the codegen, expression-parsing and server-api
 specifications. New modules are named in plain text because they do not exist yet. Every
 record is unresolved until its roadmap package lands.
 
 - **Current limitation.** Every run binds `global_constants` for its source (see "Global
-  constants at run time" above), but the editor sends no constants in its requests or saves, no
-  editor surface edits them, and the step renderer has no Constant operand.
-- **Unresolved target.** The seams below, one paragraph per package, built in the order of
-  [GCONST-04](../roadmap/global-constants.md#gconst-04--the-constants-pane) and
+  constants at run time" above) and the editor edits, saves and sends the constants
+  ([frontend-shared](../frontend-shared/low-level.md)), but the step renderer has no Constant
+  operand.
+- **Unresolved target.** The seams below, built by
   [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor).
 - **Non-goals.** No new HTTP route: constants travel in the graph of the existing load, save,
   execution and step routes. No constant reaches a `utility` module, a pivot formula or a
@@ -771,42 +771,7 @@ record is unresolved until its roadmap package lands.
   below. No migration or fallback exists.
 - **Acceptance evidence.** The testing scenarios at the end of this section, each extending the
   named module.
-- **Roadmap package.** [GCONST-04](../roadmap/global-constants.md#gconst-04--the-constants-pane)
-  and [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor).
-
-**Pane and stores (GCONST-04).**
-
-- `frontend/src/components/Toolbar.tsx` renders Constants (test id `toolbar-constants`, title
-  `Global constants - values every node can read, per source`) where Imports was, and
-  `frontend/src/stores/useUIStore.ts` renames `importsOpen`/`setImportsOpen` to
-  `constantsOpen`/`setConstantsOpen`.
-- `frontend/src/App.tsx` renders the new pane module (frontend/src/panels/GlobalConstantsPanel.tsx)
-  when it is open, and hands `preamble` and `onPreambleChange` to the Utility pane.
-- `frontend/src/panels/UtilityPanel.tsx` lists a fixed `Imports` entry first. Selecting it shows
-  the preamble, with the note that `import polars as pl` and `import haute` are always included;
-  it has no delete button and never goes through the utility file routes.
-  `frontend/src/panels/ImportsPanel.tsx` and its test are deleted, their cases moving to the
-  Utility pane's test.
-- `frontend/src/stores/useGraphStore.ts` holds `globalConstants` and `globalConstantsError`,
-  with a raw setter that pushes no undo entry (like the preamble's). The structural
-  fingerprint and snapshot serialisation include the constants, so an edit marks the pipeline
-  unsaved, and loading a document sets both.
-- Every execution graph carries `global_constants` and `global_constants_error`.
-  `frontend/src/utils/buildGraph.ts::buildGraph` and
-  `frontend/src/utils/buildGraph.ts::resolveGraphFromRefs` read both from the graph store when
-  they are called, rather than from caller arguments, so no caller can leave them out (the
-  optimiser's callers already leave out the preamble). A caller that memoises a built graph
-  (`frontend/src/panels/ModellingConfig.tsx`, `frontend/src/panels/OptimiserConfig.tsx`,
-  `frontend/src/hooks/useNodeDataCache.ts`) also lists the store's constants among its
-  dependencies, and `frontend/src/utils/graphSnapshot.ts::toCanonicalGraphPayload` serialises
-  both. `frontend/src/hooks/usePipelineAPI.ts` sends `graph.global_constants` with every save,
-  and none while `globalConstantsError` is set.
-- A pure helper computes each constant's readers from graph state with the reads rule of
-  `src/haute/_global_constants.py::node_constant_reads`,
-  for the pane and the step editor. The toolbar's remove-source action asks the graph store
-  which split constants hold a value for the source, confirms when any do, and sets the
-  constants without those values before
-  `frontend/src/stores/useSettingsStore.ts` removes the source.
+- **Roadmap package.** [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor).
 
 **Step editor (GCONST-05).** `src/haute/_polars_steps.py` accepts the operand
 `{"kind": "constant", "name": <name>}` wherever its operand rendering accepts a `variable`: as
@@ -845,20 +810,6 @@ and the known columns, and discards a response for a key that is no longer curre
 
 **Testing scenarios.**
 
-- GCONST-04. `frontend/src/components/__tests__/Toolbar.test.tsx`: Constants takes the Imports
-  slot, and removing a source confirms before it removes split values.
-  `frontend/src/panels/__tests__/UtilityPanel.test.tsx`: the `Imports` entry edits the preamble.
-  `frontend/src/stores/__tests__/useGraphStore.loadSnapshot.test.ts`: loading sets the constants,
-  an edit marks the pipeline unsaved and pushes no undo entry, and payloads carry the constants.
-  `frontend/src/utils/__tests__/buildGraph.test.ts`: both builders carry the store's constants
-  and load error without caller arguments. `frontend/src/panels/__tests__/ModellingConfig.test.tsx`,
-  `frontend/src/panels/__tests__/OptimiserConfig.test.tsx` and
-  `frontend/src/panels/explore/__tests__/useExplorePivotActions.test.tsx`: the training,
-  optimiser estimate and solve, and Explore pivot requests carry a constant edited after the panel
-  mounted.
-  The new pane's test covers adding, editing, the split switch both ways, the type-change rule,
-  the markers, readers, the delete and rename confirmations and the read-only load error.
-  `frontend/e2e/core-flows.spec.ts`: a split constant previews each source's value.
 - GCONST-05. `tests/test_polars_steps.py`: golden renders in both positions, every slot's type
   rule, the non-negative argument checked against every value, the name rule, and save and
   render-route refusals. `tests/test_polars_steps_catalogue.py`: the operand kind is in both

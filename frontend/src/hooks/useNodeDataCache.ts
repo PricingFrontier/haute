@@ -22,6 +22,7 @@ import {
 import useSettingsStore from "../stores/useSettingsStore"
 import useToastStore from "../stores/useToastStore"
 import { buildGraph } from "../utils/buildGraph"
+import useGraphStore from "../stores/useGraphStore"
 
 /**
  * What one consumer can say about the data it reads. `checking` means no
@@ -214,9 +215,15 @@ export default function useNodeDataCache({
   }, [nodeId, ownedRunning, setWorkRunning, workKey])
   useEffect(() => () => setWorkRunning(workKey, null), [setWorkRunning, workKey])
 
+  // buildGraph reads the constants from the store; listing them renews the
+  // callback, so a constant edited after mount reaches the next request.
+  const globalConstants = useGraphStore((s) => s.globalConstants)
   const graphPayload = useCallback(
-    () => buildGraph(allNodes, edges, submodels, preamble),
-    [allNodes, edges, preamble, submodels],
+    () => {
+      void globalConstants
+      return buildGraph(allNodes, edges, submodels, preamble)
+    },
+    [allNodes, edges, preamble, submodels, globalConstants],
   )
 
   const fetchPoint = useCallback(

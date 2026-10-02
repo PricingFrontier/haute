@@ -401,7 +401,7 @@ the preamble imports, previews correctly and then raises `NameError` in the
 optimiser's estimate, auto-range and solve.
 
 **Plan:** Build the optimiser's graphs with the preamble like every other
-request. `GCONST-04` makes both graph builders read the graph store's constants
+request. Both graph builders already read the graph store's global constants
 when called; reading the preamble there too closes this class of omission for
 every caller.
 
