@@ -695,7 +695,7 @@ class TrainingJob:
             Optional callback ``(message, fraction)`` for progress reporting.
         on_iteration : callable | None
             Optional callback ``(iteration, total, metrics_dict, history_row)``
-            called after each training iteration.
+            called after each paced training round of every fit the run makes.
 
         Returns
         -------

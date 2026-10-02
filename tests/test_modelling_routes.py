@@ -952,6 +952,15 @@ def test_live_loss_history_spans_its_fit_and_restarts_with_the_next() -> None:
     assert history == [first]
     assert truncated is False
 
+    # A fit that outruns its stated budget still stays within the limit, keeping
+    # its first row and its latest rows.
+    for n in range(2, 501):
+        row = {"iteration": float(n), "train_rmse": 1.0 / n}
+        history, truncated = _training_worker._append_live_loss_row(history, truncated, row, 10)
+    assert len(history) == limit
+    assert history[0] == first and history[-1]["iteration"] == 500.0
+    assert truncated is True
+
 
 def test_bounded_loss_history_thins_the_whole_fit_around_its_best_iteration() -> None:
     from haute.routes import _train_service
