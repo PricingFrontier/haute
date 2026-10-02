@@ -119,8 +119,8 @@ If an estimate fails, the pane shows **Estimation failed:** and the reason.
 For CatBoost, XGBoost, LightGBM and EBM the pane lists every column that could be a
 feature, with a count of how many are included and excluded. Every feature starts
 unticked on a new node: tick the ones the model should learn from. Columns that already have a
-role (target, weight, offset, and the group or date column the split uses) are listed
-under **Excluded from predictors** and are never features.
+role (target, weight, offset, and the group or date column the split uses) are left out
+of the list and are never features.
 
 - **Search features** narrows the list by name.
 - **All**, **Included** and **Excluded** filter the list by membership; each shows its count.

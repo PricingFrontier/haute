@@ -168,7 +168,6 @@ describe("CommonFeatureConfig", () => {
 
     expect(screen.queryByRole("group", { name: "age feature" })).toBeNull()
     expect(screen.queryByText(/age - not found/)).toBeNull()
-    expect(screen.getByText(/Excluded from predictors: age \(target\)/)).toBeInTheDocument()
     expect(
       within(featureRow("region")).getByRole("checkbox", { name: "Include region" }),
     ).toBeChecked()
@@ -281,12 +280,11 @@ describe("CommonFeatureConfig", () => {
     expect(screen.getByRole("button", { name: "age: increasing" })).toBeEnabled()
     expect(screen.getByRole("button", { name: "age: increasing" })).toHaveAttribute("aria-pressed", "true")
   })
-  it("filters included and excluded features without hiding role explanations", () => {
+  it("filters included and excluded features", () => {
     render(<CommonFeatureConfig config={{ target: "target", feature_columns: ["weight", "date", "age", "severity"] }} onUpdate={vi.fn()} columns={columns} />)
     fireEvent.click(screen.getByRole("button", { name: "Excluded (1)" }))
     expect(featureRow("region")).toBeInTheDocument()
     expect(screen.queryByRole("group", { name: "age feature" })).toBeNull()
-    expect(screen.getByText(/Excluded from predictors: target/)).toBeInTheDocument()
   })
 
 })

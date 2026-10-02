@@ -8,7 +8,6 @@ import { withAlpha } from "../../utils/color"
 import { getDtypeColor } from "../../utils/dtypeColors"
 import {
   finalSelectedFeatureNames,
-  roleColumnReasons,
   roleColumns,
   type ModellingColumn,
 } from "./featureSelection"
@@ -113,10 +112,6 @@ export function CommonFeatureConfig({ config, onUpdate, columns }: Props) {
       ],
     })
   }
-  const roleText = [...roleColumnReasons(config).entries()]
-    .map(([name, role]) => `${name} (${role})`)
-    .join(", ")
-
   return (
     <section aria-labelledby="model-features-heading">
       <div className="flex items-end justify-between gap-3">
@@ -134,12 +129,6 @@ export function CommonFeatureConfig({ config, onUpdate, columns }: Props) {
           {includedCount} included · {eligible.length - includedCount} excluded
         </span>
       </div>
-
-      {roleText && (
-        <p className="mt-1 text-[12px]" style={{ color: "var(--text-muted)" }}>
-          Excluded from predictors: {roleText}.
-        </p>
-      )}
 
       <div
         className="sticky top-0 z-10 mt-2 space-y-2 py-1"
