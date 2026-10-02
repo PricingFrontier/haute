@@ -847,7 +847,6 @@ MODELLING_CONFIG_KEYS: tuple[str, ...] = (
     "name",
     "target",
     "weight",
-    "exclude",
     "algorithm",
     "task",
     "params",

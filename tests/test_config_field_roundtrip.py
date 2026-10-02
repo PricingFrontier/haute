@@ -544,9 +544,9 @@ def test_removed_exclude_field_is_refused_when_a_saved_sidecar_carries_it(tmp_pa
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
     _write_configs_recursive(graph, tmp_path)
-    sidecar = config_path_for_node(
+    sidecar = tmp_path / config_path_for_node(
         NodeType.MODELLING, _sanitize_func_name(_modelling_node(graph).data.label), tmp_path
-    )
+    ).relative_to(tmp_path)
     stored = json.loads(sidecar.read_text(encoding="utf-8"))
     stored["exclude"] = ["_identifier"]
     sidecar.write_text(json.dumps(stored), encoding="utf-8")

@@ -1,5 +1,5 @@
 import { vi } from "vitest"
-import { SHAP_VALUE_TOKENS } from "../panels/modelling/beeswarm"
+import { SHAP_VALUE_TOKENS } from "../beeswarm"
 
 export type PaintedDot = { x: number; y: number; fill: string }
 

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import type { TrainShapBeeswarmFeature } from "../../../api/types"
-import { BEESWARM_TOKENS, stubBeeswarmCanvas, type PaintedDot } from "../../../test-utils/beeswarmCanvas"
+import { BEESWARM_TOKENS, stubBeeswarmCanvas, type PaintedDot } from "./beeswarmCanvas"
 import { formatChartNumber } from "../../../utils/chartHelpers"
 import {
   MODELLING_CHART_AXIS_FONT_SIZE,

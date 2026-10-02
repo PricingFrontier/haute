@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest"
 import { render, screen, fireEvent, cleanup } from "@testing-library/react"
 import { FeaturesTab } from "../FeaturesTab"
-import { stubBeeswarmCanvas } from "../../../test-utils/beeswarmCanvas"
+import { stubBeeswarmCanvas } from "./beeswarmCanvas"
 import { makeTrainResult } from "../../../test-utils/factories"
 
 afterEach(() => {
