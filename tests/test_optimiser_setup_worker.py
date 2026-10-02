@@ -60,9 +60,16 @@ _TERMINAL = {
 
 
 @pytest.fixture()
-def project(tmp_path: Path) -> Path:
-    """A project root a spawned worker can open its stores under."""
+def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A project root a spawned worker can open its stores under.
+
+    The optimiser budgets are pinned small. An adaptive one reserves nearly the
+    whole in-flight budget, and a job releases its reservation only after it
+    reports its outcome, so the next job a test starts at once would be refused.
+    """
     set_project_root(tmp_path)
+    monkeypatch.setenv("HAUTE_OPTIMISER_MEMORY_LIMIT_MB", "1024")
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_MB", "1024")
     return tmp_path
 
 
