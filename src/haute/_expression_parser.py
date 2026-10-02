@@ -1472,18 +1472,28 @@ class _InlineGlobalConstants(ast.NodeTransformer):
 
     def visit_Call(self, node: ast.Call) -> ast.AST:
         # The step renderer writes a constant in expression position as
-        # ``pl.lit(global_constants.<name>)``; a date is already an expression.
+        # ``pl.lit(global_constants.<name>)``; a date is already an expression,
+        # so the call becomes it (cast to the ``dtype`` the call names).
         if (
             isinstance(node.func, ast.Attribute)
             and node.func.attr == "lit"
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id == "pl"
-            and len(node.args) == 1
-            and not node.keywords
         ):
-            value = self._date_read(node.args[0])
-            if value is not None:
-                return self._date_expression(value, node)
+            keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+            argument = node.args[0] if node.args else keywords.get("value")
+            value = None if argument is None else self._date_read(argument)
+            if value is not None and set(keywords) <= {"value", "dtype", "allow_object"}:
+                expression = self._date_expression(value, node)
+                dtype = keywords.get("dtype")
+                if dtype is None:
+                    return expression
+                cast_call = ast.Call(
+                    func=ast.Attribute(value=expression, attr="cast", ctx=ast.Load()),
+                    args=[self.visit(dtype)],
+                    keywords=[],
+                )
+                return ast.copy_location(cast_call, node)
         return self.generic_visit(node)
 
     def visit_Attribute(self, node: ast.Attribute) -> ast.AST:

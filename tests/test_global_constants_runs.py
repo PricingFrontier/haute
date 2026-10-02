@@ -666,6 +666,31 @@ class TestCodexFindings:
         assert "pl.lit(global_constants.effective)" in code
         assert result.result_value == dt.date(2024, 6, 1)
 
+    @pytest.mark.parametrize(
+        ("literal", "expected"),
+        [
+            ("pl.lit(global_constants.effective, dtype=pl.Date)", "date"),
+            ("pl.lit(value=global_constants.effective)", "date"),
+            ("pl.lit(global_constants.effective, dtype=pl.Datetime)", "datetime"),
+        ],
+    )
+    def test_a_trace_evaluates_a_date_constant_in_every_literal_form(
+        self, literal: str, expected: str
+    ) -> None:
+        import datetime as dt
+
+        from haute._expression_parser import evaluate_expression
+
+        effective = GlobalConstant(name="effective", type="date", value="2024-06-01")
+        namespace = {"global_constants": GlobalConstantsNamespace([effective], source="live")}
+        code = f'df = df.with_columns(({literal}).alias("e"))'
+
+        result = evaluate_expression(code, "e", {}, namespace)
+
+        assert result.result_value == (
+            dt.date(2024, 6, 1) if expected == "date" else dt.datetime(2024, 6, 1)
+        )
+
     @pytest.mark.parametrize("name", ["restricted_to", "for_graph", "constants"])
     def test_every_valid_name_reads_its_constant(self, name: str) -> None:
         namespace = GlobalConstantsNamespace(
