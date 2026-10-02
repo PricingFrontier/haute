@@ -52,8 +52,8 @@ function setRun(nodeId: string, run: InputImportRun | null): void {
  * Re-read *input*'s source (the node's own input, or its original's for an
  * instance) and publish it as a new snapshot, on behalf of *nodeId*.
  *
- * Every outcome raises the node-data epoch, since a failed or stopped import
- * can publish part of the data. *onImported* runs only after a completed,
+ * Every outcome raises the node-data epoch, since a build can publish before a
+ * stop or a failure reaches it. *onImported* runs only after a completed,
  * unstopped import whose node still reads the same source.
  */
 // A retired import's builds that refused to stop are cancelled again this many

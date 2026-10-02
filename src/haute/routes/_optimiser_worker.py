@@ -160,7 +160,7 @@ class FrontierAutoRangeWorkerRequest:
     body: OptimiserFrontierAutoRangeRequest
     config: dict[str, Any]
     mode: str
-    timeout: int
+    timeout: int | None
     required_columns_by_node: dict[str, frozenset[str]]
     project_root: str
     seed_plan: SeedPlanHandoff

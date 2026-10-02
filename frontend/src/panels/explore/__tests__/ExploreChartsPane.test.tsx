@@ -215,7 +215,6 @@ describe("ExploreChartsPane", () => {
     useGraphStore.setState({ structuralVersion: 0 })
     useSettingsStore.setState({
       activeSource: "pricing",
-      streamingChunkSize: 250_000,
     })
     useNodeResultsStore.setState({ pivotResults: {}, pivotJobs: {} })
     useUIStore.setState({

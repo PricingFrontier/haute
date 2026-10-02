@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import functools
 import gc
 import math
 import threading
@@ -26,7 +27,7 @@ if TYPE_CHECKING:
 
 
 from haute._config_validation import validate_optimiser_analysis_config
-from haute._env import int_env, optional_int_env
+from haute._env import int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
     admit_growth_grant,
@@ -50,6 +51,7 @@ from haute._interactive_workers import (
 )
 from haute._logging import get_logger
 from haute._memory_errors import memory_error_in
+from haute._pipeline_settings import PipelineSettingsError, project_pipeline_settings
 from haute._polars_utils import (
     bounded_collect_batches,
     current_streaming_chunk_size,
@@ -207,14 +209,14 @@ class SetupGrid:
     quote_analysis_handle: dict[str, Any] | None
 
 
-# Env-tunable defaults — resolved per call so overrides set after import
-# take effect.
-def _default_solver_timeout() -> int | None:
-    return optional_int_env("HAUTE_SOLVER_TIMEOUT")
+def _optimisation_time_limit() -> int | None:
+    """The optimisation time limit in whole seconds, ``None`` for no limit.
 
-
-def _default_auto_range_timeout() -> int:
-    return int_env("HAUTE_AUTO_RANGE_TIMEOUT", 1800)
+    Read from the pipeline settings per call; a solve or auto-range whose
+    config sets its own timeout uses that instead.
+    """
+    seconds = project_pipeline_settings().optimisation_time_limit_seconds
+    return None if seconds is None else math.ceil(seconds)
 
 
 def _default_reducer_budget_mb() -> int:
@@ -476,15 +478,14 @@ def _optional_positive_int(value: object, *, field: str) -> int | None:
 
 def _solve_timeout_from_config(config: Mapping[str, Any]) -> int | None:
     if "timeout" not in config:
-        return _default_solver_timeout()
+        return _optimisation_time_limit()
     return _optional_positive_int(config.get("timeout"), field="timeout")
 
 
-def _auto_range_timeout_from_config(config: dict[str, Any]) -> int:
-    return _positive_int(
-        config.get("auto_range_timeout", _default_auto_range_timeout()),
-        field="auto_range_timeout",
-    )
+def _auto_range_timeout_from_config(config: dict[str, Any]) -> int | None:
+    if "auto_range_timeout" not in config:
+        return _optimisation_time_limit()
+    return _positive_int(config["auto_range_timeout"], field="auto_range_timeout")
 
 
 _MIB = 1024 * 1024
@@ -2266,8 +2267,8 @@ class OptimiserSolveService:
 
         if job.get("status") == "running":
             start = job.get("start_time")
-            timeout = job.get("timeout", _default_auto_range_timeout())
-            if start and (time.monotonic() - start) > timeout:
+            timeout = job.get("timeout")
+            if start and timeout is not None and (time.monotonic() - start) > timeout:
                 self._time_out_frontier_auto_range(job_id, timeout)
                 job = self._store.require_job(job_id)
 
@@ -2583,6 +2584,9 @@ class OptimiserSolveService:
         mode = self._validate_config(config)
         try:
             timeout = _auto_range_timeout_from_config(config)
+        except PipelineSettingsError:
+            # The settings file, not this config, is invalid: the application answers 409.
+            raise
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return node, {
@@ -2603,7 +2607,7 @@ class OptimiserSolveService:
         *,
         config: dict[str, Any],
         mode: str,
-        timeout: int,
+        timeout: int | None,
         required_columns_by_node: Mapping[str, Iterable[str]],
         execution_context: ExecutionContext | None = None,
         execution_token: ExecutionCancellationToken | None = None,
@@ -2685,7 +2689,7 @@ class OptimiserSolveService:
         execution_context: ExecutionContext,
         config: dict[str, Any],
         mode: str,
-        timeout: int,
+        timeout: int | None,
         required_columns_by_node: Mapping[str, Iterable[str]],
         seed_plan: SeedPlanHandoff | None,
         isolate: bool,
@@ -2966,7 +2970,7 @@ class OptimiserSolveService:
         config: dict[str, Any],
         mode: str,
         required_columns_by_node: Mapping[str, Iterable[str]],
-        timeout: int,
+        timeout: int | None,
         execution_context: ExecutionContext,
     ) -> tuple[dict[str, dict[str, float]], Mapping[str, Any] | None]:
         """Supervise the hard-capped worker that computes the auto-range totals.
@@ -2996,8 +3000,8 @@ class OptimiserSolveService:
                 execution_context=execution_context,
             )
             self._raise_if_frontier_auto_range_stopped(job_id)
-            remaining = timeout - self._job_elapsed(job_id)
-            if remaining <= 0:
+            remaining = None if timeout is None else timeout - self._job_elapsed(job_id)
+            if timeout is not None and remaining is not None and remaining <= 0:
                 raise self._time_out_frontier_auto_range(job_id, timeout)
             with worker_scratch_directory() as scratch_dir:
                 outcome = self._run_optimiser_worker(
@@ -3020,7 +3024,11 @@ class OptimiserSolveService:
                     execution_context=execution_context,
                     timeout_seconds=remaining,
                     process_name="haute-optimiser-auto-range",
-                    on_timeout=lambda: self._time_out_frontier_auto_range(job_id, timeout),
+                    on_timeout=(
+                        None
+                        if timeout is None
+                        else functools.partial(self._time_out_frontier_auto_range, job_id, timeout)
+                    ),
                 )
         if not isinstance(outcome, FrontierAutoRangeWorkerOutcome):
             raise RuntimeError(f"Auto-range worker returned {type(outcome).__name__}")
@@ -3042,7 +3050,8 @@ class OptimiserSolveService:
             to="timed_out",
             message=(
                 f"Auto range timed out after {timeout}s. "
-                "Reduce the input size or increase HAUTE_AUTO_RANGE_TIMEOUT."
+                "Reduce the input size or raise the optimisation time limit in the "
+                "pipeline settings."
             ),
             elapsed_seconds=_job_elapsed_seconds(self._store.require_job(job_id)),
         )
@@ -3216,6 +3225,9 @@ class OptimiserSolveService:
 
         try:
             _solve_timeout_from_config(config)
+        except PipelineSettingsError:
+            # The settings file, not this config, is invalid: the application answers 409.
+            raise
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:

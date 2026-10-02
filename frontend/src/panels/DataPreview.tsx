@@ -63,7 +63,7 @@ interface DataPreviewProps {
    * provided AND the node carries 2+ frames, the top-bar shows a frame-select
    * dropdown. Omitted (or single-frame node) → no dropdown, unchanged UI. */
   onSelectFrame?: (portLabel: string) => void
-  /** An action shown beside Refresh (Import, for a snapshot-backed input). */
+  /** An action shown beside Refresh (Import, for a snapshot-backed Data Input). */
   inputAction?: ReactNode
   /** An action shown under a run error (Ask the assistant to fix). */
   errorAction?: ReactNode

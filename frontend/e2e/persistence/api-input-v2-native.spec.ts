@@ -115,43 +115,34 @@ test.describe("apiInput persistence", () => {
       ).toEqual([])
     })
 
-    await test.step("3. Preview prepares the tables, and Import rebuilds them", async () => {
-      // Each emitting table is an input snapshot: the preview's preparation
-      // builds any table that is missing before it runs. Request the preview
-      // after the inferred schema has been committed to graph state; the
-      // preview that ran when the node was first selected intentionally
-      // predates inference and cannot represent this schema.
+    await test.step("3. Refresh re-reads the file, caches its tables, and previews them", async () => {
+      // Each emitting table is an input snapshot, and Refresh on the Quote
+      // Input re-reads its file and caches every table again before it
+      // previews the node. Request it after the inferred schema has been
+      // committed to graph state; the preview that ran when the node was first
+      // selected intentionally predates inference and cannot represent this
+      // schema.
+      const buildResponsePromise = page.waitForResponse((r) =>
+        r.url().includes("/api/input-cache/build") && r.request().postDataJSON()?.refresh === true,
+      )
       const previewResponsePromise = page.waitForResponse("**/api/pipeline/preview")
       await page.getByTitle("Refresh preview").click()
-      const previewResponse = await previewResponsePromise
-      expect(previewResponse.status(), "preview responds 200").toBe(200)
-      await expect(
-        page.getByTestId("data-preview-table"),
-        "bottom preview renders once the tables are prepared",
-      ).toBeVisible({ timeout: 10000 })
-
-      const importBtn = page.getByTestId("input-import")
-      await expect(importBtn, "the tables' Import action is beside Refresh").toBeVisible({
-        timeout: 5000,
-      })
-      const buildResponsePromise = page.waitForResponse((r) =>
-        r.url().includes("/api/input-cache/build"),
-      )
-      await importBtn.click()
       const buildResponse = await buildResponsePromise
       const buildBody = await buildResponse.text().catch(() => "<could not read>")
       expect(
         buildResponse.status(),
         `forced table build accepted (actual body: ${buildBody.slice(0, 500)})`,
       ).toBe(202)
-      expect(buildResponse.request().postDataJSON()?.refresh, "Import re-reads the source").toBe(true)
-      await expect(importBtn, "Import settles once every table is rebuilt").toHaveText("Import", {
-        timeout: 30000,
-      })
-      await expect(importBtn, "the tables report when they were imported").toHaveAttribute(
-        "title",
-        /^Imported /,
+      expect(buildResponse.request().postDataJSON()?.node_type, "the Quote Input's tables are re-read").toBe(
+        "apiInput",
       )
+      const previewResponse = await previewResponsePromise
+      expect(previewResponse.status(), "preview responds 200").toBe(200)
+      await expect(
+        page.getByTestId("data-preview-table"),
+        "bottom preview renders once the tables are cached",
+      ).toBeVisible({ timeout: 30000 })
+      await expect(page.getByTestId("input-import"), "a Quote Input has no Import").toHaveCount(0)
     })
 
     await test.step("4. Canonical table schema persists on disk", async () => {

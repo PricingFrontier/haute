@@ -386,7 +386,6 @@ test.describe("core browser flows", () => {
     await editor.click()
     await page.keyboard.press(selectAll)
     await page.keyboard.insertText("import math")
-    await expect(page.getByTitle("Unsaved changes")).toBeVisible()
 
     await page.getByRole("button", { name: "Save", exact: true }).click()
     await expect(page.getByRole("alert").filter({ hasText: /Saved/ })).toBeVisible()

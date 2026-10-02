@@ -54,6 +54,7 @@ from haute._interactive_workers import (
     run_in_interactive_worker,
 )
 from haute._logging import get_logger
+from haute._pipeline_settings import project_pipeline_settings
 from haute._polars_io_registry import PolarsIoConfigError
 from haute._sandbox import contained_path
 from haute._source_cache import SourceCacheError
@@ -143,7 +144,6 @@ from haute.routes._helpers import (
     save_lock,
 )
 from haute.routes._supersession import SupersededRequestError, SupersessionCoordinator
-from haute.routes.pipeline import preview_timeout
 from haute.schemas import AssistantBuildPlan, AssistantChangeRecord
 
 if TYPE_CHECKING:
@@ -1780,7 +1780,7 @@ async def _run_column_profile(
                 request,
                 budget,
                 affinity_key=affinity_key,
-                timeout_seconds=preview_timeout(),
+                timeout_seconds=project_pipeline_settings().pipeline_time_limit_seconds,
                 stop_reason=(lambda: "superseded" if token.cancelled else None),
                 absolute_rss_limit_bytes=budget.process_rss_limit_bytes,
                 memory_growth_limit_bytes=budget.memory_limit_bytes,

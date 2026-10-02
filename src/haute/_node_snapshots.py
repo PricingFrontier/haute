@@ -49,11 +49,11 @@ from haute._cache import (
     graph_fingerprint,
 )
 from haute._chunked_writes import part_name, part_paths, scan_parts
-from haute._env import optional_int_env
 from haute._execution_context import ExecutionProfile
 from haute._file_lock import FileLock
 from haute._file_ops import atomic_write_text, ensure_disk_headroom, remove_tree
 from haute._logging import get_logger
+from haute._pipeline_settings import automatic_cache_size_bytes, read_pipeline_settings
 from haute._source_cache import (
     _LEASE_PREFIX,
     NODE_OUTPUT_PROVIDER,
@@ -85,10 +85,6 @@ BOUNDED_SEMANTICS_CLASS = "bounded"
 _SLOT_INDEX_SCHEMA_VERSION = 1
 _LAST_USED_UPDATE_INTERVAL_SECONDS = 60.0
 _RETIRED_PREFIX = ".retired-"
-#: Unless configured, automatic captures may hold the smaller of this and a
-#: tenth of the store's free disk.
-AUTOMATIC_CAPTURE_BUDGET_CEILING_BYTES = 20 * 1024**3
-AUTOMATIC_CAPTURE_BUDGET_ENV = "HAUTE_AUTOMATIC_CAPTURE_MAX_BYTES"
 
 Retention = Literal["pinned", "automatic"]
 SlotState = Literal["current", "stale", "missing", "corrupt"]
@@ -178,17 +174,18 @@ class _AutomaticCapture:
     last_used: float
 
 
-def automatic_capture_budget(inputs_root: Path) -> int:
+def automatic_capture_budget(store: SourceCacheStore) -> int:
     """The bytes automatic node-output captures may hold together, read now.
 
-    ``HAUTE_AUTOMATIC_CAPTURE_MAX_BYTES`` sets it. Otherwise it is the smaller
-    of 20 GiB and a tenth of the free disk under *inputs_root*, so a filling
-    disk shrinks what previews may keep rather than letting them take the rest.
+    The store's project pipeline settings set it (``cache_size_gb``). When that
+    is automatic it is the smaller of 20 GiB and a tenth of the free disk under
+    the store, so a filling disk shrinks what previews may keep rather than
+    letting them take the rest.
     """
-    configured = optional_int_env(AUTOMATIC_CAPTURE_BUDGET_ENV)
+    configured = read_pipeline_settings(store.root).cache_size_bytes
     if configured is not None:
         return configured
-    return min(AUTOMATIC_CAPTURE_BUDGET_CEILING_BYTES, shutil.disk_usage(inputs_root).free // 10)
+    return automatic_cache_size_bytes(store.inputs_root)
 
 
 # Descriptor keys that name an input source without disclosing anything: a
@@ -903,7 +900,7 @@ class NodeSnapshotStore(SourceCacheStore):
         return CacheStoreUsage(
             total_bytes=total,
             automatic_bytes=sum(capture.size_bytes for capture in automatic),
-            automatic_budget_bytes=automatic_capture_budget(self.inputs_root),
+            automatic_budget_bytes=automatic_capture_budget(self),
         )
 
     def enforce_automatic_budget(self) -> int:
@@ -930,7 +927,7 @@ class NodeSnapshotStore(SourceCacheStore):
         evicted = 0
         try:
             with self._budget_lock():
-                budget = automatic_capture_budget(self.inputs_root)
+                budget = automatic_capture_budget(self)
                 _total, scanned = self._scan_usage()
                 with self._coordination.lease_lock:
                     automatic = self._still_automatic_locked(scanned)

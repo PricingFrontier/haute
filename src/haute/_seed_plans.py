@@ -58,6 +58,7 @@ from haute._node_snapshots import (
     snapshot_read_classes,
     snapshot_write_class,
 )
+from haute._pipeline_settings import read_pipeline_settings
 from haute._registry import NODE_REGISTRY
 from haute._source_cache import (
     SourceCacheCorruptError,
@@ -964,12 +965,37 @@ class _ListedResolver(_Resolver):
         return {}, {}
 
 
+class _UncachedResolver(_Resolver):
+    """Resolution while caching is off in the pipeline settings: no seeds, no captures.
+
+    The walk executes the whole lineage and negotiation reads no generation;
+    an explicit build's own node is still built and published by the build.
+    """
+
+    def seed_candidate(
+        self,
+        node_id: str,
+        demand: Demand,
+        *,
+        dropped: set[str],
+    ) -> SeedDecision | None:
+        return None
+
+    def capture_points(
+        self, executed: set[str]
+    ) -> tuple[dict[str, CaptureKind], dict[str, SkipReason]]:
+        return {}, {}
+
+
 def resolve_seed_plan(request: SeedPlanRequest, *, store: NodeSnapshotStore) -> SeedPlanDecision:
     """Resolve which node outputs a run seeds and which it captures.
 
     Reads store metadata only: nothing is leased, built, or executed. A corrupt
-    generation met on the way propagates as the store's error.
+    generation met on the way propagates as the store's error. With caching off
+    in the store's project settings the plan seeds and captures nothing.
     """
+    if not read_pipeline_settings(store.root).caching_enabled:
+        return _UncachedResolver(request, store).resolve()
     return _Resolver(request, store).resolve()
 
 
@@ -1497,6 +1523,7 @@ def preview_input_node_ids(
     executes, read without preparing or leasing anything; for any other
     lineage, every one the target can read. The answer is advisory: if seeds
     move before the preview runs, the preview prepares what it then reads.
+    While caching is off a preview runs without a plan, so it reads every one.
     """
     request = SeedPlanRequest(
         graph=graph,
@@ -1505,40 +1532,16 @@ def preview_input_node_ids(
         profile=ExecutionProfile.PREVIEW_EAGER,
         required_columns_by_node=required_columns_by_node,
     )
-    resolver = _Resolver(request, store if store is not None else _project_store())
+    store = store if store is not None else _project_store()
+    resolver = _Resolver(request, store)
     readable = _readable_node_ids(resolver)
     candidates = _snapshot_backed_input_ids(resolver, readable)
-    if not preview_lineage_admitted(graph, target_node_id, source=source):
+    if not read_pipeline_settings(store.root).caching_enabled or not preview_lineage_admitted(
+        graph, target_node_id, source=source
+    ):
         return tuple(candidates)
     executed = resolver.resolve().executed_node_ids
     return tuple(node_id for node_id in candidates if node_id in executed)
-
-
-def preview_builds_snapshots(
-    graph: PipelineGraph,
-    target_node_id: str,
-    *,
-    source: str,
-    required_columns_by_node: Mapping[str, Iterable[str] | AllExcept] | None = None,
-    store: NodeSnapshotStore | None = None,
-) -> bool:
-    """Whether a preview's first resolution captures any node output.
-
-    A capture writes the node's whole output, however few rows the preview
-    shows, so a preview that captures is budgeted as the cache build it runs.
-    Reads store metadata only, like :func:`preview_input_node_ids`.
-    """
-    if not preview_lineage_admitted(graph, target_node_id, source=source):
-        return False
-    request = SeedPlanRequest(
-        graph=graph,
-        target_node_id=target_node_id,
-        source=source,
-        profile=ExecutionProfile.PREVIEW_EAGER,
-        required_columns_by_node=required_columns_by_node,
-    )
-    resolver = _Resolver(request, store if store is not None else _project_store())
-    return bool(resolver.resolve().captures)
 
 
 @dataclass(frozen=True, slots=True)

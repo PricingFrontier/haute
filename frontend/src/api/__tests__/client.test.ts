@@ -10,6 +10,8 @@ import {
   isHauteSessionExpiredError,
   loadPipeline,
   previewNode,
+  estimateOptimiserSolve,
+  previewInputs,
   previewRecoveryNode,
   savePipeline,
   traceCell,
@@ -62,8 +64,8 @@ import {
   updateUtilityFile,
   deleteUtilityFile,
   applyRemoveUnavailableNode,
-  getExecutionSettings,
-  putExecutionSettings,
+  getPipelineSettings,
+  patchPipelineSettings,
   getMlflowSettings,
   putMlflowSettings,
   testMlflowConnection,
@@ -557,38 +559,66 @@ describe("request() core via loadPipeline", () => {
     await expect(loadPipeline()).rejects.toThrow(ApiError)
   })
 
-  it("getExecutionSettings issues a GET and parses the response", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ streaming_chunk_size: 500_000 }))
+  const pipelineSettingsBody = {
+    path: ".haute/pipeline-settings.json",
+    settings: {
+      chunk_rows: null,
+      caching: false,
+      cache_size_gb: null,
+      preview_memory_gb: 8,
+      kept_free_gb: null,
+      pipeline_time_limit_minutes: null,
+      modelling_time_limit_minutes: null,
+      optimisation_time_limit_minutes: null,
+    },
+    automatic: {
+      chunk_rows: 500_000,
+      caching: true,
+      cache_size_gb: 20,
+      preview_memory_gb: 10.3,
+      kept_free_gb: 2,
+      pipeline_time_limit_minutes: 30,
+      modelling_time_limit_minutes: 60,
+      optimisation_time_limit_minutes: null,
+    },
+  }
 
-    const result = await getExecutionSettings()
+  it("getPipelineSettings issues a GET and parses the response", async () => {
+    mockFetch.mockReturnValue(jsonResponse(pipelineSettingsBody))
+
+    const result = await getPipelineSettings()
 
     const [url, init] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/execution-settings")
+    expect(url).toBe("/api/pipeline-settings")
     expect(init?.method ?? "GET").toBe("GET")
-    expect(result.streaming_chunk_size).toBe(500_000)
+    expect(result.settings.preview_memory_gb).toBe(8)
+    expect(result.automatic.optimisation_time_limit_minutes).toBeNull()
   })
 
-  it("getExecutionSettings rejects a malformed response", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ streaming_chunk_size: "not-a-number" }))
-    await expect(getExecutionSettings()).rejects.toThrow(
-      "ExecutionSettings: invalid contract at /streaming_chunk_size: type",
+  it("getPipelineSettings rejects a malformed response", async () => {
+    mockFetch.mockReturnValue(
+      jsonResponse({
+        ...pipelineSettingsBody,
+        settings: { ...pipelineSettingsBody.settings, caching: "no" },
+      }),
     )
-    mockFetch.mockReturnValue(jsonResponse({ streaming_chunk_size: 0 }))
-    await expect(getExecutionSettings()).rejects.toThrow(
-      "ExecutionSettings: invalid contract at /streaming_chunk_size: minimum",
+    await expect(getPipelineSettings()).rejects.toThrow(
+      /PipelineSettingsResponse: invalid contract at \/settings\/caching/,
     )
+    mockFetch.mockReturnValue(jsonResponse({ settings: pipelineSettingsBody.settings }))
+    await expect(getPipelineSettings()).rejects.toThrow(/PipelineSettingsResponse: invalid contract/)
   })
 
-  it("putExecutionSettings issues a PUT with the JSON payload and parses the response", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ streaming_chunk_size: 250_000 }))
+  it("patchPipelineSettings sends only the changed keys and parses the response", async () => {
+    mockFetch.mockReturnValue(jsonResponse(pipelineSettingsBody))
 
-    const result = await putExecutionSettings(250_000)
+    const result = await patchPipelineSettings({ preview_memory_gb: 8, chunk_rows: null })
 
     const [url, init] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/execution-settings")
-    expect(init.method).toBe("PUT")
-    expect(JSON.parse(init.body as string)).toEqual({ streaming_chunk_size: 250_000 })
-    expect(result.streaming_chunk_size).toBe(250_000)
+    expect(url).toBe("/api/pipeline-settings")
+    expect(init.method).toBe("PATCH")
+    expect(JSON.parse(init.body as string)).toEqual({ preview_memory_gb: 8, chunk_rows: null })
+    expect(result.settings.caching).toBe(false)
   })
 
   it("putMlflowSettings issues a PUT with the JSON payload and parses the response", async () => {
@@ -1579,6 +1609,49 @@ describe("request() edge cases", () => {
     }
   })
 
+  it("sets no browser deadline on calls the server bounds by the pipeline time limit", async () => {
+    vi.useFakeTimers()
+    try {
+      mockFetch.mockImplementation((_url: string, options?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          const signal = options?.signal as AbortSignal | undefined
+          signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          )
+        }),
+      )
+      const controller = new AbortController()
+      const signal = controller.signal
+      const calls = [
+        previewNode({ graph: dummyGraph, nodeId: "node1", rowLimit: 50, signal }),
+        previewInputs({ graph: dummyGraph, nodeId: "node1", signal }),
+        traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "node1", seed_plan: [], signal }),
+        writeOutput({ graph: dummyGraph, nodeId: "out", signal }),
+        estimateOptimiserSolve({ graph: dummyGraph, node_id: "opt", signal }),
+      ]
+      const settled = calls.map(() => false)
+      calls.forEach((call, index) => {
+        call.then(
+          () => { settled[index] = true },
+          () => { settled[index] = true },
+        )
+      })
+
+      // An hour passes: the server's limit, not the browser, ends these.
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000)
+      expect(settled).toEqual(calls.map(() => false))
+
+      controller.abort()
+      for (const call of calls) {
+        await expect(call).rejects.toMatchObject({ name: "AbortError" })
+      }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("preserves caller-initiated aborts as AbortError", async () => {
     mockFetch.mockImplementation((_url: string, options?: RequestInit) =>
       new Promise((_resolve, reject) => {
@@ -1650,7 +1723,7 @@ describe("request() edge cases", () => {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // No request carries streaming_chunk_size: it is a single server-owned
-// setting (GET/PUT /api/execution-settings), never part of a per-request
+// setting (the pipeline settings' chunk rows), never part of a per-request
 // payload. Regression coverage for pipeline / modelling / optimiser
 // endpoints that used to accept it.
 // ═══════════════════════════════════════════════════════════════════════════

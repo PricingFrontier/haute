@@ -8,7 +8,6 @@ import type { SimpleNode } from "../panels/editors"
 import { PREVIEW_PANEL_ACTION_BUTTON_CLASS } from "../panels/previewPanelLayout"
 import useInputImportStore, { startInputImport } from "../stores/useInputImportStore"
 import useNodeDataStore from "../stores/useNodeDataStore"
-import { apiInputHasEmittingTable } from "../utils/apiInputPorts"
 import { importedTitle } from "../utils/importedTitle"
 import { inputSnapshotSource } from "../utils/inputSnapshotSource"
 import { instanceOriginal } from "../utils/instanceOriginal"
@@ -21,10 +20,11 @@ export interface InputImportButtonProps {
 }
 
 /**
- * Import: re-read a Data Input's or structured Quote Input's source and publish
- * it as a new snapshot, whether or not the source is known to have changed.
- * Refresh keeps its freshness rules; this is the one action that re-reads a
- * source whose changes cannot be detected (a database, a Databricks table).
+ * Import: re-read a Data Input's source and publish it as a new snapshot,
+ * whether or not the source is known to have changed. A Data Input's Refresh
+ * keeps its freshness rules; this is the one action that re-reads a source
+ * whose changes cannot be detected (a database, a Databricks table). A Quote
+ * Input has no Import: its Refresh re-reads its source.
  *
  * The import itself belongs to the node that started it (see
  * `useInputImportStore`), so this button only shows and starts it.
@@ -37,10 +37,7 @@ export default function InputImportButton({ node, allNodes, onImported }: InputI
   )
   const source = useMemo(() => {
     const found = inputSnapshotSource(effective)
-    // A Quote Input without an emitting table has nothing to import.
-    return found && (found.node_type !== "apiInput" || apiInputHasEmittingTable(found.config))
-      ? found
-      : null
+    return found && found.node_type !== "apiInput" ? found : null
   }, [effective])
   const sourceKey = source ? JSON.stringify(source) : null
   const run = useInputImportStore((s) => s.runs[node.id])

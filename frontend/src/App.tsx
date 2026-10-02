@@ -860,10 +860,6 @@ function FlowEditor() {
     touchOptimiserPreview(activePanelNodeId)
   }, [activePanelNodeId, setPinnedPreviewNodeId, touchModellingPreview, touchOptimiserPreview])
 
-  // Store-maintained dirty flag.
-  // Subscribe to the primitive so frequent React Flow node updates do not
-  // serialize the graph from App's selector.
-  const dirty = useGraphStore((s) => s.dirty)
   const documentLoadStatus = useDocumentStatusStore((s) => s.loadStatus)
   const documentCapabilities = useDocumentStatusStore((s) => s.capabilities)
   const reservedApiInputFrameLabels = useMemo(
@@ -1287,11 +1283,17 @@ function FlowEditor() {
   // point rather than a second policy: grouping needs 2+ nodes and a context
   // that can hold a submodel (they cannot nest), instancing needs exactly one
   // non-singleton node — the generic `instanceOf` path, not just submodels.
+  // A lone submodel occurrence turns Submodel into Dissolve: the context
+  // menu's "Dissolve Submodel" on the same handler.
   const selectedNodes = useMemo(
     () => nodes.filter((n) => n.selected),
     [nodes],
   )
   const selectedNodeIds = useMemo(() => selectedNodes.map((n) => n.id), [selectedNodes])
+  const selectedSubmodelId = selectedNodes.length === 1
+    && nodeData(selectedNodes[0]).nodeType === NODE_TYPES.SUBMODEL
+    ? selectedNodes[0].id
+    : null
   const selectedSubmodelHasSingleton = useMemo(() => {
     if (selectedNodes.length !== 1) return false
     const data = nodeData(selectedNodes[0])
@@ -1300,9 +1302,10 @@ function FlowEditor() {
     }
     return singletonTypesInSubmodelDefinition(data.config.definitionId, submodels).size > 0
   }, [selectedNodes, submodels])
-  const canCreateSubmodel = !editingReadOnly
-    && viewStack.length <= 1
-    && selectedNodeIds.length >= 2
+  const canRunSubmodelAction = !editingReadOnly && (
+    selectedSubmodelId !== null
+    || (viewStack.length <= 1 && selectedNodeIds.length >= 2)
+  )
   const canCreateInstance = !editingReadOnly
     && selectedNodes.length === 1
     && !isSingletonType(nodeData(selectedNodes[0]).nodeType)
@@ -1312,15 +1315,31 @@ function FlowEditor() {
   // toolbar button that swallows the click in silence is the one case where the
   // user most needs the explanation, and the `title` carrying it needs a hover
   // dwell the keyboard and touch never perform.
-  const handleToolbarCreateSubmodel = useCallback(() => {
-    requestSubmodelCreation({
-      nodes,
-      readOnly: editingReadOnly,
-      isInsideSubmodel: viewStack.length > 1,
-      setSubmodelDialog,
-      addToast,
+  // Unlike the context menu, Dissolve stays on screen while its transform runs,
+  // and a second request would supersede the first and report it as not
+  // applied, so the toolbar sends one at a time.
+  const toolbarDissolveInFlightRef = useRef(false)
+  const handleToolbarSubmodelAction = useCallback(() => {
+    if (selectedSubmodelId === null) {
+      requestSubmodelCreation({
+        nodes,
+        readOnly: editingReadOnly,
+        isInsideSubmodel: viewStack.length > 1,
+        setSubmodelDialog,
+        addToast,
+      })
+      return
+    }
+    if (editingReadOnly) {
+      addToast("info", "This pipeline document is read-only")
+      return
+    }
+    if (toolbarDissolveInFlightRef.current) return
+    toolbarDissolveInFlightRef.current = true
+    void handleDissolveSubmodel(selectedSubmodelId).finally(() => {
+      toolbarDissolveInFlightRef.current = false
     })
-  }, [nodes, editingReadOnly, viewStack.length, setSubmodelDialog, addToast])
+  }, [selectedSubmodelId, nodes, editingReadOnly, viewStack.length, setSubmodelDialog, addToast, handleDissolveSubmodel])
   const handleToolbarCreateInstance = useCallback(() => {
     if (editingReadOnly) {
       addToast("info", "This pipeline document is read-only")
@@ -1523,11 +1542,12 @@ function FlowEditor() {
     if (!activePanelNodeId) return
     const refreshTarget = graphRef.current.nodes.find((node) => node.id === activePanelNodeId)
     if (!refreshTarget) return
-    refreshPreview(refreshTarget)
-    // Refresh means "bring this node up to date", so it covers the node's
-    // cached data as well as its preview. A panel that reads no cached data
+    // Refresh means "bring this node up to date". A structured Quote Input's
+    // file is re-read and its tables cached again before the preview, and the
+    // node's cached data is covered too: a panel that reads no cached data
     // never sees the ask; one that does decides whether anything needs
     // computing, and leaves data that is already current alone.
+    refreshPreview(refreshTarget, { rereadSource: true })
     refreshNodeDataCache(activePanelNodeId)
   }, [activePanelNodeId, refreshPreview])
 
@@ -1613,7 +1633,6 @@ function FlowEditor() {
     <div className="h-full w-full flex flex-col" style={{ background: 'var(--bg-base)' }}>
       <Toolbar
         nodeCount={nodes.length}
-        dirty={dirty}
         canUndo={canUndo}
         canRedo={canRedo}
         onUndo={undo}
@@ -1622,8 +1641,9 @@ function FlowEditor() {
         onZoomOut={() => zoomOut()}
         onOpenUtility={() => { setUtilityOpen(true); setSelectedNode(null); setLastSelectedId(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
         onOpenImports={() => { setImportsOpen(true); setSelectedNode(null); setLastSelectedId(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
-        canCreateSubmodel={canCreateSubmodel}
-        onCreateSubmodel={handleToolbarCreateSubmodel}
+        submodelAction={selectedSubmodelId === null ? "create" : "dissolve"}
+        canRunSubmodelAction={canRunSubmodelAction}
+        onSubmodelAction={handleToolbarSubmodelAction}
         canCreateInstance={canCreateInstance}
         onCreateInstance={handleToolbarCreateInstance}
         onCentre={() => fitView({ padding: 0.15 })}

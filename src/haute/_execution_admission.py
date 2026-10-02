@@ -19,6 +19,7 @@ from haute._execution_context import (
     ExecutionProfile,
     current_rss_bytes,
 )
+from haute._pipeline_settings import PipelineSettings, project_pipeline_settings
 
 _MIB = 1024 * 1024
 _GIB = 1024 * _MIB
@@ -26,14 +27,10 @@ _MEMORY_POLICY_ENV = "HAUTE_EXECUTION_MEMORY_POLICY"
 _ADAPTIVE_MEMORY_POLICY_NAME = "local_adaptive"
 _FIXED_MEMORY_POLICY_NAME = "fixed"
 _STRICT_SERVER_MEMORY_POLICY_NAME = "strict_server"
-_OS_RESERVE_ENV = (
-    "HAUTE_EXECUTION_OS_RESERVE_BYTES",
-    "HAUTE_EXECUTION_OS_RESERVE_MB",
-)
 _DEFAULT_OS_RESERVE_BYTES = 2 * _GIB
 
 _DEFAULT_MEMORY_LIMIT_BYTES: dict[ExecutionProfile, int] = {
-    ExecutionProfile.PREVIEW_EAGER: 2 * 1024 * _MIB,
+    ExecutionProfile.PREVIEW_EAGER: 4 * 1024 * _MIB,
     ExecutionProfile.LAZY_SINK: 4 * 1024 * _MIB,
     ExecutionProfile.TRAINING_PREP: 4 * 1024 * _MIB,
     ExecutionProfile.OPTIMISER_SETUP: 4 * 1024 * _MIB,
@@ -53,10 +50,11 @@ class _AdaptiveMemoryPolicy:
 
 
 _ADAPTIVE_MEMORY_POLICY: dict[ExecutionProfile, _AdaptiveMemoryPolicy] = {
+    # One budget for every preview: what a preview that captures a join needs,
+    # so no preview is admitted with less (the pipeline settings can set it).
     ExecutionProfile.PREVIEW_EAGER: _AdaptiveMemoryPolicy(
-        available_ram_basis_points=3_500,
-        floor_bytes=2 * 1024 * _MIB,
-        ceiling_bytes=4 * 1024 * _MIB,
+        available_ram_basis_points=7_000,
+        floor_bytes=4 * 1024 * _MIB,
     ),
     ExecutionProfile.LAZY_SINK: _AdaptiveMemoryPolicy(
         available_ram_basis_points=7_000,
@@ -108,11 +106,8 @@ _ADAPTIVE_LOCAL_PROFILES = frozenset(
     }
 )
 
+# Previews are sized only by the pipeline settings; every other profile here.
 _PROFILE_MEMORY_ENV: dict[ExecutionProfile, tuple[str, str]] = {
-    ExecutionProfile.PREVIEW_EAGER: (
-        "HAUTE_PREVIEW_MEMORY_LIMIT_BYTES",
-        "HAUTE_PREVIEW_MEMORY_LIMIT_MB",
-    ),
     ExecutionProfile.LAZY_SINK: (
         "HAUTE_SINK_MEMORY_LIMIT_BYTES",
         "HAUTE_SINK_MEMORY_LIMIT_MB",
@@ -430,9 +425,18 @@ class ExecutionAdmissionError(MemoryError):
         return payload
 
 
-def execution_budget_for_profile(profile: ExecutionProfile) -> ExecutionBudget:
-    """Resolve the configured memory budget for *profile*."""
-    memory_limit = _resolve_required_budget(profile)
+def execution_budget_for_profile(
+    profile: ExecutionProfile,
+    settings: PipelineSettings | None = None,
+) -> ExecutionBudget:
+    """Resolve the configured memory budget for *profile*.
+
+    *settings* are the pipeline settings the caller already read; when omitted
+    they are read for the current execution's project.
+    """
+    if settings is None:
+        settings = project_pipeline_settings()
+    memory_limit = _resolve_required_budget(profile, settings)
     process_rss_limit_bytes, process_rss_limit_config_key = _resolve_optional_rss_limit(profile)
     return ExecutionBudget(
         memory_limit_bytes=memory_limit.memory_limit_bytes,
@@ -445,31 +449,46 @@ def execution_budget_for_profile(profile: ExecutionProfile) -> ExecutionBudget:
     )
 
 
-def _resolve_required_budget(profile: ExecutionProfile) -> _ResolvedMemoryLimit:
-    for key, multiplier in _memory_env_candidates(profile):
-        value = optional_int_env(key)
-        if value is None:
-            continue
-        return _ResolvedMemoryLimit(
-            memory_limit_bytes=value * multiplier,
-            config_key=key,
-            budget_policy="explicit_env",
-        )
+def _resolve_required_budget(
+    profile: ExecutionProfile, settings: PipelineSettings
+) -> _ResolvedMemoryLimit:
+    if profile == ExecutionProfile.PREVIEW_EAGER:
+        preview_bytes = settings.preview_memory_bytes
+        if preview_bytes is not None:
+            return _ResolvedMemoryLimit(
+                memory_limit_bytes=preview_bytes,
+                config_key="preview_memory_gb",
+                budget_policy="pipeline_settings",
+            )
+    else:
+        for key, multiplier in _memory_env_candidates(profile):
+            value = optional_int_env(key)
+            if value is None:
+                continue
+            return _ResolvedMemoryLimit(
+                memory_limit_bytes=value * multiplier,
+                config_key=key,
+                budget_policy="explicit_env",
+            )
 
-    memory_policy = _memory_policy_name()
-    if memory_policy in {_FIXED_MEMORY_POLICY_NAME, _STRICT_SERVER_MEMORY_POLICY_NAME}:
+    if _uses_fixed_default(profile):
         return _fixed_default_memory_limit(profile)
 
-    if profile not in _ADAPTIVE_LOCAL_PROFILES:
-        return _fixed_default_memory_limit(profile)
-
-    limit, available, os_reserve_bytes = _adaptive_default_memory_limit_bytes(profile)
+    limit, available, os_reserve_bytes = _adaptive_default_memory_limit_bytes(profile, settings)
     return _ResolvedMemoryLimit(
         memory_limit_bytes=limit,
         config_key=f"adaptive:{profile.value}",
         budget_policy="adaptive_local",
         available_ram_bytes=available,
         os_reserve_bytes=os_reserve_bytes,
+    )
+
+
+def _uses_fixed_default(profile: ExecutionProfile) -> bool:
+    """Whether nothing adapts *profile*'s budget: a fixed policy, or a fixed-only profile."""
+    return (
+        _memory_policy_name() in {_FIXED_MEMORY_POLICY_NAME, _STRICT_SERVER_MEMORY_POLICY_NAME}
+        or profile not in _ADAPTIVE_LOCAL_PROFILES
     )
 
 
@@ -502,27 +521,54 @@ def available_ram_bytes() -> int | None:
     return _host_memory.available_ram_bytes()
 
 
-def _adaptive_default_memory_limit_bytes(profile: ExecutionProfile) -> tuple[int, int, int]:
+def _adaptive_default_memory_limit_bytes(
+    profile: ExecutionProfile, settings: PipelineSettings
+) -> tuple[int, int, int]:
     available = _host_memory.require_positive_available_ram(available_ram_bytes())
+    reserve = _os_reserve_bytes(available, settings)
+    return _adaptive_limit(profile, available - reserve), available, reserve
+
+
+def _adaptive_limit(profile: ExecutionProfile, usable: int) -> int:
+    """The profile's share of *usable* memory, clamped to its floor, ceiling and *usable*."""
+    usable = max(usable, 1)
     policy = _ADAPTIVE_MEMORY_POLICY[profile]
-    reserve = min(_resolve_os_reserve_bytes(), max(available // 2, 1))
-    usable = max(available - reserve, 1)
-    limit = usable * policy.available_ram_basis_points // 10_000
-    limit = max(limit, policy.floor_bytes)
+    limit = max(usable * policy.available_ram_basis_points // 10_000, policy.floor_bytes)
     if policy.ceiling_bytes is not None:
         limit = min(limit, policy.ceiling_bytes)
-    return min(limit, usable), available, reserve
+    return min(limit, usable)
 
 
-def _resolve_os_reserve_bytes() -> int:
-    bytes_key, mb_key = _OS_RESERVE_ENV
-    bytes_value = optional_int_env(bytes_key)
-    if bytes_value is not None:
-        return bytes_value
-    mb_value = optional_int_env(mb_key)
-    if mb_value is not None:
-        return mb_value * _MIB
-    return _DEFAULT_OS_RESERVE_BYTES
+def _os_reserve_bytes(available: int, settings: PipelineSettings) -> int:
+    """The memory kept free for the system: the settings' figure exactly when set.
+
+    Otherwise 2 GiB, or half of *available* when that is smaller.
+    """
+    kept_free = settings.kept_free_bytes
+    if kept_free is not None:
+        return kept_free
+    return _automatic_os_reserve_bytes(available)
+
+
+def _automatic_os_reserve_bytes(available: int) -> int:
+    return min(_DEFAULT_OS_RESERVE_BYTES, max(available // 2, 1))
+
+
+def automatic_preview_memory_and_kept_free_bytes(settings: PipelineSettings) -> tuple[int, int]:
+    """The automatic preview budget and kept-free memory now, from one availability sample.
+
+    The preview figure is the budget admission gives a preview the settings
+    leave automatic, under the current memory policy and against the effective
+    reserve (the settings' kept-free memory when it is set).
+    """
+    available = _host_memory.require_positive_available_ram(available_ram_bytes())
+    if _uses_fixed_default(ExecutionProfile.PREVIEW_EAGER):
+        preview_bytes = _DEFAULT_MEMORY_LIMIT_BYTES[ExecutionProfile.PREVIEW_EAGER]
+    else:
+        preview_bytes = _adaptive_limit(
+            ExecutionProfile.PREVIEW_EAGER, available - _os_reserve_bytes(available, settings)
+        )
+    return preview_bytes, _automatic_os_reserve_bytes(available)
 
 
 def _resolve_optional_rss_limit(profile: ExecutionProfile) -> tuple[int | None, str | None]:
@@ -544,20 +590,17 @@ def create_admitted_execution_context(
     memory_pressure_callback: Callable[..., None] | None = None,
     wait_out_holders: Collection[str] = (),
     wait_seconds: float = 0.0,
-    budget_profile: ExecutionProfile | None = None,
     estimate: WorkEstimate | None = None,
 ) -> ExecutionContext:
     """Construct an ``ExecutionContext`` after a small memory admission check.
+
+    The pipeline settings are read first, so an invalid settings file refuses
+    the run before anything is sampled or reserved.
 
     ``estimate`` is the work's own peak estimate: admission refuses work whose
     estimate exceeds the profile's budget, naming the estimate and its remedy,
     and reserves the estimate rather than the whole budget in flight, so
     several small bounded operations can run side by side.
-
-    ``budget_profile`` sizes the memory budget from another profile's policy
-    while admission and in-flight reservation still follow ``profile``: a
-    preview that builds node caches gets the cache-build budget, and is still
-    admitted, and never reserved, as a preview.
 
     ``wait_out_holders`` names in-flight holders (``"profile:operation"``) that
     are short-lived and not worth refusing for: while every holder blocking the
@@ -566,7 +609,8 @@ def create_admitted_execution_context(
     reserving are separate steps, so a waitable holder that takes the budget in
     between sends admission back to waiting until the same deadline.
     """
-    budget = execution_budget_for_profile(budget_profile or profile)
+    settings = project_pipeline_settings()
+    budget = execution_budget_for_profile(profile, settings)
     reservation_bytes = budget.memory_limit_bytes if estimate is None else estimate.estimated_bytes
     waitable = frozenset(wait_out_holders) if profile in _IN_FLIGHT_PROFILE_SET else frozenset()
     deadline = time.monotonic() + max(wait_seconds, 0.0)
@@ -577,6 +621,7 @@ def create_admitted_execution_context(
                 reservation_bytes,
                 waitable,
                 deadline,
+                settings=settings,
                 cancellation_token=cancellation_token,
                 operation=operation,
                 job_id=job_id,
@@ -586,6 +631,7 @@ def create_admitted_execution_context(
                 operation=operation,
                 profile=profile,
                 budget=budget,
+                settings=settings,
                 estimate=estimate,
                 reservation_bytes=reservation_bytes,
                 job_id=job_id,
@@ -598,7 +644,7 @@ def create_admitted_execution_context(
                 not waitable
                 or exc.reason != "in_flight_memory_budget_exceeded"
                 or time.monotonic() >= deadline
-                or not _refusal_is_transient(budget, reservation_bytes, waitable)
+                or not _refusal_is_transient(budget, reservation_bytes, waitable, settings)
             ):
                 raise
 
@@ -608,6 +654,7 @@ def _admit_once(
     operation: str,
     profile: ExecutionProfile,
     budget: ExecutionBudget,
+    settings: PipelineSettings,
     estimate: WorkEstimate | None,
     reservation_bytes: int,
     job_id: str | None,
@@ -662,6 +709,7 @@ def _admit_once(
         operation=operation,
         profile=profile,
         budget=budget,
+        settings=settings,
         reservation_bytes=reservation_bytes,
         rss_at_admission_bytes=rss_at_admission,
     )
@@ -737,9 +785,10 @@ def admit_growth_grant(
     sampler = current_rss_bytes if memory_sampler is None else memory_sampler
     rss_at_admission = sampler()
     process_rss_limit_bytes, _process_rss_limit_key = _resolve_optional_rss_limit(profile)
+    settings = project_pipeline_settings()
     with _IN_FLIGHT_LOCK:
         available = _host_memory.require_positive_available_ram(available_ram_bytes())
-        os_reserve = min(_resolve_os_reserve_bytes(), max(available // 2, 1))
+        os_reserve = _os_reserve_bytes(available, settings)
         usable_now = available - os_reserve
         limit = _profile_limit_from_sample(profile, available=available, usable=usable_now)
         if rss_at_admission is None:
@@ -834,17 +883,10 @@ def _profile_limit_from_sample(
                 config_key=key,
                 budget_policy="explicit_env",
             )
-    if (
-        _memory_policy_name() in {_FIXED_MEMORY_POLICY_NAME, _STRICT_SERVER_MEMORY_POLICY_NAME}
-        or profile not in _ADAPTIVE_LOCAL_PROFILES
-    ):
+    if _uses_fixed_default(profile):
         return _fixed_default_memory_limit(profile)
-    policy = _ADAPTIVE_MEMORY_POLICY[profile]
-    limit = max(usable * policy.available_ram_basis_points // 10_000, policy.floor_bytes)
-    if policy.ceiling_bytes is not None:
-        limit = min(limit, policy.ceiling_bytes)
     return _ResolvedMemoryLimit(
-        memory_limit_bytes=min(limit, max(usable, 1)),
+        memory_limit_bytes=_adaptive_limit(profile, usable),
         config_key=f"adaptive:{profile.value}",
         budget_policy="adaptive_local",
         available_ram_bytes=available,
@@ -885,7 +927,10 @@ def _memory_env_candidates(profile: ExecutionProfile) -> tuple[tuple[str, int], 
 
 
 def _refusal_is_transient(
-    budget: ExecutionBudget, reservation_bytes: int, waitable: frozenset[str]
+    budget: ExecutionBudget,
+    reservation_bytes: int,
+    waitable: frozenset[str],
+    settings: PipelineSettings,
 ) -> bool:
     """Whether an in-flight refusal can clear by waiting.
 
@@ -896,7 +941,7 @@ def _refusal_is_transient(
     with _IN_FLIGHT_LOCK:
         holders = list(_IN_FLIGHT_RESERVATIONS.values())
     if not holders:
-        return reservation_bytes <= _in_flight_limit_bytes(budget)
+        return reservation_bytes <= _in_flight_limit_bytes(budget, settings)
     return all(
         f"{held_profile.value}:{held_operation}" in waitable
         for held_profile, _amount, held_operation in holders
@@ -909,6 +954,7 @@ def _wait_out_in_flight_holders(
     waitable: frozenset[str],
     deadline: float,
     *,
+    settings: PipelineSettings,
     cancellation_token: ExecutionCancellationToken | None,
     operation: str,
     job_id: str | None,
@@ -919,7 +965,7 @@ def _wait_out_in_flight_holders(
     non-waitable holder blocks it, or the wait runs out; the reservation itself
     then admits or refuses as usual.
     """
-    limit_bytes = _in_flight_limit_bytes(budget)
+    limit_bytes = _in_flight_limit_bytes(budget, settings)
     with _IN_FLIGHT_LOCK:
         while True:
             holders = list(_IN_FLIGHT_RESERVATIONS.values())
@@ -945,13 +991,14 @@ def _reserve_in_flight_budget(
     operation: str,
     profile: ExecutionProfile,
     budget: ExecutionBudget,
+    settings: PipelineSettings,
     reservation_bytes: int,
     rss_at_admission_bytes: int | None,
 ) -> Callable[[], None] | None:
     """Reserve a share of process-wide in-flight memory for heavy work."""
     if profile not in _IN_FLIGHT_PROFILE_SET:
         return None
-    limit_bytes = _in_flight_limit_bytes(budget)
+    limit_bytes = _in_flight_limit_bytes(budget, settings)
     with _IN_FLIGHT_LOCK:
         reserved = sum(amount for _profile, amount, _operation in _IN_FLIGHT_RESERVATIONS.values())
         if reserved + reservation_bytes > limit_bytes:
@@ -1003,14 +1050,14 @@ def _reservation_release(reservation_id: int) -> Callable[[], None]:
     return release
 
 
-def _in_flight_limit_bytes(budget: ExecutionBudget) -> int:
+def _in_flight_limit_bytes(budget: ExecutionBudget, settings: PipelineSettings) -> int:
     available = budget.available_ram_bytes
     if available is None:
         available = available_ram_bytes()
     available = _host_memory.require_positive_available_ram(available)
     reserve = budget.os_reserve_bytes
     if reserve is None:
-        reserve = min(_resolve_os_reserve_bytes(), max(available // 2, 1))
+        reserve = _os_reserve_bytes(available, settings)
     return max(available - reserve, 1)
 
 

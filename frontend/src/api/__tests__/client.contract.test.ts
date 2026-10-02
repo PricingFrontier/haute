@@ -477,7 +477,7 @@ describe("client runtime contracts", () => {
   })
 
   it("previewNode honours a custom timeout and sends no streaming_chunk_size", async () => {
-    // Exercises the non-default path of the `timeout = 120_000` default argument.
+    // Exercises the non-default path of the `timeout = null` default argument.
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
 
     await previewNode({
@@ -493,8 +493,7 @@ describe("client runtime contracts", () => {
   })
 
   it("previewNode omits streaming_chunk_size and uses the default timeout", async () => {
-    // Exercises the `streamingChunkSize !== undefined` absent branch and the
-    // default path of the `timeout = 120_000` default argument.
+    // Exercises the default path of the `timeout = null` default argument.
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
 
     await previewNode({ graph: dummyGraph, nodeId: "n1", rowLimit: 10 })

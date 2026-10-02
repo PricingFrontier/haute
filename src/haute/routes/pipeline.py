@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import time
 import tomllib
@@ -19,7 +20,7 @@ from fastapi.responses import JSONResponse
 
 from haute._cache import GraphFingerprintMemo, canonical_json
 from haute._editor_identities import resolve_editor_identity
-from haute._env import float_env, int_env
+from haute._env import int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
     IsolatedExecutionBudget,
@@ -66,6 +67,14 @@ from haute._pipeline_repair import (
     apply_remove_unavailable_node_plan,
 )
 from haute._pipeline_repair_actions import apply_scoped_node_save
+from haute._pipeline_settings import (
+    SETTINGS_PATH,
+    apply_chunk_rows,
+    automatic_pipeline_settings,
+    project_pipeline_settings,
+    read_pipeline_settings,
+    update_pipeline_settings,
+)
 from haute._polars_io_registry import (
     PolarsIoConfigError,
     format_for_config,
@@ -79,14 +88,12 @@ from haute._polars_steps import (
     render_polars_steps,
     resolve_free_code_columns,
 )
-from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
 from haute._sandbox import _get_project_root, contained_path
 from haute._seed_plans import (
     ListedSeed,
     ReadGeneration,
     SeedPlanHandoff,
     open_seed_plan,
-    preview_builds_snapshots,
     preview_input_node_ids,
 )
 from haute._source_cache import new_staging_token
@@ -178,7 +185,6 @@ from haute.schemas import (
     EditorIdentitiesResponse,
     EditorIdentityResponseNode,
     ExecutionMetricsPayload,
-    ExecutionSettings,
     FreeCodeColumns,
     NodeMemoryInfo,
     NodeTimingInfo,
@@ -189,6 +195,9 @@ from haute.schemas import (
     PipelineRepairApplyResponse,
     PipelineRepairRecoverRequest,
     PipelineRepairRemoveRequest,
+    PipelineSettingsAutomatic,
+    PipelineSettingsResponse,
+    PipelineSettingsValues,
     PipelineSummary,
     PolarsFreeCodeColumnsRequest,
     PolarsFreeCodeColumnsResponse,
@@ -452,18 +461,9 @@ async def resolve_free_code_columns_endpoint(
     )
 
 
-# ── Timeouts (seconds) — resolved per request so env overrides set
-# after import take effect ───────────────────────────────────────
-def _trace_timeout() -> float:
-    return float_env("HAUTE_TRACE_TIMEOUT", 120.0)
-
-
-def preview_timeout() -> float:
-    return float_env("HAUTE_PREVIEW_TIMEOUT", 120.0)
-
-
-def _sink_timeout() -> float:
-    return float_env("HAUTE_SINK_TIMEOUT", 300.0)
+def _pipeline_time_limit() -> float:
+    """The pipeline time limit in seconds, read from the pipeline settings per request."""
+    return project_pipeline_settings().pipeline_time_limit_seconds
 
 
 _preview_supersession = SupersessionCoordinator()
@@ -1391,7 +1391,7 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
                         body.source,
                         memo=fingerprint_memo,
                     ),
-                    timeout_seconds=_trace_timeout(),
+                    timeout_seconds=_pipeline_time_limit(),
                     stop_reason=(lambda: "superseded" if trace_token.cancelled else None),
                     absolute_rss_limit_bytes=budget.process_rss_limit_bytes,
                     memory_growth_limit_bytes=budget.memory_limit_bytes,
@@ -1425,7 +1425,7 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
 
             return await run_blocking_with_response_timeout(
                 _execute_trace_in_thread,
-                timeout=_trace_timeout(),
+                timeout=_pipeline_time_limit(),
                 operation="pipeline_trace",
             )
 
@@ -1446,7 +1446,7 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
         trace_token.cancel()
         raise HTTPException(
             status_code=504,
-            detail=f"Trace execution timed out ({_trace_timeout():.0f}s limit)",
+            detail=f"Trace execution timed out ({_pipeline_time_limit():.0f}s limit)",
         ) from None
     except InteractiveWorkerStoppedError as e:
         raise HTTPException(status_code=409, detail=str(e)) from None
@@ -1466,12 +1466,12 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
             trace_context = None
         raise HTTPException(
             status_code=504,
-            detail=f"Trace execution timed out ({_trace_timeout():.0f}s limit)",
+            detail=f"Trace execution timed out ({_pipeline_time_limit():.0f}s limit)",
         )
     except TimeoutError:
         raise HTTPException(
             status_code=504,
-            detail=f"Trace execution timed out ({_trace_timeout():.0f}s limit)",
+            detail=f"Trace execution timed out ({_pipeline_time_limit():.0f}s limit)",
         )
     except PUBLIC_CONTRACT_ERROR_TYPES as e:
         logger.warning("trace_public_contract_error", **contract_error_payload(e))
@@ -1505,34 +1505,6 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
     finally:
         if trace_context is not None:
             trace_context.release_admission(preserve_primary_error=True)
-
-
-def _preview_budget_profile(
-    graph: PipelineGraph, body: PreviewNodeRequest
-) -> ExecutionProfile | None:
-    """The cache-build budget for a preview that builds node caches, else None.
-
-    A capture writes the node's whole output, so the preview is budgeted as
-    the cache build it runs. Planning only reads store metadata; a graph it
-    cannot plan keeps the preview budget, and the preview reports the error.
-    """
-    try:
-        with runtime_project_root_scope(graph.source_file):
-            builds = preview_builds_snapshots(
-                graph,
-                body.node_id,
-                source=body.source,
-                required_columns_by_node=_preview_required_columns_by_node(
-                    graph,
-                    body.node_id,
-                    body.requested_preview_columns,
-                )
-                or None,
-            )
-    except Exception as exc:  # noqa: BLE001 - the preview reports its own planning errors
-        logger.info("preview_budget_plan_unavailable", error=str(exc))
-        return None
-    return ExecutionProfile.NODE_SNAPSHOT if builds else None
 
 
 async def _preview_canonical_graph(
@@ -1575,24 +1547,9 @@ async def _preview_canonical_graph(
         async def _run_preview() -> PreviewNodeResponse:
             nonlocal preview_context, preview_started
             preview_started = True
-            # Planning can load a Model Score's model to learn its columns, as
-            # preview input resolution does just before; it is bounded the same
-            # way, and a plan that does not finish keeps the preview budget.
-            try:
-                budget_profile = await run_blocking_with_response_timeout(
-                    _preview_budget_profile,
-                    graph,
-                    body,
-                    timeout=preview_timeout(),
-                    operation="pipeline_preview_budget",
-                )
-            except (BlockingWorkTimeoutError, TimeoutError):
-                logger.info("preview_budget_plan_timed_out", node_id=body.node_id)
-                budget_profile = None
             preview_context = create_admitted_execution_context(
                 operation="pipeline_preview",
                 profile=ExecutionProfile.PREVIEW_EAGER,
-                budget_profile=budget_profile,
                 cancellation_token=preview_token,
             )
             if resolve_interactive_execution_mode() == "process":
@@ -1612,7 +1569,7 @@ async def _preview_canonical_graph(
                             body.source,
                             memo=fingerprint_memo,
                         ),
-                        timeout_seconds=preview_timeout(),
+                        timeout_seconds=_pipeline_time_limit(),
                         stop_reason=(lambda: "superseded" if preview_token.cancelled else None),
                         absolute_rss_limit_bytes=budget.process_rss_limit_bytes,
                         memory_growth_limit_bytes=budget.memory_limit_bytes,
@@ -1640,7 +1597,7 @@ async def _preview_canonical_graph(
 
             results = await run_blocking_with_response_timeout(
                 _execute_graph_in_thread,
-                timeout=preview_timeout(),
+                timeout=_pipeline_time_limit(),
                 operation="pipeline_preview",
             )
             return _preview_response_from_results(graph, body, results, preview_context)
@@ -1677,7 +1634,7 @@ async def _preview_canonical_graph(
         preview_token.cancel()
         raise HTTPException(
             status_code=504,
-            detail=f"Preview execution timed out ({preview_timeout():.0f}s limit)",
+            detail=f"Preview execution timed out ({_pipeline_time_limit():.0f}s limit)",
         ) from None
     except InteractiveWorkerStoppedError as e:
         raise HTTPException(status_code=409, detail=str(e)) from None
@@ -1697,13 +1654,13 @@ async def _preview_canonical_graph(
             preview_context = None
         raise HTTPException(
             status_code=504,
-            detail=f"Preview execution timed out ({preview_timeout():.0f}s limit)",
+            detail=f"Preview execution timed out ({_pipeline_time_limit():.0f}s limit)",
         )
     except TimeoutError:
         preview_token.cancel()
         raise HTTPException(
             status_code=504,
-            detail=f"Preview execution timed out ({preview_timeout():.0f}s limit)",
+            detail=f"Preview execution timed out ({_pipeline_time_limit():.0f}s limit)",
         )
     except PUBLIC_CONTRACT_ERROR_TYPES as e:
         logger.warning("preview_public_contract_error", **contract_error_payload(e))
@@ -1815,7 +1772,7 @@ async def preview_inputs(body: PreviewInputsRequest) -> PreviewInputsResponse:
     try:
         node_ids = await run_blocking_with_response_timeout(
             _resolve,
-            timeout=preview_timeout(),
+            timeout=_pipeline_time_limit(),
             operation="pipeline_preview_inputs",
         )
     except PreviewProjectionError as e:
@@ -1826,7 +1783,7 @@ async def preview_inputs(body: PreviewInputsRequest) -> PreviewInputsResponse:
     except (BlockingWorkTimeoutError, TimeoutError):
         raise HTTPException(
             status_code=504,
-            detail=f"Preview input resolution timed out ({preview_timeout():.0f}s limit)",
+            detail=f"Preview input resolution timed out ({_pipeline_time_limit():.0f}s limit)",
         ) from None
     except PUBLIC_CONTRACT_ERROR_TYPES as e:
         raise contract_error_http_exception(e) from None
@@ -2094,21 +2051,38 @@ async def recovery_preview_node(
         return _pipeline_recovery_error_response(exc.status_code, exc.detail)
 
 
-@router.get("/execution-settings", response_model=ExecutionSettings)
-async def get_execution_settings() -> ExecutionSettings:
-    """The editor's current execution settings."""
-    return ExecutionSettings(streaming_chunk_size=current_streaming_chunk_size())
+def _pipeline_settings_response() -> PipelineSettingsResponse:
+    root = _get_project_root()
+    return PipelineSettingsResponse(
+        settings=PipelineSettingsValues.model_validate(read_pipeline_settings(root).values()),
+        automatic=PipelineSettingsAutomatic.model_validate(
+            dataclasses.asdict(automatic_pipeline_settings(root))
+        ),
+        path=SETTINGS_PATH,
+    )
 
 
-@router.put("/execution-settings", response_model=ExecutionSettings)
-async def put_execution_settings(body: ExecutionSettings) -> ExecutionSettings:
-    """Apply new execution settings to the server process at once.
+@router.get("/pipeline-settings", response_model=PipelineSettingsResponse)
+async def get_pipeline_settings() -> PipelineSettingsResponse:
+    """The project's pipeline settings and each one's automatic figure now."""
+    return await run_in_threadpool(_pipeline_settings_response)
 
-    Server-thread executions and workers started afterwards, and the next task
-    on each warm interactive worker, run with the new streaming chunk size.
+
+@router.patch("/pipeline-settings", response_model=PipelineSettingsResponse)
+async def patch_pipeline_settings(body: PipelineSettingsValues) -> PipelineSettingsResponse:
+    """Change the settings the body names (``null`` restores automatic) and write the file.
+
+    The server applies written chunk rows at once; every other setting is read
+    when each execution starts.
     """
-    set_streaming_chunk_size(body.streaming_chunk_size)
-    return ExecutionSettings(streaming_chunk_size=current_streaming_chunk_size())
+
+    def _update() -> PipelineSettingsResponse:
+        apply_chunk_rows(
+            update_pipeline_settings(_get_project_root(), body.model_dump(exclude_unset=True))
+        )
+        return _pipeline_settings_response()
+
+    return await run_in_threadpool(_update)
 
 
 @router.post(
@@ -2245,7 +2219,7 @@ def _output_write_transaction(
     """
     prepared: PreparedDataOutput | None = None
     primary_error: BaseException | None = None
-    deadline = time.monotonic() + _sink_timeout()
+    deadline = time.monotonic() + _pipeline_time_limit()
     try:
         if cancellation_requested.is_set():
             raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
@@ -2266,7 +2240,7 @@ def _output_write_transaction(
             if cancellation_requested.is_set():
                 raise IsolatedWorkerStoppedError(terminal_reason="cancelled") from exc
             if time.monotonic() >= deadline:
-                raise IsolatedWorkerTimeoutError(timeout_seconds=_sink_timeout()) from exc
+                raise IsolatedWorkerTimeoutError(timeout_seconds=_pipeline_time_limit()) from exc
             raise
         with plan:
             # Preparation can finish (a cancelled build reconciled as published)
@@ -2275,7 +2249,7 @@ def _output_write_transaction(
                 raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise IsolatedWorkerTimeoutError(timeout_seconds=_sink_timeout())
+                raise IsolatedWorkerTimeoutError(timeout_seconds=_pipeline_time_limit())
             config = worker_config_for_memory_policy(
                 memory_limit_bytes=budget.memory_limit_bytes,
                 timeout_seconds=remaining,
@@ -2470,7 +2444,7 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
     except IsolatedWorkerTimeoutError:
         raise HTTPException(
             status_code=504,
-            detail=f"Sink execution timed out ({_sink_timeout():.0f}s limit)",
+            detail=f"Sink execution timed out ({_pipeline_time_limit():.0f}s limit)",
         ) from None
     except IsolatedWorkerStoppedError as e:
         raise HTTPException(status_code=409, detail=str(e)) from None
@@ -2491,7 +2465,7 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
     except TimeoutError:
         raise HTTPException(
             status_code=504,
-            detail=f"Sink execution timed out ({_sink_timeout():.0f}s limit)",
+            detail=f"Sink execution timed out ({_pipeline_time_limit():.0f}s limit)",
         ) from None
     except DataOutputDestinationExistsError as e:
         raise HTTPException(status_code=409, detail=str(e)) from None

@@ -251,7 +251,6 @@ function resetStores() {
   useNodeDataStore.getState().reset()
   useSettingsStore.setState({
     activeSource: "pricing",
-    streamingChunkSize: 250000,
   })
   useUIStore.setState({ explorePreviewPanes: {}, explorePanes: {} })
   useToastStore.setState({ toasts: [], _toastCounter: 0 })

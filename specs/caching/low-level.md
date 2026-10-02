@@ -295,6 +295,18 @@ anything, which node outputs it reads from shared snapshots (**seeds**) and whic
 materialisations it writes to them (**captures**). The lazy engine executes under the
 resulting plan.
 
+- **Caching off.** `resolve_seed_plan` reads the pipeline settings of the store's project
+  (`store.root`). With `caching` off it resolves through `_UncachedResolver`: no node is a
+  seed candidate and there are no capture points (so no skips either), so the walk executes
+  every node reachable from the target and the consumed nodes along effective edges, and
+  negotiation reads no generation. The decision has empty `seeds`, `captures` and
+  `skipped_captures`, and a fingerprint over no seeds. Every path that resolves goes through
+  it — `open_resolved_seed_plan`, `open_seed_plan` (whose input preparation is unchanged),
+  explicit builds, whose own node is still built and published by the build, and the
+  training estimate's `estimation_graph`, which then replaces nothing. A listed plan (a
+  trace) is resolved by `_ListedResolver` and is not affected: it reads what its preview
+  listed. The preview route never opens a plan while caching is off (execution engine,
+  "Previews under a seed plan").
 - **Eligibility.** The profile must both read and write the `bounded` class
   (`snapshot_read_classes`, `snapshot_write_class` with `preview_admitted=True`); deploy
   profiles raise `ValueError`. A `PREVIEW_EAGER` request is built only for a lineage
@@ -431,9 +443,9 @@ resulting plan.
   own read's error to report at the node, and a preview of an unadmitted lineage runs as before.
 - **Preview inputs.** `preview_input_node_ids(graph, target, source=, required_columns_by_node=)`
   returns, in execution order, the snapshot-backed Data Inputs and structured API Inputs a preview
-  would read: for an admitted lineage those its first resolution executes, read without preparing
-  or leasing; otherwise every one the target can read. It is advisory — a preview prepares what
-  its own plan reads.
+  would read: for an admitted lineage with caching on (the store's project settings) those its
+  first resolution executes, read without preparing or leasing; otherwise every one the target
+  can read. It is advisory — a preview prepares what its own plan reads.
 - **Listed plans.** `open_listed_seed_plan(request, listed)` is the plan of a trace, built from
   the `ListedSeed(node_id, identity_digest, generation_id)` entries its preview returned. Every
   entry is checked and leased first, in order: a node no longer in the target's lineage or not a
@@ -602,6 +614,16 @@ cache lifecycle changes.
   being dropped. Cost-gated capture points cover cheap segment skips for fan-out and consumed nodes, slice-transparent feeders to edge joins, filter feeders captured while filter fan-outs are skipped, costly segments retaining structural and consumed captures across rating steps and unresolvable sources, segments stopping at fresh captures and seeds, multi-port API inputs joined as structural captures, costly code nodes versus cheap boundaries, preview captures restricted to registered full-input work, and immutability of settled captures and skip reasons across handoffs.
 - `tests/test_training_seeding.py` covers a consumed select below a Rating Step being captured
   and seeded on a second run, while the unconsumed Rating Step is not captured.
+- `tests/test_caching_off.py` covers caching off in the pipeline settings: a bounded plan over
+  a graph whose join was captured and is fresh seeds nothing, captures nothing, records no
+  skips and executes the whole lineage, and a Data Output run under it writes the same rows as
+  with caching on while the store gains no generation; an explicit build publishes its own
+  node and nothing upstream, and seeds nothing from a fresh upstream generation; a preview of
+  a node below a join opens no plan, lists no seed plan and writes nothing; turning caching
+  back on seeds from a generation captured before it was turned off; and a trace still leases
+  the generations its preview listed when caching was turned off in between.
+  `tests/test_preview_admission.py` covers the preview inputs while caching is off: every
+  snapshot-backed input the target reads, even above a fresh seed.
 - `tests/test_preview_admission.py` covers an API Input over an undeclared-dtype CSV not being
   admitted and over a declared one being admitted, a Data Input over the same CSV and a
   structured API Input being admitted, a failing probe leaving the lineage unadmitted without

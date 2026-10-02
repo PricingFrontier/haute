@@ -54,6 +54,7 @@ from haute._path_resolution import (
     _normalise_path_text,
     runtime_project_root_scope,
 )
+from haute._pipeline_settings import project_pipeline_settings
 from haute._registry import ensure_registry_ready
 from haute._sandbox import (
     compile_project_code,
@@ -973,9 +974,10 @@ def execute_graph(
             frame whose rows/columns the flat ``columns`` / ``preview`` should
             reflect. Single-frame targets ignore it. Threaded into the preview
             cache key so each frame is a distinct cache entry.
-        shared_snapshots: When set (the preview route), a target whose
-            lineage ``preview_lineage_admitted`` accepts runs under a seed
-            plan: it seeds from shared snapshots, captures its joins and
+        shared_snapshots: When set (the preview route) and caching is on in
+            the project's pipeline settings, a target whose lineage
+            ``preview_lineage_admitted`` accepts runs under a seed plan: it
+            seeds from shared snapshots, captures its joins and
             materialisations into them, and records the generations its rows
             were computed from on the execution context
             (``preview_seed_plan``). Any other target runs as without it.
@@ -1035,7 +1037,11 @@ def execute_graph(
     if not shared_snapshots or target_node_id is None or not graph.source_file:
         return core(snapshot_plan=None, seed_plan_request=None)
     with runtime_project_root_scope(graph.source_file):
-        if not preview_lineage_admitted(graph, target_node_id, source=source):
+        # With caching off in the project's pipeline settings a preview neither
+        # reads nor writes node-output snapshots: it runs without a plan.
+        if not project_pipeline_settings().caching_enabled or not preview_lineage_admitted(
+            graph, target_node_id, source=source
+        ):
             return core(snapshot_plan=None, seed_plan_request=None)
         request = SeedPlanRequest(
             graph=graph,

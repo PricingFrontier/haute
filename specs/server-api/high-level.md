@@ -41,8 +41,8 @@ In scope:
   WebSocket client registry and broadcast fan-out, and the on-disk sidecar (`.haute.json`)
   format.
 - The pipeline routes (`haute.routes.pipeline`): list/get/save/preview/trace/output-write
-  and output-destination preview, the editor's execution settings (the streaming chunk
-  size, `GET`/`PUT /api/execution-settings`), their
+  and output-destination preview, the pipeline settings (`GET`/`PATCH
+  /api/pipeline-settings`, the per-clone `.haute/pipeline-settings.json`), their
   request-supersession and concurrency-limiting behaviour, and the transactional save
   service (`haute.routes._save_pipeline`).
 - The file-browsing and schema-inspection routes (`haute.routes.files`), the utility-script
@@ -194,8 +194,8 @@ are keyed on (graph fingerprint, source, node, row/column selectors): a newer re
 *same* key supersedes the older request and terminates and joins its active worker before the
 replacement starts, so same-key workers never overlap. A *different* key runs independently,
 bounded by a small per-operation concurrency semaphore. Preview, trace, and output-write
-enforce a response timeout (`HAUTE_{PREVIEW,TRACE,SINK}_TIMEOUT`, default 120s/120s/300s;
-the historical internal `SINK` setting governs output-write). Production dispatches all three
+enforce the pipeline settings' pipeline time limit (30 minutes unless set) as their
+response timeout. Production dispatches all three
 to killable worker processes under admitted native memory growth limits. Timeout, request
 cancellation, or supersession terminates and joins the exact worker before the route releases
 admission or returns; there is no late graph computation. For file outputs, the worker may

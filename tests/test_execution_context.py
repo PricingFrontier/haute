@@ -38,6 +38,7 @@ from haute._execution_context import (
 )
 from haute._graph_walker import CollectPolicy, walk_graph
 from haute._pipeline_recovery import pipeline_document_fingerprint
+from haute._pipeline_settings import PipelineSettings
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.errors import ContractMismatchError, SchemaMismatchError
 from haute.execution import execute_lazy_graph
@@ -70,14 +71,13 @@ def _clear_execution_memory_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove memory-budget env vars so tests exercise default policy."""
     from haute import _execution_admission as admission_mod
 
-    for profile in ExecutionProfile:
+    for profile in admission_mod._PROFILE_MEMORY_ENV:
         for key, _multiplier in admission_mod._memory_env_candidates(profile):
             monkeypatch.delenv(key, raising=False)
+    for profile in ExecutionProfile:
         for key, _multiplier in admission_mod._process_rss_env_candidates(profile):
             monkeypatch.delenv(key, raising=False)
     monkeypatch.delenv("HAUTE_EXECUTION_MEMORY_POLICY", raising=False)
-    monkeypatch.delenv("HAUTE_EXECUTION_OS_RESERVE_BYTES", raising=False)
-    monkeypatch.delenv("HAUTE_EXECUTION_OS_RESERVE_MB", raising=False)
     admission_mod._clear_in_flight_reservations_for_tests()
 
 
@@ -164,7 +164,10 @@ def test_execution_admission_policy_covers_every_engine_profile() -> None:
     expected_profiles = set(ExecutionProfile)
 
     assert set(admission._ADAPTIVE_MEMORY_POLICY) == expected_profiles
-    assert set(admission._PROFILE_MEMORY_ENV) == expected_profiles
+    # A preview's budget is the pipeline settings' preview memory, never a variable.
+    assert set(admission._PROFILE_MEMORY_ENV) == expected_profiles - {
+        ExecutionProfile.PREVIEW_EAGER
+    }
     assert set(admission._PROFILE_PROCESS_RSS_ENV) == expected_profiles
     assert ExecutionProfile.DEPLOY_LIVE not in admission._ADAPTIVE_LOCAL_PROFILES
 
@@ -265,13 +268,14 @@ def test_adaptive_default_memory_budgets_never_exceed_available_ram(
 
 def test_adaptive_default_memory_budgets_honor_configured_os_reserve(
     monkeypatch: pytest.MonkeyPatch,
+    pipeline_settings,
 ) -> None:
     _clear_execution_memory_env(monkeypatch)
     gib = 1024 * 1024 * 1024
     monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 20 * gib)
 
     default_budget = execution_budget_for_profile(ExecutionProfile.EXPLORE_ANALYSIS)
-    monkeypatch.setenv("HAUTE_EXECUTION_OS_RESERVE_MB", str(6 * 1024))
+    pipeline_settings(kept_free_gb=6)
     reserved_budget = execution_budget_for_profile(ExecutionProfile.EXPLORE_ANALYSIS)
 
     assert default_budget.os_reserve_bytes == 2 * gib
@@ -299,23 +303,23 @@ def test_explicit_global_memory_cap_remains_hard_for_all_profiles(
     monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 64 * gib)
     monkeypatch.setenv("HAUTE_EXECUTION_MEMORY_LIMIT_MB", "768")
 
-    for profile in ExecutionProfile:
+    for profile in set(ExecutionProfile) - {ExecutionProfile.PREVIEW_EAGER}:
         budget = execution_budget_for_profile(profile)
         assert budget.memory_limit_bytes == 768 * 1024 * 1024
         assert budget.config_key == "HAUTE_EXECUTION_MEMORY_LIMIT_MB"
+    # Previews are sized by the pipeline settings alone.
+    preview = execution_budget_for_profile(ExecutionProfile.PREVIEW_EAGER)
+    assert preview.budget_policy == "adaptive_local"
 
 
 @pytest.mark.parametrize(
     ("env_name", "resolver", "expected"),
     [
         (
-            "HAUTE_PREVIEW_MEMORY_LIMIT_BYTES",
-            lambda module: module._resolve_required_budget(ExecutionProfile.PREVIEW_EAGER),
-            7,
-        ),
-        (
-            "HAUTE_EXECUTION_OS_RESERVE_BYTES",
-            lambda module: module._resolve_os_reserve_bytes(),
+            "HAUTE_SINK_MEMORY_LIMIT_BYTES",
+            lambda module: module._resolve_required_budget(
+                ExecutionProfile.LAZY_SINK, PipelineSettings()
+            ),
             7,
         ),
         (
@@ -367,14 +371,11 @@ def test_admission_numeric_env_is_read_once(
     ("invalid_key", "lower_precedence_key", "resolver"),
     [
         (
-            "HAUTE_PREVIEW_MEMORY_LIMIT_BYTES",
-            "HAUTE_PREVIEW_MEMORY_LIMIT_MB",
-            lambda module: module._resolve_required_budget(ExecutionProfile.PREVIEW_EAGER),
-        ),
-        (
-            "HAUTE_EXECUTION_OS_RESERVE_BYTES",
-            "HAUTE_EXECUTION_OS_RESERVE_MB",
-            lambda module: module._resolve_os_reserve_bytes(),
+            "HAUTE_SINK_MEMORY_LIMIT_BYTES",
+            "HAUTE_SINK_MEMORY_LIMIT_MB",
+            lambda module: module._resolve_required_budget(
+                ExecutionProfile.LAZY_SINK, PipelineSettings()
+            ),
         ),
         (
             "HAUTE_PREVIEW_PROCESS_RSS_LIMIT_BYTES",
@@ -405,15 +406,12 @@ def test_invalid_highest_precedence_admission_env_does_not_fall_through(
     ("env_name", "resolver", "expected"),
     [
         (
-            "HAUTE_PREVIEW_MEMORY_LIMIT_MB",
+            "HAUTE_SINK_MEMORY_LIMIT_MB",
             lambda module: (
-                module._resolve_required_budget(ExecutionProfile.PREVIEW_EAGER).memory_limit_bytes
+                module._resolve_required_budget(
+                    ExecutionProfile.LAZY_SINK, PipelineSettings()
+                ).memory_limit_bytes
             ),
-            3 * 1024 * 1024,
-        ),
-        (
-            "HAUTE_EXECUTION_OS_RESERVE_MB",
-            lambda module: module._resolve_os_reserve_bytes(),
             3 * 1024 * 1024,
         ),
         (
@@ -2461,8 +2459,10 @@ def test_execution_context_records_stage_metric_when_memory_limit_fails_at_entry
     assert metric.rss_peak_bytes == 111
 
 
-def test_admitted_execution_context_uses_profile_specific_memory_limit(monkeypatch) -> None:
-    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "512")
+def test_admitted_execution_context_uses_profile_specific_memory_limit(
+    monkeypatch, pipeline_settings
+) -> None:
+    pipeline_settings(preview_memory_gb=512 / 1024)
 
     context = create_admitted_execution_context(
         operation="pipeline_preview",
@@ -2480,15 +2480,16 @@ def test_admitted_execution_context_uses_profile_specific_memory_limit(monkeypat
     assert context.rss_limit_bytes == 640 * 1024 * 1024
     assert context.admission.rss_limit_bytes == 640 * 1024 * 1024
     assert context.admission.headroom_bytes == 512 * 1024 * 1024
-    assert context.admission.config_key == "HAUTE_PREVIEW_MEMORY_LIMIT_MB"
+    assert context.admission.config_key == "preview_memory_gb"
 
 
 def test_isolated_context_uses_plain_parent_budget_without_reserving_twice(
     monkeypatch: pytest.MonkeyPatch,
+    pipeline_settings,
 ) -> None:
     import haute._execution_admission as admission_mod
 
-    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "64")
+    pipeline_settings(preview_memory_gb=64 / 1024)
     parent = create_admitted_execution_context(
         operation="pipeline_preview",
         profile=ExecutionProfile.PREVIEW_EAGER,
@@ -2511,6 +2512,7 @@ def test_isolated_context_uses_plain_parent_budget_without_reserving_twice(
 
 def test_isolated_context_requires_admitted_parent_and_child_rss_sampler(
     monkeypatch: pytest.MonkeyPatch,
+    pipeline_settings,
 ) -> None:
     import haute._execution_admission as admission_mod
 
@@ -2523,7 +2525,7 @@ def test_isolated_context_requires_admitted_parent_and_child_rss_sampler(
             )
         )
 
-    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "64")
+    pipeline_settings(preview_memory_gb=64 / 1024)
     parent = create_admitted_execution_context(
         operation="pipeline_preview",
         profile=ExecutionProfile.PREVIEW_EAGER,
@@ -2722,8 +2724,9 @@ def test_isolated_context_rejects_child_with_no_absolute_cap_headroom(
 
 def test_admitted_execution_context_allows_warm_process_above_operation_budget(
     monkeypatch,
+    pipeline_settings,
 ) -> None:
-    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "512")
+    pipeline_settings(preview_memory_gb=512 / 1024)
     gib = 1024 * 1024 * 1024
     mib = 1024 * 1024
     samples = iter([2 * gib, 2 * gib + 511 * mib, 2 * gib + 513 * mib])
@@ -2747,8 +2750,9 @@ def test_admitted_execution_context_allows_warm_process_above_operation_budget(
 
 def test_admitted_execution_context_runtime_failure_reports_process_rss_cap(
     monkeypatch,
+    pipeline_settings,
 ) -> None:
-    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "512")
+    pipeline_settings(preview_memory_gb=512 / 1024)
     monkeypatch.setenv("HAUTE_PREVIEW_PROCESS_RSS_LIMIT_MB", "2304")
     gib = 1024 * 1024 * 1024
     mib = 1024 * 1024
@@ -2770,9 +2774,10 @@ def test_admitted_execution_context_runtime_failure_reports_process_rss_cap(
 
 def test_process_rss_cap_catches_cumulative_warm_process_ratcheting(
     monkeypatch: pytest.MonkeyPatch,
+    pipeline_settings,
 ) -> None:
     """A process cap bounds total RSS even when each operation gets fresh headroom."""
-    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "512")
+    pipeline_settings(preview_memory_gb=512 / 1024)
     monkeypatch.setenv("HAUTE_PREVIEW_PROCESS_RSS_LIMIT_MB", "1024")
     mib = 1024 * 1024
     samples = iter([900 * mib, 1030 * mib])
@@ -2840,8 +2845,10 @@ def test_admitted_execution_context_rejects_at_process_rss_cap(
     assert exc_info.value.process_rss_limit_bytes == 100
 
 
-def test_execution_metrics_payload_includes_admission_metadata(monkeypatch) -> None:
-    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "256")
+def test_execution_metrics_payload_includes_admission_metadata(
+    monkeypatch, pipeline_settings
+) -> None:
+    pipeline_settings(preview_memory_gb=256 / 1024)
     context = create_admitted_execution_context(
         operation="pipeline_preview",
         profile=ExecutionProfile.PREVIEW_EAGER,
@@ -2859,14 +2866,14 @@ def test_execution_metrics_payload_includes_admission_metadata(monkeypatch) -> N
         "rss_limit_bytes": 288 * 1024 * 1024,
         "process_rss_limit_bytes": None,
         "headroom_bytes": 256 * 1024 * 1024,
-        "config_key": "HAUTE_PREVIEW_MEMORY_LIMIT_MB",
-        "budget_policy": "explicit_env",
+        "config_key": "preview_memory_gb",
+        "budget_policy": "pipeline_settings",
         "available_ram_bytes": None,
         "os_reserve_bytes": None,
         "reason": "within_memory_budget",
     }
     validated = ExecutionMetricsPayload.model_validate(payload).model_dump(mode="json")
-    assert validated["admission"]["budget_policy"] == "explicit_env"
+    assert validated["admission"]["budget_policy"] == "pipeline_settings"
     assert validated["admission"]["available_ram_bytes"] is None
     assert validated["admission"]["os_reserve_bytes"] is None
 
@@ -3751,11 +3758,13 @@ async def test_read_json_file_maps_unexpected_read_failure_to_internal_error(
 
 
 @pytest.mark.asyncio
-async def test_preview_route_creates_admitted_preview_execution_context(monkeypatch) -> None:
+async def test_preview_route_creates_admitted_preview_execution_context(
+    monkeypatch, pipeline_settings
+) -> None:
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import ColumnInfo, NodeResult, PreviewNodeRequest
 
-    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "384")
+    pipeline_settings(preview_memory_gb=384 / 1024)
     monkeypatch.setattr(
         "haute._execution_admission.current_rss_bytes",
         lambda: 96 * 1024 * 1024,
@@ -3810,12 +3819,13 @@ async def test_preview_route_creates_admitted_preview_execution_context(monkeypa
 @pytest.mark.asyncio
 async def test_preview_route_admits_when_warm_process_rss_exceeds_operation_budget(
     monkeypatch,
+    pipeline_settings,
 ) -> None:
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import ColumnInfo, NodeResult, PreviewNodeRequest
 
     gib = 1024 * 1024 * 1024
-    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "384")
+    pipeline_settings(preview_memory_gb=384 / 1024)
     monkeypatch.setattr(
         "haute._execution_admission.current_rss_bytes",
         lambda: 2 * gib,
@@ -3865,10 +3875,12 @@ async def test_preview_route_admits_when_warm_process_rss_exceeds_operation_budg
 
 
 @pytest.mark.asyncio
-async def test_preview_route_maps_admission_failure_to_http_507(monkeypatch) -> None:
+async def test_preview_route_maps_admission_failure_to_http_507(
+    monkeypatch, pipeline_settings
+) -> None:
     from haute.schemas import PreviewNodeRequest
 
-    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "64")
+    pipeline_settings(preview_memory_gb=64 / 1024)
     monkeypatch.setenv("HAUTE_PREVIEW_PROCESS_RSS_LIMIT_MB", "64")
     monkeypatch.setattr(
         "haute._execution_admission.current_rss_bytes",
@@ -3901,15 +3913,16 @@ async def test_preview_route_maps_admission_failure_to_http_507(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_preview_route_cancels_execution_context_on_timeout(monkeypatch) -> None:
+async def test_preview_route_cancels_execution_context_on_timeout(
+    monkeypatch, pipeline_settings
+) -> None:
     from fastapi import HTTPException
 
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import NodeResult, PreviewNodeRequest
 
-    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "512")
+    pipeline_settings(preview_memory_gb=512 / 1024, pipeline_time_limit_minutes=0.05 / 60)
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 1)
-    monkeypatch.setenv("HAUTE_PREVIEW_TIMEOUT", "0.05")
     graph = make_graph(
         {
             "nodes": [
@@ -3967,6 +3980,7 @@ class _LeavingClient:
 @pytest.mark.asyncio
 async def test_a_disconnected_preview_that_times_out_keeps_admission_until_its_thread_ends(
     monkeypatch,
+    pipeline_settings,
 ) -> None:
     """The client leaves, the thread ignores cancellation past its timeout: its
     admission must still be released only once the thread finishes."""
@@ -3976,7 +3990,7 @@ async def test_a_disconnected_preview_that_times_out_keeps_admission_until_its_t
     from haute.schemas import NodeResult, PreviewNodeRequest
 
     monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "thread")
-    monkeypatch.setenv("HAUTE_PREVIEW_TIMEOUT", "0.6")  # past the watcher's first poll
+    pipeline_settings(pipeline_time_limit_minutes=0.6 / 60)  # past the watcher's first poll
     graph = make_graph(
         {
             "nodes": [
@@ -4044,13 +4058,14 @@ async def test_a_disconnected_preview_that_times_out_keeps_admission_until_its_t
 @pytest.mark.asyncio
 async def test_preview_route_releases_admission_after_timed_out_worker_finishes(
     monkeypatch,
+    pipeline_settings,
 ) -> None:
     from fastapi import HTTPException
 
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import NodeResult, PreviewNodeRequest
 
-    monkeypatch.setenv("HAUTE_PREVIEW_TIMEOUT", "0.05")
+    pipeline_settings(pipeline_time_limit_minutes=0.05 / 60)
     graph = make_graph(
         {
             "nodes": [
@@ -4663,7 +4678,9 @@ async def test_sink_route_maps_cancelled_isolated_worker_without_deferred_releas
 
 
 @pytest.mark.asyncio
-async def test_sink_route_does_not_fall_back_after_isolated_timeout(monkeypatch, tmp_path) -> None:
+async def test_sink_route_does_not_fall_back_after_isolated_timeout(
+    monkeypatch, tmp_path, pipeline_settings
+) -> None:
     from fastapi import HTTPException
 
     from haute._worker_isolation import IsolatedWorkerTimeoutError
@@ -4673,7 +4690,7 @@ async def test_sink_route_does_not_fall_back_after_isolated_timeout(monkeypatch,
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HAUTE_SINK_MEMORY_LIMIT_MB", "512")
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 1)
-    monkeypatch.setenv("HAUTE_SINK_TIMEOUT", "0.05")
+    pipeline_settings(pipeline_time_limit_minutes=0.05 / 60)
     output_path = tmp_path / "sink.parquet"
     graph = make_graph(
         {

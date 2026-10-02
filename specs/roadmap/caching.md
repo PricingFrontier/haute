@@ -97,8 +97,9 @@ affected-file list.
 ### CACHE-S13 — Capturing previews as jobs
 
 **Why:** A preview whose plan captures a join writes the whole join to disk
-before it returns rows, inside the interactive worker's timeout
-(`HAUTE_PREVIEW_TIMEOUT`, default 120 seconds). When a capture exceeds that,
+before it returns rows, inside the interactive worker's timeout (the pipeline
+settings' pipeline time limit: 30 minutes by default, and 120 seconds when the
+measurements below were taken). When a capture exceeds that,
 the request answers 504, the worker is killed, and its staging is discarded,
 so the unfinished capture is lost and the next preview repeats it. Captures
 the worker had already published survive, because each capture publishes as
@@ -187,7 +188,7 @@ route, job lifecycle, response schema); [caching](../caching/low-level.md#seed-p
 no budget that refuses a capture.
 
 **Evidence:** `src/haute/routes/pipeline.py` (`_preview_canonical_graph`,
-`preview_timeout`); `src/haute/routes/_background_jobs.py`;
+`_pipeline_time_limit`); `src/haute/routes/_background_jobs.py`;
 `src/haute/_seed_plans.py` (`SeedPlanDecision`); `src/haute/schemas.py`;
 `frontend/src/hooks/usePipelineAPI.ts`; `frontend/src/stores/useNodeDataStore.ts`.
 

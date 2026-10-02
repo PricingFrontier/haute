@@ -1501,6 +1501,23 @@ describe("App integration - save pipeline", () => {
   })
 })
 
+describe("App integration - server status", () => {
+  it("reports the server Offline on the Pipeline button once live sync loses it", async () => {
+    render(<App />)
+    await waitForAppReady()
+    const latestSocket = () => MockWebSocket.instances[MockWebSocket.instances.length - 1]
+    const pipeline = screen.getByTestId("toolbar-pipeline-settings")
+    // Still connecting: not evidence of anything, so no "Offline" flash.
+    expect(pipeline).toHaveTextContent(/^Calculating$/)
+
+    act(() => latestSocket().onopen?.())
+    expect(pipeline).toHaveTextContent(/^Calculating$/)
+
+    act(() => (latestSocket().onclose as unknown as (event: CloseEvent) => void)({ code: 1006 } as CloseEvent))
+    expect(pipeline).toHaveTextContent(/^Offline$/)
+  })
+})
+
 describe("App integration - error handling", () => {
   it("shows an error toast when loadPipeline rejects, without crashing", async () => {
     vi.mocked(api.loadPipeline).mockRejectedValueOnce(new Error("Backend offline"))
@@ -2732,6 +2749,98 @@ describe("App integration - panel open/close", () => {
         .nodes.find((n) => (n.data as { config?: { instanceOf?: string } }).config?.instanceOf === "polars_1")
       expect(instance).toBeDefined()
     })
+  })
+
+  // A main canvas holding one submodel occurrence beside a plain node.
+  function loadSubmodelCanvas(capabilities?: { can_mutate: boolean }): void {
+    const occurrence = makeNode("pricing", "pricing", "submodel")
+    occurrence.data.config = { definitionId: "definition_pricing", alias: "pricing" }
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [occurrence, makeNode("polars_1", "First")],
+      edges: [],
+      preamble: "",
+      preserved_blocks: [],
+      source_file: "main.py",
+      source_revision: "revision-dissolve",
+      submodels: {
+        definition_pricing: {
+          definitionId: "definition_pricing",
+          file: "modules/pricing.py",
+          graph: { nodes: [makeNode("rate", "Rate")], edges: [] },
+          inputPorts: [],
+          outputPorts: [],
+        },
+      },
+      capabilities,
+    }))
+  }
+
+  it("a lone selected submodel turns Submodel into Dissolve, which dissolves it with one request", async () => {
+    loadSubmodelCanvas()
+    let finishDissolve!: (response: Awaited<ReturnType<typeof api.dissolveSubmodel>>) => void
+    vi.mocked(api.dissolveSubmodel).mockReset().mockReturnValueOnce(
+      new Promise((resolve) => { finishDissolve = resolve }),
+    )
+    useToastStore.setState({ toasts: [] })
+    render(<App />)
+    await waitForAppReady()
+    const button = screen.getByTestId("toolbar-submodel")
+
+    // Beside another node the submodel is just part of a group.
+    await selectNodes(["pricing", "polars_1"])
+    await waitFor(() => expect(button).toHaveAccessibleName("Submodel"))
+
+    await selectNodes(["pricing"])
+    await waitFor(() => expect(button).toHaveAccessibleName("Dissolve"))
+    expect(button).toHaveAttribute("aria-disabled", "false")
+
+    // Unlike the context menu, the button stays on screen while the transform
+    // runs; a second request would supersede the first and report it as not
+    // applied.
+    fireEvent.click(button)
+    fireEvent.click(button)
+    expect(api.dissolveSubmodel).toHaveBeenCalledOnce()
+    expect(api.dissolveSubmodel).toHaveBeenCalledWith(expect.objectContaining({ instance_id: "pricing" }))
+
+    finishDissolve({
+      status: "ok",
+      instance_id: "pricing",
+      definition_id: "definition_pricing",
+      source_revision: "revision-dissolve",
+      graph: {
+        nodes: [makeNode("pricing__rate", "Rate"), makeNode("polars_1", "First")],
+        edges: [],
+        preserved_blocks: [],
+        source_revision: "revision-dissolve",
+      },
+    })
+    await waitFor(() => {
+      expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["pricing__rate", "polars_1"])
+    })
+    const toasts = useToastStore.getState().toasts.map((toast) => toast.text)
+    expect(toasts).toContain('Submodel "pricing" dissolved - save to apply')
+    expect(toasts.filter((text) => text.includes("not applied"))).toEqual([])
+    // The occurrence is gone, so the button groups again.
+    expect(button).toHaveAccessibleName("Submodel")
+  })
+
+  it("Dissolve on a read-only canvas explains the refusal and sends nothing", async () => {
+    loadSubmodelCanvas({ can_mutate: false })
+    vi.mocked(api.dissolveSubmodel).mockReset()
+    render(<App />)
+    await waitForAppReady()
+
+    await selectNodes(["pricing"])
+    const button = screen.getByTestId("toolbar-submodel")
+    await waitFor(() => expect(button).toHaveAccessibleName("Dissolve"))
+    expect(button).toHaveAttribute("aria-disabled", "true")
+
+    fireEvent.click(button)
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.at(-1)?.text).toBe("This pipeline document is read-only")
+    })
+    expect(api.dissolveSubmodel).not.toHaveBeenCalled()
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["pricing", "polars_1"])
   })
 
   it("the branch indicator opens the Version Control pane (mutually exclusive with Utility/Imports)", async () => {

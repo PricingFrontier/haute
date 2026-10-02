@@ -83,7 +83,7 @@ Then shape the tables in the editor:
 
 ## In the data preview
 
-When the preview file changes, click **Import** in the node's data preview (beside **Refresh**) to read it again. Its tooltip says when the file was last imported. **Import** appears once the node has an emitted table.
+**Refresh** in the node's data preview reads the preview file again and caches its emitted tables again before showing them, whether or not the file has changed, so press it after you edit the file.
 
 ## Example
 

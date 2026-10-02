@@ -33,7 +33,6 @@ from haute._data_points import (
     consumer_point,
     point_kind,
 )
-from haute._env import float_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
     IsolatedExecutionBudget,
@@ -54,6 +53,7 @@ from haute._node_snapshots import (
     NodeSnapshotSlot,
     NodeSnapshotStore,
 )
+from haute._pipeline_settings import PipelineSettingsError, project_pipeline_settings
 from haute._polars_io_registry import PolarsIoConfigError
 from haute._seed_plans import (
     SeedPlan,
@@ -1085,7 +1085,7 @@ class NodeDataService:
                         budget,
                         config=worker_config_for_memory_policy(
                             memory_limit_bytes=budget.memory_limit_bytes,
-                            timeout_seconds=float_env("HAUTE_NODE_DATA_PROFILE_TIMEOUT", 1800.0),
+                            timeout_seconds=project_pipeline_settings().pipeline_time_limit_seconds,
                             stop_reason=lambda: token.terminal_reason if token.cancelled else None,
                             process_name=f"haute-node-profile-worker-{job_id}",
                         ),
@@ -1313,6 +1313,15 @@ class NodeDataService:
                 fields={"error": str(exc), "error_code": exc.error_code},
                 elapsed_seconds=elapsed,
             )
+        elif isinstance(exc, PipelineSettingsError):
+            # Admission refused: the settings file's message names what to fix.
+            self._lifecycle.transition(
+                job_id,
+                to="error",
+                message=str(exc),
+                fields={"error": str(exc), "error_code": "pipeline_settings_invalid"},
+                elapsed_seconds=elapsed,
+            )
         else:
             logger.error("node_data_job_failed", job_id=job_id, exc_info=True)
             self._lifecycle.transition(
@@ -1412,7 +1421,7 @@ class NodeDataService:
                         budget,
                         config=worker_config_for_memory_policy(
                             memory_limit_bytes=budget.memory_limit_bytes,
-                            timeout_seconds=float_env("HAUTE_NODE_SNAPSHOT_TIMEOUT", 1800.0),
+                            timeout_seconds=project_pipeline_settings().pipeline_time_limit_seconds,
                             stop_reason=lambda: token.terminal_reason if token.cancelled else None,
                             process_name=f"haute-node-snapshot-worker-{job_id}",
                         ),

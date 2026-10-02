@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup, act } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, act, within } from "@testing-library/react"
 
 vi.mock("../MlflowSettingsModal", () => ({
   default: () => <div data-testid="mlflow-modal-stub" />,
@@ -19,7 +19,6 @@ import useGitStore from "../../stores/useGitStore"
 function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
   return {
     nodeCount: 5,
-    dirty: false,
     canUndo: true,
     canRedo: false,
     onUndo: vi.fn(),
@@ -28,8 +27,9 @@ function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
     onZoomOut: vi.fn(),
     onOpenUtility: vi.fn(),
     onOpenImports: vi.fn(),
-    canCreateSubmodel: true,
-    onCreateSubmodel: vi.fn(),
+    submodelAction: "create" as const,
+    canRunSubmodelAction: true,
+    onSubmodelAction: vi.fn(),
     canCreateInstance: true,
     onCreateInstance: vi.fn(),
     onCentre: vi.fn(),
@@ -46,7 +46,6 @@ describe("Toolbar", () => {
   beforeEach(() => {
     useSettingsStore.setState({
       rowLimit: 1000,
-      streamingChunkSize: 500_000,
       sources: ["live"],
       activeSource: "live",
     })
@@ -366,7 +365,33 @@ describe("Toolbar", () => {
     const props = makeProps()
     render(<Toolbar {...props} />)
     fireEvent.click(screen.getByTestId("toolbar-submodel"))
-    expect(props.onCreateSubmodel).toHaveBeenCalledOnce()
+    expect(props.onSubmodelAction).toHaveBeenCalledOnce()
+  })
+
+  it("reads Dissolve in the dissolve mode and still runs the caller's action", () => {
+    const props = makeProps({ submodelAction: "dissolve" })
+    render(<Toolbar {...props} />)
+    const button = screen.getByRole("button", { name: "Dissolve" })
+    expect(button).toHaveAttribute("data-testid", "toolbar-submodel")
+    expect(button).toHaveAttribute("title", "Dissolve the selected submodel back into its nodes")
+    expect(screen.queryByRole("button", { name: "Submodel" })).not.toBeInTheDocument()
+
+    fireEvent.click(button)
+    expect(props.onSubmodelAction).toHaveBeenCalledOnce()
+  })
+
+  it("keeps the inactive label in the button so switching modes never changes its width", () => {
+    const { rerender } = render(<Toolbar {...makeProps()} />)
+    const button = screen.getByTestId("toolbar-submodel")
+    const label = (text: string) => within(button).getByText(text)
+    // jsdom has no layout, so this pins the mechanism: both labels share one
+    // grid cell and the hidden one still sizes it.
+    expect(label("Submodel")).not.toHaveClass("invisible")
+    expect(label("Dissolve")).toHaveClass("invisible")
+
+    rerender(<Toolbar {...makeProps({ submodelAction: "dissolve" })} />)
+    expect(label("Submodel")).toHaveClass("invisible")
+    expect(label("Dissolve")).not.toHaveClass("invisible")
   })
 
   it("clicking Instance creates an instance of the selection", () => {
@@ -377,7 +402,7 @@ describe("Toolbar", () => {
   })
 
   it("greys out the selection actions when the selection cannot support them", () => {
-    const props = makeProps({ canCreateSubmodel: false, canCreateInstance: false })
+    const props = makeProps({ canRunSubmodelAction: false, canCreateInstance: false })
     render(<Toolbar {...props} />)
 
     expect(screen.getByTestId("toolbar-submodel")).toHaveAttribute("aria-disabled", "true")
@@ -385,7 +410,7 @@ describe("Toolbar", () => {
   })
 
   it("still calls the handler when unavailable, so the refusal can explain itself", () => {
-    const props = makeProps({ canCreateSubmodel: false, canCreateInstance: false })
+    const props = makeProps({ canRunSubmodelAction: false, canCreateInstance: false })
     render(<Toolbar {...props} />)
 
     // ``can*`` drives presentation only. The handler owns the policy and
@@ -393,12 +418,12 @@ describe("Toolbar", () => {
     // would make the toolbar the one entry point that refuses in silence.
     fireEvent.click(screen.getByTestId("toolbar-submodel"))
     fireEvent.click(screen.getByTestId("toolbar-instance"))
-    expect(props.onCreateSubmodel).toHaveBeenCalledOnce()
+    expect(props.onSubmodelAction).toHaveBeenCalledOnce()
     expect(props.onCreateInstance).toHaveBeenCalledOnce()
   })
 
   it("keeps unavailable selection actions reachable so they can explain themselves", () => {
-    render(<Toolbar {...makeProps({ canCreateSubmodel: false, canCreateInstance: false })} />)
+    render(<Toolbar {...makeProps({ canRunSubmodelAction: false, canCreateInstance: false })} />)
     const submodel = screen.getByTestId("toolbar-submodel")
     // Not the `disabled` attribute: that would drop the button from the tab
     // order and suppress the title that states the requirement.
@@ -407,7 +432,7 @@ describe("Toolbar", () => {
   })
 
   it("enables the two selection actions independently", () => {
-    render(<Toolbar {...makeProps({ canCreateSubmodel: false, canCreateInstance: true })} />)
+    render(<Toolbar {...makeProps({ canRunSubmodelAction: false, canCreateInstance: true })} />)
     // One node selected: instancing works, grouping needs a second node.
     expect(screen.getByTestId("toolbar-submodel")).toHaveAttribute("aria-disabled", "true")
     expect(screen.getByTestId("toolbar-instance")).toHaveAttribute("aria-disabled", "false")
@@ -523,30 +548,15 @@ describe("Toolbar", () => {
     expect(redoBtn).toBeDisabled()
   })
 
-  it("shows unsaved indicator when dirty", () => {
-    render(<Toolbar {...makeProps({ dirty: true })} />)
-    expect(screen.getByTitle("Unsaved changes")).toBeInTheDocument()
-  })
-
-  it("places the websocket status dot to the left of the unsaved indicator", () => {
-    render(<Toolbar {...makeProps({ dirty: true, wsStatus: "connected" })} />)
-    const wsDot = screen.getByTitle("Live sync connected")
-    const unsavedDot = screen.getByTitle("Unsaved changes")
-    expect(wsDot.compareDocumentPosition(unsavedDot) & 4).toBeTruthy()
-  })
-
-  it("reserves space for the unsaved indicator when clean to prevent layout shift", () => {
-    const { container } = render(<Toolbar {...makeProps({ dirty: false })} />)
-    const unsavedSlot = container.querySelector(".w-1\\.5.h-1\\.5")
-    expect(unsavedSlot).toBeInTheDocument()
-    expect(unsavedSlot).toHaveClass("invisible")
-  })
-
-  it("centers the status dots at the toolbar row-gap level without bottom alignment", () => {
-    render(<Toolbar {...makeProps({ dirty: true })} />)
-    const dotsContainer = screen.getByTestId("toolbar-status-dots")
-    expect(dotsContainer).toBeInTheDocument()
-    expect(dotsContainer).not.toHaveClass("self-end")
+  it("carries no status dots beside the brand, connected or not", () => {
+    for (const wsStatus of ["connected", "reconnecting", "disconnected"] as const) {
+      const { unmount } = render(<Toolbar {...makeProps({ wsStatus })} />)
+      const brand = screen.getByTestId("toolbar-brand")
+      // Only the heading and the version remain.
+      expect(brand.textContent).toBe("hautev999.0.0-test")
+      expect(brand.querySelector(".rounded-full")).toBeNull()
+      unmount()
+    }
   })
 
   it("zoom in button calls onZoomIn", () => {
@@ -585,27 +595,45 @@ describe("Toolbar", () => {
     expect(props.onRedo).toHaveBeenCalledOnce()
   })
 
-  it("shows websocket connected status dot", () => {
-    render(<Toolbar {...makeProps({ wsStatus: "connected" })} />)
-    const dot = screen.getByTitle("Live sync connected")
-    expect(dot).toBeInTheDocument()
+  it.each([
+    ["reconnecting", "Server offline - reconnecting\u2026"],
+    ["disconnected", "Server offline - reload the page once haute serve is running"],
+  ] as const)("the Pipeline button reads Offline while live sync is %s", async (wsStatus, title) => {
+    render(<Toolbar {...makeProps({ wsStatus })} />)
+    const button = screen.getByTestId("toolbar-pipeline-settings")
+    expect(button).toHaveTextContent(/^Offline$/)
+    expect(button).toHaveAttribute("title", title)
+    expect(button).toHaveStyle({ color: "var(--danger)" })
+
+    // Still the pipeline settings control.
+    fireEvent.click(button)
+    expect(await screen.findByTestId("pipeline-settings-stub")).toBeInTheDocument()
   })
 
-  it("shows websocket reconnecting status dot", () => {
-    render(<Toolbar {...makeProps({ wsStatus: "reconnecting" })} />)
-    const dot = screen.getByTitle("Reconnecting to server\u2026")
-    expect(dot).toBeInTheDocument()
-  })
+  it.each(["idle", "connecting", "connected"] as const)(
+    "the Pipeline button names the calculation mode while live sync is %s",
+    (wsStatus) => {
+      // Neither idle nor a first attempt in flight is evidence the server is
+      // down, so a page load never flashes "Offline".
+      render(<Toolbar {...makeProps({ wsStatus })} />)
+      const button = screen.getByTestId("toolbar-pipeline-settings")
+      expect(button).toHaveTextContent(/^Calculating$/)
+      expect(button).toHaveAttribute(
+        "title",
+        "Pipeline settings - preview rows, chunk rows and cached data",
+      )
+      expect(button.style.color).toBe("")
+    },
+  )
 
-  it("shows websocket disconnected status dot", () => {
-    render(<Toolbar {...makeProps({ wsStatus: "disconnected" })} />)
-    const dot = screen.getByTitle("Server unreachable - restart haute serve")
-    expect(dot).toBeInTheDocument()
-  })
-
-  it("does not show unsaved indicator when not dirty", () => {
-    render(<Toolbar {...makeProps({ dirty: false })} />)
-    expect(screen.queryByTitle("Unsaved changes")).not.toBeInTheDocument()
+  it("returns from Offline to the calculation mode when the server comes back", () => {
+    useUIStore.setState({ calculationMode: "manual" })
+    const { rerender } = render(<Toolbar {...makeProps({ wsStatus: "reconnecting" })} />)
+    const button = screen.getByTestId("toolbar-pipeline-settings")
+    expect(button).toHaveTextContent("Offline")
+    rerender(<Toolbar {...makeProps({ wsStatus: "connected" })} />)
+    expect(button).toHaveTextContent(/^Manual$/)
+    useUIStore.setState({ calculationMode: "automatic" })
   })
 
   it("source selector shows active source on trigger button", () => {

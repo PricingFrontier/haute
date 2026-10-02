@@ -1,5 +1,5 @@
 import { Suspense, lazy, useState, useMemo, useRef, useCallback, useEffect } from "react"
-import { Undo2, Redo2, ZoomIn, ZoomOut, Scan, Network, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, Bot, Loader2, Group, Link2, BookOpen, CircleHelp, Keyboard, Bug } from "lucide-react"
+import { Undo2, Redo2, ZoomIn, ZoomOut, Scan, Network, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, Bot, Loader2, Group, Ungroup, Link2, BookOpen, CircleHelp, Keyboard, Bug } from "lucide-react"
 import type { WsStatus } from "../hooks/useWebSocketSync"
 import type { NodeTiming, NodeMemory } from "../api/types"
 import BreakdownDropdown, { type BreakdownItem } from "./BreakdownDropdown"
@@ -25,15 +25,17 @@ const REPORT_BUG_URL = "https://github.com/PricingFrontier/haute/issues/new"
 const HELP_ITEM_CLASS =
   "w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--chrome-hover)] focus-visible:bg-[var(--chrome-hover)] focus:outline-none"
 
-const WS_STATUS_CONFIG: Record<WsStatus, { color: string; title: string }> = {
-  connected: { color: "var(--success)", title: "Live sync connected" },
-  reconnecting: { color: "var(--warning-strong)", title: "Reconnecting to server\u2026" },
-  disconnected: { color: "var(--danger)", title: "Server unreachable - restart haute serve" },
+// Only these statuses mean the server is known to be unreachable; idle and
+// connecting are not evidence, so a page load never flashes "Offline".
+const OFFLINE_TITLES: Partial<Record<WsStatus, string>> = {
+  reconnecting: "Server offline - reconnecting\u2026",
+  disconnected: "Server offline - reload the page once haute serve is running",
 }
+
+const PIPELINE_SETTINGS_TITLE = "Pipeline settings - preview rows, chunk rows and cached data"
 
 interface ToolbarProps {
   nodeCount: number
-  dirty: boolean
   canUndo: boolean
   canRedo: boolean
   onUndo: () => void
@@ -42,11 +44,13 @@ interface ToolbarProps {
   onZoomOut: () => void
   onOpenUtility: () => void
   onOpenImports: () => void
-  /** Group the current selection into a submodel. Enabled only when the
-   *  selection can actually be grouped — 2+ nodes, not already inside a
-   *  submodel, not a read-only instance. The caller owns that policy. */
-  canCreateSubmodel: boolean
-  onCreateSubmodel: () => void
+  /** What the Submodel button does for the current selection: "create"
+   *  groups 2+ nodes into a new submodel, and "dissolve" (exactly one
+   *  submodel occurrence selected) expands it back into the pipeline. The
+   *  caller owns the mode, the availability and the click's policy. */
+  submodelAction: "create" | "dissolve"
+  canRunSubmodelAction: boolean
+  onSubmodelAction: () => void
   /** Create a linked instance of the single selected non-singleton node (the
    *  generic `instanceOf` path, not just submodels). */
   canCreateInstance: boolean
@@ -64,11 +68,11 @@ interface ToolbarProps {
 }
 
 export default function Toolbar({
-  nodeCount, dirty,
+  nodeCount,
   canUndo, canRedo, onUndo, onRedo,
   onZoomIn, onZoomOut,
   onOpenUtility, onOpenImports,
-  canCreateSubmodel, onCreateSubmodel,
+  submodelAction, canRunSubmodelAction, onSubmodelAction,
   canCreateInstance, onCreateInstance,
   onCentre, onAutoLayout,
   isAutoLayouting,
@@ -116,7 +120,8 @@ export default function Toolbar({
     if (helpOpen) helpItems()[0]?.focus()
   }, [helpOpen])
   const setShortcutsOpen = useUIStore((s) => s.setShortcutsOpen)
-  const wsConfig = WS_STATUS_CONFIG[wsStatus]
+  const offlineTitle = OFFLINE_TITLES[wsStatus]
+  const dissolvesSubmodel = submodelAction === "dissolve"
 
   const mlflowSettingsOpen = useUIStore((s) => s.mlflowSettingsOpen)
   const setMlflowSettingsOpen = useUIStore((s) => s.setMlflowSettingsOpen)
@@ -134,7 +139,7 @@ export default function Toolbar({
 
   return (
     <header role="toolbar" aria-label="Pipeline toolbar" className="min-h-11 flex flex-wrap items-center gap-y-2 px-4 py-1.5 shrink-0 [&>div]:shrink-0" style={{ background: 'var(--chrome)', borderBottom: '1px solid var(--chrome-border)' }}>
-      {/* Haute brand column — lowercase "haute" heading taking ~2/3 vertical space, centered version underneath, status dots centered at the row-gap level to the right.
+      {/* Haute brand column — lowercase "haute" heading taking ~2/3 vertical space, centered version underneath.
           Width is pinned to 165px (180px node palette + 1px border - 16px header px-4 padding) so the Source label starts at exactly x + 1 = 181px from the left edge of the page. */}
       <div className="h-[56px] w-[165px] flex items-center gap-2 select-none" data-testid="toolbar-brand">
         <div className="flex flex-col items-center justify-center">
@@ -144,18 +149,6 @@ export default function Toolbar({
           <span className="text-[10px] font-mono tracking-tight leading-none mt-1" style={{ color: 'var(--text-muted)' }}>
             v{__APP_VERSION__}
           </span>
-        </div>
-        <div className="flex items-center gap-1.5" data-testid="toolbar-status-dots">
-          <span
-            className={`w-2 h-2 rounded-full shrink-0${wsStatus === "reconnecting" ? " animate-pulse-dot" : ""}`}
-            style={{ background: wsConfig.color }}
-            title={wsConfig.title}
-          />
-          <span
-            className={`w-1.5 h-1.5 rounded-full shrink-0 ${dirty ? "bg-amber-400 animate-pulse-dot" : "invisible"}`}
-            title={dirty ? "Unsaved changes" : undefined}
-            aria-hidden={!dirty ? true : undefined}
-          />
         </div>
       </div>
       {/* Source and Pipeline column — the Source selector sits on the top row, in
@@ -282,15 +275,20 @@ export default function Toolbar({
           )}
         </div>
         <label className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>Pipeline:</label>
+        {/* The button names the pipeline's live state, so the server going
+            away is reported here: nothing calculates while it is offline.
+            "Offline" is no wider than "Calculating", so going offline never
+            widens the column; like "Manual", it can narrow it. */}
         <button
           data-testid="toolbar-pipeline-settings"
           onClick={() => setPipelineSettingsOpen(true)}
           aria-haspopup="dialog"
           aria-expanded={pipelineSettingsOpen}
           className="toolbar-btn w-full px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center"
-          title="Pipeline settings - preview rows, chunk rows and cached data"
+          style={offlineTitle ? { color: 'var(--danger)' } : undefined}
+          title={offlineTitle ?? PIPELINE_SETTINGS_TITLE}
         >
-          {calculationMode === "manual" ? "Manual" : "Calculating"}
+          {offlineTitle ? "Offline" : calculationMode === "manual" ? "Manual" : "Calculating"}
         </button>
       </div>
       {/* Canvas actions (Undo/Redo through Utility/Imports) sit on the left,
@@ -397,13 +395,25 @@ export default function Toolbar({
         <div className="flex flex-col gap-1 w-fit">
           <button
             data-testid="toolbar-submodel"
-            onClick={onCreateSubmodel}
-            aria-disabled={!canCreateSubmodel}
-            className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
-            title="Group the selected nodes into a submodel - select 2 or more (Ctrl+G)"
+            onClick={onSubmodelAction}
+            aria-disabled={!canRunSubmodelAction}
+            aria-label={dissolvesSubmodel ? "Dissolve" : "Submodel"}
+            className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md grid w-full"
+            title={dissolvesSubmodel
+              ? "Dissolve the selected submodel back into its nodes"
+              : "Group the selected nodes into a submodel - select 2 or more (Ctrl+G)"}
           >
-            <Group size={13} aria-hidden="true" />
-            Submodel
+            {/* Both labels share one grid cell and the inactive one is only
+                hidden, so the button keeps the wider label's width and
+                selecting a submodel never reflows the toolbar. */}
+            <span className={`col-start-1 row-start-1 flex items-center justify-center gap-1${dissolvesSubmodel ? " invisible" : ""}`}>
+              <Group size={13} aria-hidden="true" />
+              Submodel
+            </span>
+            <span className={`col-start-1 row-start-1 flex items-center justify-center gap-1${dissolvesSubmodel ? "" : " invisible"}`}>
+              <Ungroup size={13} aria-hidden="true" />
+              Dissolve
+            </span>
           </button>
           <button
             data-testid="toolbar-instance"

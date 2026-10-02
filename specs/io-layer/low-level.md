@@ -191,7 +191,7 @@ an in-place or non-atomic fallback.
    polled, not indefinite: each poll checkpoints the waiter's own execution context
    (`input_snapshot_preparation_wait`), so cancellation raises `cancelled`, and the build
    deadline bounds it as `timed_out`. The build deadline is the earlier of the build's own
-   budget (`HAUTE_INPUT_PREPARATION_TIMEOUT_SECONDS`) and the caller's `deadline`
+   budget (the pipeline settings' pipeline time limit, read when the build starts) and the caller's `deadline`
    (`prepare_input_snapshots(..., deadline=)`, a job's), so preparing an input never outlasts
    the run it prepares for. The spawned build itself is cancellable — the worker
    config's `stop_reason` reports `cancelled` while the execution's cancellation token is
@@ -293,10 +293,13 @@ Input snapshots and explicit builds have no byte or count budget and no construc
 limit arguments; they remain until explicit clear or replacement. Automatic node-output
 captures have one budget, applied after each automatic publication:
 
-- `automatic_capture_budget(inputs_root)` reads `HAUTE_AUTOMATIC_CAPTURE_MAX_BYTES`, a
-  positive integer (anything else raises `RuntimeError`). When the variable is unset
-  it takes `min(AUTOMATIC_CAPTURE_BUDGET_CEILING_BYTES, free // 10)`, where the
-  ceiling is 20 GiB and `free` is the free disk under the inputs root at that moment.
+- `automatic_capture_budget(store)` reads the pipeline settings of the store's project
+  (`store.root`): `cache_size_gb` as whole bytes when it is set (an invalid settings file
+  raises `PipelineSettingsError`). When it is automatic the budget is
+  `min(AUTOMATIC_CAPTURE_BUDGET_CEILING_BYTES, free // 10)`, where the ceiling is 20 GiB
+  and `free` is the free disk under the inputs root at that moment. A settings error
+  during the enforcement that follows a publication propagates like any other failure of
+  that capture, since it is not a store fault.
 - `_scan_usage` walks the store once without a lock. It returns the store's total
   bytes (every generation's part files plus in-flight staging) and the generations no
   pin protects: every `node_output` generation except the current generation of a slot

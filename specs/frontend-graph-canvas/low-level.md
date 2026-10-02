@@ -15,7 +15,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 
 | File | Responsibility |
 | --- | --- |
-| `frontend/src/App.tsx` | `FlowEditor` — the canvas composition boundary: wires `<ReactFlow>` event props to interaction hooks, derives and renders the transient edge-join candidate, owns local selection/context-menu/dialog state, picks the active preview pane, adapts the shared Submodel creation policy, owns the Instance toolbar handler, and gates Save/Commit on git working-branch status. Exports `App`, which mounts `FlowEditor` inside `ReactFlowProvider`. |
+| `frontend/src/App.tsx` | `FlowEditor` — the canvas composition boundary: wires `<ReactFlow>` event props to interaction hooks, derives and renders the transient edge-join candidate, owns local selection/context-menu/dialog state, picks the active preview pane, adapts the shared Submodel creation policy, owns the Instance toolbar handler and the Submodel button's Dissolve mode (a lone selected submodel occurrence routes the button to `handleDissolveSubmodel`, one request at a time), and gates Save/Commit on git working-branch status. Exports `App`, which mounts `FlowEditor` inside `ReactFlowProvider`. |
 | `frontend/src/hooks/useGraphCommitController.ts` | The single state authority for selected-node config and label commits: assigns per-node request generations, captures the graph/document identity fence, resolves prospective node/API-frame identities, invokes the pure preflight planner, and applies one history-aware graph transaction only while the request still owns that fence. |
 | `frontend/src/utils/nodeUpdatePlan.ts` | Pure selected-node update planner: reconciles API-frame handles, migrates dependent mappings (a coded transform gains an `inputMapping` binding; a stepped original on an `edges` surface, a Transform or an External File, has its `source`/`join`/`concat` input references rewritten in place through `polarsStepInputs.ts` and never gains one), checks post-update input-name collisions, and returns either a complete root-graph/submodel candidate or a typed rejection without mutating the store. `frontend/src/utils/__tests__/nodeUpdatePlan.steps.test.ts` covers the stepped rewrite and its collision rejection. |
 | `frontend/src/nodes/PipelineNode.tsx` | Renders every non-submodel node type at full detail regardless of zoom, plus the edge-join marker variant; computes source/target `Handle` sets, including multi-frame api-input handles (row-mounted through the shared `FramePortRows` component) and edge-join geometry-dependent handle placement; each ordinary card uses one shared default port row with optional `inputs`/target content on the left and its node/output name plus optional source handle on the right; edge-join handles retain their specialised quiet treatment; owns api-input instance-name suppression and the zero-frame "No emitted frames" state. |
@@ -42,7 +42,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/components/PipelineLoadFailureView.tsx` | Dedicated initial-load system-failure surface that keeps transport, permission, discovery, and unreadable-file failures distinct from authored recovery diagnostics. |
 | `frontend/src/components/PipelineRepairDialog.tsx` | Minimal repair confirmation surface. It submits only document/target identities and the document revision, retains config by default, and never authors replacement bytes. |
 | `frontend/src/nodes/UnavailablePipelineNode.tsx` | Dedicated inaccessible node card for unknown decorators and recovery elements that cannot use a canonical node renderer. |
-| `frontend/src/hooks/ensureInputSnapshots.ts` | Pre-preview snapshot orchestration owned behaviourally by [caching](../caching/high-level.md): derives the graph's snapshot-backed Data Inputs (direct Parquet skipped), checks status, starts or joins the server's choice of build in one call, waits for jobs to a terminal state through the shared `waitForJob`, and notifies at most once when a build starts. An aborted signal cancels the job it is polling and waits for that job to reach a terminal state, because a point reports itself as building until then and nothing else is polling it; a refused cancellation, a status it cannot read afterwards, or a build still running 48 seconds after the cancellation all raise `CancellationFailedError` instead of being reported as a completed cancellation, because whether the build stopped is then unknown. `cancelInputSnapshotBuild` performs that cancel-and-wait for a caller holding a job id, and `onJobStarted` reports each build's id so a caller can use it. Its `force` option is for a caller that wants the data recomputed rather than served as it is: it skips the readiness probe, asks the input-snapshot build to `refresh`, and removes a structured Quote Input's working cache first, because the JSON build endpoint answers a still-valid working cache with no work. |
+| `frontend/src/hooks/ensureInputSnapshots.ts` | Pre-preview snapshot orchestration owned behaviourally by [caching](../caching/high-level.md): derives the graph's snapshot-backed Data Inputs (direct Parquet skipped), checks status, starts or joins the server's choice of build in one call, waits for jobs to a terminal state through the shared `waitForJob`, and notifies at most once when a build starts. An aborted signal cancels the job it is polling and waits for that job to reach a terminal state, because a point reports itself as building until then and nothing else is polling it; a refused cancellation, a status it cannot read afterwards, or a build still running 48 seconds after the cancellation all raise `CancellationFailedError` instead of being reported as a completed cancellation, because whether the build stopped is then unknown. `cancelInputSnapshotBuild` performs that cancel-and-wait for a caller holding a job id, and `onJobStarted` reports each build's id so a caller can use it. Its `force` option is for a caller that wants the data recomputed rather than served as it is: it skips the readiness probe and asks the input-snapshot build to `refresh`, which re-reads the source and, for a structured Quote Input, rebuilds every table from one shred of it; nothing is deleted first. |
 | `frontend/src/hooks/useWebSocketSync.ts` | The `/ws/sync` WebSocket client: connect/reconnect with exponential backoff, document-fingerprint resync, applying accepted `pipeline_document_update` frames through one atomic clean-snapshot transition with the authoritative status fence (including preserved-block/revision refs and graph-scoped dirty blocking), treating `parse_error` as a document system failure, and session expiry. After an applied frame it fits the whole graph, except that a frame with an assistant `origin` instead calls `setChangeFocus` with the origin's node ids present in the new graph (nothing when none is), and a frame without one clears that focus. |
 | `frontend/src/components/ChangeFocusFit.tsx` | Renderless child of the editor's `<ReactFlow>` that centres the nodes `useUIStore.changeFocus` names once per focus, fitting them with padding and never above the current zoom. |
 | `frontend/src/hooks/useSubmodelNavigation.ts` | `handleCreateSubmodel`/`handleDrillIntoSubmodel`/`handleBreadcrumbNavigate`/`handleDissolveSubmodel` — definition/occurrence-aware view-stack state machine, local embedded-definition drill/project, recursive authoritative identity resolution for canonical transform responses, layout, revision-preconditioned transform requests, and one atomic dirty history entry per create/dissolve. |
@@ -280,7 +280,7 @@ reconciliation rather than dropping them or committing a second mutation.
   `data.nodeType || node.type || ""`).
 - **`PipelineAPIReturn`** (`usePipelineAPI.ts`) — the hook's full surface:
   `loading`, `previewData`/`setPreviewData`, `previewBusy`, `nodeStatuses`,
-  `fetchPreview`/`cancelPreview`/`stopPreview`/`refreshPreview`/`previewNodeFrame`, and
+  `fetchPreview`/`cancelPreview`/`stopPreview`/`refreshPreview(node, options?)`/`previewNodeFrame`, and
   `handleSave: () => Promise<boolean>` (resolves `true`/`false`, never
   rejects).
 - **`FetchPreviewOptions`** — `{ debounceMs? }`, the per-call override for
@@ -310,6 +310,24 @@ reconciliation rather than dropping them or committing a second mutation.
   waited for without cancelling it and then asked again, at most three times.
   `onBuildProgress` reports each running status (rows read, phase) of the
   build it waits for.
+- **`refreshPreview(node, { rereadSource })`.** The preview frame's Refresh
+  (and Ctrl/Cmd+Enter) passes `rereadSource: true`; a trace's re-preview does
+  not. When `refreshRereadInput` (`utils/inputSnapshotSource.ts`) names an
+  input for the target — a structured Quote Input with an emitting table, or
+  the original of an instance of one — the target's preview request first runs
+  `ensureInputSnapshots([input], { force: true })`, which re-reads the file and
+  rebuilds every table whether or not the file changed. It runs under that
+  request: the loading panel shows the Quote Input preparation messages, with
+  no "Building input snapshot…" toast; Stop and supersession cancel the build
+  as they cancel any preparation; and a failure is the node's preview error.
+  Every outcome raises the node-data epoch, since a forced build publishes each
+  table on its own. Once the build ends the preview starts again as a new
+  request, without the re-read, for the node as the graph now is, so it is
+  stored at the raised epoch and not fetched again; an edit made while the file
+  was read does not cost the read. A stopped, superseded or deleted request
+  runs nothing more. Every other target, and a Refresh without the option, is
+  previewed as before. An input has no upstream, so the stale-upstream gap-fill
+  never carries the re-read.
 - **Step progress.** Every preview and recovery-preview request carries a fresh
   `request_id` (`newPreviewRequestId`), and `pollPreviewProgress`
   (`hooks/previewProgressPoller.ts`) asks `GET /api/pipeline/preview/progress/{id}`
@@ -840,6 +858,15 @@ reconciliation rather than dropping them or committing a second mutation.
     `useSubmodelNavigation.handleDocumentReload` returns to root view, clears
     `activeSubmodelIdentity`, resets the view stack to the pipeline level, and
     shows the parent graph without throwing.
+    The hook returns a `WsStatus`: `idle` while sync is not enabled (the
+    pipeline is loading or failed to load), `connecting` from enabling until
+    the first attempt opens or fails, `connected` while a socket is open,
+    `reconnecting` as soon as a socket closes (before any session probe that
+    close starts has settled) while retries remain, and `disconnected` when
+    retries are exhausted, the socket cannot
+    be constructed, or the session has expired. Only `reconnecting` and
+    `disconnected` mean the server is known to be unreachable; the toolbar
+    shows "Offline" for those two alone.
     Reconnection backs off exponentially (`INITIAL_BACKOFF_MS` doubling to
     `MAX_BACKOFF_MS`, capped at `MAX_RETRIES` = 50). A `1008` close with a
     session-expired reason force-refreshes the HttpOnly cookie, then reconnects;
@@ -1439,7 +1466,11 @@ again through the editor and save paths.
     prunes with a warning; W1.3: renaming a connected port rebinds its edge
     in one undo entry; W1.4: a blanked port label never reaches the graph;
     editing a non-port field never prunes a valid edge); panel
-    open/close mutual exclusivity (Utility/Imports/Git/branch indicator).
+    open/close mutual exclusivity (Utility/Imports/Git/branch indicator);
+    the Submodel button's Dissolve mode (a lone selected submodel occurrence
+    reads Dissolve and is dissolved by one request however often the button
+    is clicked while it runs, a mixed selection still groups, and a read-only
+    canvas refuses with a toast and sends nothing).
   - `frontend/src/__tests__/App.connectionMode.test.ts` — `ConnectionMode.Loose` is enabled and a
     graph-level `isValidConnection` validator is wired to `<ReactFlow>`.
   - `frontend/src/__tests__/App.findCast.test.tsx` — regression #38 (a `lastSelectedId` pointing
@@ -1588,6 +1619,16 @@ again through the editor and save paths.
     preparation is prepared again and previewed at its new version, with the
     abandoned preparation never ending the new request's busy state, and a
     graph that keeps changing stops with the refresh instruction.
+  - `frontend/src/hooks/__tests__/usePipelineAPI.rereadSource.test.ts` — the
+    frame's Refresh on a structured Quote Input forces a rebuild of its tables
+    before the preview request, raising the node-data epoch so the stored
+    preview is current and not fetched again, with no build toast; an instance
+    re-reads its original's file; a re-preview without the option, a Data Input,
+    a Quote Input with no emitting table and one reading a flat file keep the
+    freshness rules; Stop cancels the re-read and runs no preview; a failed
+    re-read is the node's preview error; a graph edited during the re-read
+    is previewed as it now is without reading again; and a node that left the
+    graph while its file was read runs nothing more.
   - `frontend/src/hooks/__tests__/usePipelineAPI.refPattern.test.ts` (#33/#34) —
     `handleSave` reads `activeSource` at invocation time, not a stale
     closure; a `rowLimit` change mid-fetch does not affect the
@@ -1605,7 +1646,10 @@ again through the editor and save paths.
   `frontend/src/hooks/__tests__/`:**
   - `frontend/src/__tests__/hooks/useWebSocketSync.test.ts` and
     `frontend/src/__tests__/hooks/useWebSocketSync.gaps.test.ts` cover
-    connection, reconnect/resync, source identity, message generations,
+    connection (including the `idle` → `connecting` → `connected` status
+    sequence, and `reconnecting` only after a first attempt fails or an
+    open connection drops — at once, with the close's session probe held
+    pending), reconnect/resync, source identity, message generations,
     bounded invalid-edge warnings, malformed/unknown frames, delayed fit,
     and the required submodels apply/ref-before-save contract.
   - `frontend/src/hooks/__tests__/useWebSocketSync.panelState.test.ts` (#39) — `renameDialog`/

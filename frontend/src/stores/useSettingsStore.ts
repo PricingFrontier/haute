@@ -1,7 +1,8 @@
 /**
  * Zustand store for application-level settings and caches:
  *   - Row limit (preview configuration)
- *   - Streaming chunk size (rows per streaming chunk for pipeline execution)
+ *   - Pipeline settings (the project's .haute/pipeline-settings.json: chunk
+ *     rows, caching, cache size, preview memory, kept-free memory, time limits)
  *   - MLflow destinations inventory (fetched once, shared by all panels)
  *   - Source system (data source routing)
  *   - Collapsible section states (persisted across panel mounts)
@@ -11,15 +12,22 @@
  * directly control layout or chrome visibility.
  */
 import { create } from "zustand"
-import { getExecutionSettings, getMlflowDestinations, putExecutionSettings } from "../api/client"
+import { getMlflowDestinations, getPipelineSettings, patchPipelineSettings } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
-import type { FileListItem, MlflowDestinationEntry } from "../api/types"
+import type {
+  FileListItem,
+  MlflowDestinationEntry,
+  PipelineSettingsResponse,
+  PipelineSettingsValues,
+} from "../api/types"
 import type { MlflowInventoryState } from "../utils/mlflowDestinations"
 import { portableKey } from "../utils/portableKey"
 import useToastStore from "./useToastStore"
 
-export const MIN_STREAMING_CHUNK_SIZE = 1000
-export const MAX_STREAMING_CHUNK_SIZE = 10_000_000
+export const MIN_CHUNK_ROWS = 1000
+export const MAX_CHUNK_ROWS = 10_000_000
+
+export type PipelineSettingKey = keyof PipelineSettingsValues
 
 /**
  * Outcome of an `addSource` attempt. On success `key` is the minted (and now
@@ -39,13 +47,13 @@ export type AddSourceResult =
 
 // Settings requests can overlap (a load still in flight when the user commits,
 // the modal reopened during a save, or Enter followed by blur). A load never
-// overrides a pending save or a value a save confirmed after the load began,
-// only the latest save decides what is displayed, and saves reach the server
-// in order.
-let _chunkSizeLoadSeq = 0
-let _chunkSizeSaveSeq = 0
-let _chunkSizeConfirmations = 0
-let _chunkSizeSaves: Promise<void> = Promise.resolve()
+// overrides a pending save or settings a save confirmed after the load began,
+// only the latest save's response decides what is displayed, and saves reach
+// the server in order.
+let _settingsLoadSeq = 0
+let _settingsSaveSeq = 0
+let _settingsConfirmations = 0
+let _settingsSaves: Promise<void> = Promise.resolve()
 
 let _mlflowFetchingGuard = false
 let _mlflowRefetchQueued = false
@@ -72,17 +80,23 @@ interface SettingsState {
   rowLimit: number
   setRowLimit: (limit: number) => void
 
-  streamingChunkSize: number
-  /** Loads the server's current chunk size — call when the settings pane opens.
-   *  On failure it keeps the current value and toasts the error. */
-  loadStreamingChunkSize: () => Promise<void>
-  /** Clamps/rounds, sets optimistically, then commits to the server. On
-   *  failure it restores the previous value and toasts the error. */
-  commitStreamingChunkSize: (size: number) => Promise<void>
-  /** The last chunk size the server confirmed; a failed save restores it. */
-  _confirmedStreamingChunkSize: number
-  /** The chunk size a queued save will send, so a repeat is not sent twice. */
-  _pendingStreamingChunkSize: number | null
+  /** The project's pipeline settings and each key's automatic figure; null until loaded. */
+  pipelineSettings: PipelineSettingsResponse | null
+  /** Why the last load failed, until a load succeeds. */
+  pipelineSettingsError: string | null
+  /** Loads the settings — call when the settings pane opens. Reopened while a
+   *  save is in flight, it waits for that save's outcome instead. */
+  loadPipelineSettings: () => Promise<void>
+  /** Shows the new value at once and saves that one key (`null` restores
+   *  automatic). On failure it restores the last confirmed settings and toasts. */
+  savePipelineSetting: <K extends PipelineSettingKey>(
+    key: K,
+    value: PipelineSettingsValues[K],
+  ) => Promise<void>
+  /** The last settings the server confirmed; a failed save restores them. */
+  _confirmedPipelineSettings: PipelineSettingsResponse | null
+  /** The value each queued save will send, so a repeat is not sent twice. */
+  _pendingPipelineSettings: Partial<PipelineSettingsValues>
 
   // Open/closed section states (keyed by section ID, e.g. "optimiser.advanced")
   openSections: Record<string, boolean>
@@ -128,72 +142,95 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
   rowLimit: 100,
   setRowLimit: (limit) => set({ rowLimit: limit }),
 
-  streamingChunkSize: 500_000,
-  _confirmedStreamingChunkSize: 500_000,
-  _pendingStreamingChunkSize: null,
-  loadStreamingChunkSize: async () => {
-    if (get()._pendingStreamingChunkSize !== null) {
-      // The pending save's outcome is the value to show; loading would race it.
-      await _chunkSizeSaves
+  pipelineSettings: null,
+  pipelineSettingsError: null,
+  _confirmedPipelineSettings: null,
+  _pendingPipelineSettings: {},
+  loadPipelineSettings: async () => {
+    if (Object.keys(get()._pendingPipelineSettings).length > 0) {
+      // The pending saves' outcome is what to show; loading would race it.
+      await _settingsSaves
       return
     }
-    const request = ++_chunkSizeLoadSeq
-    const confirmations = _chunkSizeConfirmations
+    const request = ++_settingsLoadSeq
+    const confirmations = _settingsConfirmations
     try {
-      const settings = await getExecutionSettings()
-      // A save confirmed since this load began holds the newer value.
-      if (confirmations !== _chunkSizeConfirmations) return
-      set({ _confirmedStreamingChunkSize: settings.streaming_chunk_size })
-      // A pending save shows its own value; its failure restores this one.
-      if (request !== _chunkSizeLoadSeq || get()._pendingStreamingChunkSize !== null) return
-      set({ streamingChunkSize: settings.streaming_chunk_size })
+      const settings = await getPipelineSettings()
+      // A save confirmed since this load began holds newer settings.
+      if (confirmations !== _settingsConfirmations) return
+      set({ _confirmedPipelineSettings: settings })
+      // A pending save shows its own value; its failure restores these.
+      if (request !== _settingsLoadSeq || Object.keys(get()._pendingPipelineSettings).length > 0) {
+        return
+      }
+      set({ pipelineSettings: settings, pipelineSettingsError: null })
     } catch (e) {
-      if (request !== _chunkSizeLoadSeq || get()._pendingStreamingChunkSize !== null) return
-      useToastStore.getState().addToast(
-        "error",
-        apiErrorMessage(e, "Could not load the chunk size."),
-      )
+      if (request !== _settingsLoadSeq || Object.keys(get()._pendingPipelineSettings).length > 0) {
+        return
+      }
+      set({
+        pipelineSettings: null,
+        pipelineSettingsError: apiErrorMessage(e, "Could not load the pipeline settings."),
+      })
     }
   },
-  commitStreamingChunkSize: async (size) => {
-    const clamped = Math.min(MAX_STREAMING_CHUNK_SIZE, Math.max(MIN_STREAMING_CHUNK_SIZE, Math.round(size)))
+  savePipelineSetting: async (key, value) => {
     const state = get()
-    const alreadySaving = state._pendingStreamingChunkSize === clamped
-    const alreadySaved = state._pendingStreamingChunkSize === null
-      && state._confirmedStreamingChunkSize === clamped
+    const shown = state.pipelineSettings
+    // Nothing is saved before the settings have loaded: the pane keeps every
+    // field disabled until then.
+    if (shown === null) return
+    const pending = state._pendingPipelineSettings
+    const alreadySaving = key in pending && pending[key] === value
+    const alreadySaved = !(key in pending)
+      && state._confirmedPipelineSettings?.settings[key] === value
     if (alreadySaving || alreadySaved) {
-      await _chunkSizeSaves
+      await _settingsSaves
       return
     }
-    const request = ++_chunkSizeSaveSeq
-    set({ streamingChunkSize: clamped, _pendingStreamingChunkSize: clamped })
-    const save = async () => {
-      try {
-        const settings = await putExecutionSettings(clamped)
-        _chunkSizeConfirmations += 1
-        set({ _confirmedStreamingChunkSize: settings.streaming_chunk_size })
-        if (request === _chunkSizeSaveSeq) {
-          set({
-            streamingChunkSize: settings.streaming_chunk_size,
-            _pendingStreamingChunkSize: null,
-          })
-        }
-      } catch (e) {
-        // Only the latest save's outcome is the user's; an older failure is
-        // superseded by the save that followed it.
-        if (request !== _chunkSizeSaveSeq) return
-        set({
-          streamingChunkSize: get()._confirmedStreamingChunkSize,
-          _pendingStreamingChunkSize: null,
-        })
-        useToastStore.getState().addToast(
-          "error",
-          apiErrorMessage(e, "Could not save the chunk size."),
-        )
+    const request = ++_settingsSaveSeq
+    set({
+      pipelineSettings: { ...shown, settings: { ...shown.settings, [key]: value } },
+      _pendingPipelineSettings: { ...pending, [key]: value },
+    })
+    const settle = () => {
+      // This save no longer waits; a later save of the same key still does.
+      const current = get()._pendingPipelineSettings
+      if (key in current && current[key] === value) {
+        const rest = { ...current }
+        delete rest[key]
+        set({ _pendingPipelineSettings: rest })
       }
     }
-    _chunkSizeSaves = _chunkSizeSaves.then(save)
-    await _chunkSizeSaves
+    const save = async () => {
+      try {
+        const settings = await patchPipelineSettings({ [key]: value })
+        _settingsConfirmations += 1
+        set({ _confirmedPipelineSettings: settings })
+        settle()
+        // Only the latest save's response is displayed: it holds every
+        // earlier save's key too, because saves reach the server in order.
+        if (request === _settingsSaveSeq) {
+          set({ pipelineSettings: settings, _pendingPipelineSettings: {} })
+        }
+      } catch (e) {
+        settle()
+        // Every failed save is reported: another key's later save does not
+        // retry this one.
+        useToastStore.getState().addToast(
+          "error",
+          apiErrorMessage(e, "Could not save the pipeline settings."),
+        )
+        if (request === _settingsSaveSeq) {
+          set({
+            pipelineSettings: get()._confirmedPipelineSettings,
+            _pendingPipelineSettings: {},
+          })
+        }
+      }
+    }
+    _settingsSaves = _settingsSaves.then(save)
+    await _settingsSaves
   },
 
   // Open/closed sections

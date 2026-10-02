@@ -655,6 +655,37 @@ class TestSolveRoute:
         assert resp.status_code == 400
         assert "timeout must be a positive integer" in resp.json()["detail"]
 
+    @pytest.mark.parametrize(
+        ("route", "config"),
+        [
+            # The solve's own timeout check reads the optimisation time limit.
+            ("/api/optimiser/solve", None),
+            # With the solve timeout set, auto-range's own timeout check reads it.
+            ("/api/optimiser/frontier/auto-range/start", {"timeout": 60}),
+        ],
+    )
+    def test_an_invalid_settings_file_answers_409_rather_than_a_config_error(
+        self, client, scored_data, monkeypatch, route, config
+    ):
+        """A broken settings file is the application's 409 with its message, not a 400."""
+        from haute import _pipeline_settings
+
+        message = (
+            f"{_pipeline_settings.SETTINGS_PATH}: optimisation_time_limit_minutes must be "
+            "a number of minutes greater than 0"
+        )
+
+        def refuse(_root):
+            raise _pipeline_settings.PipelineSettingsError(message)
+
+        monkeypatch.setattr(_pipeline_settings, "read_pipeline_settings", refuse)
+        graph = _make_optimiser_graph(scored_data, config=config)
+
+        resp = client.post(route, json={"graph": graph, "node_id": "opt"})
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == message
+
     def test_solve_rejects_concurrent(self, client, scored_data, clean_job_store):
         """A second solve request while one is running returns 409."""
         from haute.routes.optimiser import _solve_service
@@ -13368,18 +13399,25 @@ class TestLaunchBackground:
         ]
         assert len(registries) == 1
 
-    @pytest.mark.parametrize("raw_value", ["not-an-int", "0", "-1"])
-    def test_configured_solver_timeout_env_fails_loudly(
+    @pytest.mark.parametrize("raw_value", ['"not-a-number"', "0", "-1"])
+    def test_an_invalid_optimisation_time_limit_fails_loudly(
         self,
-        monkeypatch,
+        tmp_path,
         raw_value,
     ):
-        from haute.routes._optimiser_service import _default_solver_timeout
+        """An invalid limit in the settings file never silently removes the solve's limit."""
+        from haute._pipeline_settings import PipelineSettingsError
+        from haute._sandbox import set_project_root
+        from haute.routes._optimiser_service import _solve_timeout_from_config
 
-        monkeypatch.setenv("HAUTE_SOLVER_TIMEOUT", raw_value)
+        (tmp_path / ".haute").mkdir()
+        (tmp_path / ".haute" / "pipeline-settings.json").write_text(
+            f'{{"optimisation_time_limit_minutes": {raw_value}}}', encoding="utf-8"
+        )
+        set_project_root(tmp_path)
 
-        with pytest.raises(RuntimeError, match="HAUTE_SOLVER_TIMEOUT.*positive integer"):
-            _default_solver_timeout()
+        with pytest.raises(PipelineSettingsError, match="optimisation_time_limit_minutes"):
+            _solve_timeout_from_config({})
 
     def test_background_sets_start_time_and_timeout(self, clean_job_store):
         """_launch_background sets start_time and timeout on the job."""

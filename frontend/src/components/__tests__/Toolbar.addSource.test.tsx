@@ -17,7 +17,6 @@ import useSettingsStore from "../../stores/useSettingsStore"
 function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
   return {
     nodeCount: 5,
-    dirty: false,
     canUndo: true,
     canRedo: false,
     onUndo: vi.fn(),
@@ -26,8 +25,9 @@ function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
     onZoomOut: vi.fn(),
     onOpenUtility: vi.fn(),
     onOpenImports: vi.fn(),
-    canCreateSubmodel: true,
-    onCreateSubmodel: vi.fn(),
+    submodelAction: "create" as const,
+    canRunSubmodelAction: true,
+    onSubmodelAction: vi.fn(),
     canCreateInstance: true,
     onCreateInstance: vi.fn(),
     onCentre: vi.fn(),
