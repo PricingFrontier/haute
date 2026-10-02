@@ -8,11 +8,13 @@ version = 1
 # oauthlib is present solely as that connector's dependency for the databricks
 # extra; haute never imports it and serves no OAuth endpoints. The audit's
 # unused-acceptance rule forces this entry's removal as soon as a connector
-# release admits oauthlib>=4 and the lock moves.
+# release admits oauthlib>=4 and the lock moves. pip-audit reports it as
+# PYSEC-2026-4114 since the PyPI advisory was published on 2026-10-01 (aliases
+# CVE-2026-49265 and GHSA-xpv3-w29h-x7cv); the acceptance names that id.
 [[acceptance]]
 ecosystem = "python"
 package = "oauthlib"
-advisory = "CVE-2026-49265"
+advisory = "PYSEC-2026-4114"
 owner = "Pricing Frontier security"
 exposure = "transitive via databricks-sql-connector (databricks extra), which uses oauthlib only as an OAuth client; the vulnerable PKCE verifier comparison runs only in an authorization server, and haute neither imports oauthlib nor serves OAuth"
 compensating_control = "haute runs no OAuth authorization server, so the server-side PKCE comparison is never executed; databricks-sql-connector 4.6.0 caps oauthlib <4 so no fixed release resolves; the unused-acceptance gate forces removal once the cap lifts"
