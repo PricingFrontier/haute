@@ -57,6 +57,17 @@ from haute.schemas import (
 _SINGLETON_TYPES = frozenset(node_type for node_type, _label in _SINGLETON_NODE_TYPES)
 
 
+#: How an incoming edge names the input it gives, in the words of
+#: ``haute._graph_utils.executable_input_name``. The Polars descriptor, the
+#: system prompt, the authoring guide and every node card that names inputs
+#: state it verbatim, held so by test.
+INPUT_NAMING_RULE = (
+    "An input is named after its incoming edge: the upstream node's name, except that "
+    "an edge from a Quote Input frame, which `add_edge`'s `source_handle` selects, is "
+    "named by that frame, and an edge from a submodel output by its port."
+)
+
+
 # Usage notes are the manifest's intentionally hand-authored knowledge.  Every
 # current NodeType is listed explicitly so adding a NodeType without adding a
 # corresponding note leaves the manifest incomplete and fails at import time.
@@ -75,8 +86,8 @@ _USAGE_NOTES: dict[NodeType, str] = {
         "and stays out of the scoring path."
     ),
     NodeType.POLARS: (
-        "Apply a Polars transform to connected inputs; each input is named by its "
-        "upstream node, and new logic is written as steps."
+        "Apply a Polars transform to connected inputs; new logic is written as steps. "
+        + INPUT_NAMING_RULE
     ),
     NodeType.EDGE_JOIN: (
         "Join the base input with a connected input; specify the join keys and "
@@ -1823,6 +1834,7 @@ def tool_title(
 __all__ = [
     "DATA_CHECK_PROGRESS_TITLE",
     "EDGE_NAME_PLACEHOLDER",
+    "INPUT_NAMING_RULE",
     "INSPECT_NODE_PARTS",
     "MANIFEST_SCHEMA_VERSION",
     "MAX_REFERENCE_IDS",

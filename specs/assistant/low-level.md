@@ -93,7 +93,15 @@ orphaned halves).
   palette name (held equal to `NODE_TYPE_META` in
   `frontend/src/utils/nodeTypes.ts` by test), `summary` is a one-line purpose,
   and `usage` is the longer authoring note; all three are completeness-checked
-  at import. `step_authoring` is `null` for a type outside
+  at import. The Polars `usage` ends with `_catalog.INPUT_NAMING_RULE`, the
+  input-naming rule of `haute._graph_utils.executable_input_name` in words (an
+  input is named after its incoming edge: the upstream node's name, except that
+  an edge from a Quote Input frame, which `add_edge`'s `source_handle` selects,
+  is named by that frame, and an edge from a submodel output by its port); the
+  system prompt, the authoring guide's "Names and wiring" and the `input names`
+  field of the Polars, Quote Response and Source Switch cards state it verbatim,
+  held so by test, and no card says an input is "the upstream node's name"
+  alone. `step_authoring` is `null` for a type outside
   `haute._polars_steps.STEPPED_NODE_TYPES` and, for a stepped type, is derived
   from its `SteppedSurface`: `start` and `inputs` as the table holds them, a
   `rule` sentence (an `input` start begins with a source step whose `input`
@@ -890,7 +898,11 @@ the turn that follows.
      rendered under the turn's policy as described for `get_pipeline` under Edge cases
      (one line per step, the step an incomplete list fails at, a discarded-steps
      marker), each input as its code-visible name, source node and column names, and
-     its output columns (per port for a multi-frame node), and for a Source Switch the
+     its output columns (per port for a multi-frame node, each port line naming the
+     `add_edge` `source_handle` that selects it and the input name
+     `executable_input_name` derives for an edge from it: a Quote Input frame is
+     selected and read by its label, a submodel output port `<port>` is selected by
+     `out__<port>` and read as `<port>`), and for a Source Switch the
      sorted names of the scenarios its `input_scenario_map` routes (scenario names are
      pipeline metadata; which input each routes is configuration and is not listed).
      Schemas resolve schema-only in
@@ -962,7 +974,9 @@ the turn that follows.
    authoring rule for new Polars logic, derived from `STEPPED_NODE_TYPES` and the
    palette names: steps with a free-code card, the Polars (Transform) form
    `[source, free_code]` and the `[free_code]` form for every other stepped
-   surface, each spelled as `new_logic_steps` renders it with the example code;
+   surface, each spelled as `new_logic_steps` renders it with the example code
+   and `<edge name>` standing for the name of the input that becomes `df`,
+   followed by `INPUT_NAMING_RULE`;
    the code transforms `df` and assigns the result to `df`, reads other inputs by
    edge name only on the surfaces whose steps see their edges (Polars and Load
    File, where the loaded object is `obj`), and starts with a one-line `# intent`
@@ -1756,8 +1770,8 @@ the turn that follows.
   written node or an edge target) whose `input_scenario_map` routes a scenario only to
   inputs no incoming edge provides fails as `scenario_unrouted`, located at the switch and
   `input_scenario_map`, naming the scenario, the inputs it routes to and the inputs the
-  switch's incoming edges do provide, and saying how an input is named: by its edge's
-  source node, or a Quote Input's table label, never by `add_edge`'s `target_handle`. When
+  switch's incoming edges do provide, saying that `add_edge`'s `target_handle` never names
+  an input and stating `INPUT_NAMING_RULE`. When
   an edge into the switch carries a target handle the scenario routes to, the error names
   the input that edge provides and its fix maps that input to the scenario and lists it in
   `inputs` in place of the handle (`_unrouted_scenario`). Then, outside strict
@@ -1847,7 +1861,18 @@ the turn that follows.
   id of the step the renderer's error names), worded as the step-render rule below
   describes (a palette-default Transform left at `steps: []` gets the surface's
   free-code form, because a Transform's steps must choose their input), except that a
-  step reading an upstream node that is not wired in gets the `add_edge` fix. Each `free_code` step
+  step reading an upstream node that is not wired in gets the `add_edge` fix (only a node
+  whose plain edge, with no source handle, gives its own id counts, so a Quote Input or a
+  submodel never does: their edges are named by the frame or port they select), and that
+  a Transform's source step reading an input no incoming edge gives (`_source_input_fix`)
+  gets a fix that teaches the naming: with no incoming edge, `'<node>' has no incoming
+  edge, so its source step reads nothing. Add {"op": "add_edge", "source": "<upstream
+  node>", "target": "<node>"} to this plan, with "source_handle": "<frame>" when the
+  source is a Quote Input, and set the source step's input to the name that edge gives.`
+  followed by `INPUT_NAMING_RULE`; otherwise `The edges into '<node>' provide the
+  input(s) <names>; set the source step's input to <name>`, naming the only one, or the
+  closest by `difflib` (cutoff 0.6, also returned as `did_you_mean`) "if that is the frame
+  df starts from", or "the one df starts from" when none is close. Each `free_code` step
   is then checked on its own code. A top-level bare expression that calls a method on
   `df` or on an incoming input (`df.filter(...)` alone) is refused naming the node, the
   step's number and its id, because its result is discarded; the rendered program's
@@ -2315,13 +2340,18 @@ fixture for route tests). The implemented coverage is:
   fails verification drops every read; a submodel occurrence's schema part
   names its `factored` output and `vehicles` input ports, its consumer's input is named
   by the port, its config part and an inner node stay `submodel_boundary`, and the turn
-  context lists the occurrence's input and output port and the consumer's input from the
-  occurrence; a parser refusal is located at the
+  context lists the occurrence's input and output port (selected by `out__factored`, read
+  as `factored`) and the consumer's input from the occurrence; a parser refusal is located
+  at the
   node and operation that wrote it (`invalid_config` for a rating row without its factor,
   `schema_unresolvable` with the parser's fix for number breakpoints on a Date column),
   and a schema failure at the node that raised, naming the terminal; a categorical factor
   on a number column points at breakpoints; a response row naming no incoming edge, and
-  a step reading an unconnected node, carry the fix that names the edge; a
+  a step reading an unconnected node, carry the fix that names the edge; a source step
+  reading an input no edge gives carries the add_edge-and-naming-rule fix when no edge
+  reaches its node (also when it names a Quote Input node, which no plain edge names),
+  and otherwise the names one edge or two edges from Quote Input frames give, suggesting
+  the close one; a
   `response_output` after a node the plan adds saves that node's name; a switch routing a
   scenario to a dropped input is `scenario_unrouted`; the live renewal plan's shape (a new
   Data Input wired into the switch with a `target_handle`, and that handle mapped to the new
@@ -2339,7 +2369,8 @@ fixture for route tests). The implemented coverage is:
   with the selection first and the revision `get_pipeline` reports; a `public` policy
   withholds the graph without reading it; an unknown selected or preview-error node is
   refused; the brief resolves once per revision and keeps only the latest revisions; a
-  submodel node has no columns and a multi-frame node lists each port; the preview error is type, line and
+  submodel node has no columns and a Quote Input with two frames lists each port with the
+  `source_handle` that selects it and the input name it gives; the preview error is type, line and
   column under `allow_row_samples = false` and its text when row samples are permitted,
   and a resolving node reports none; a long brief stops before its bound with a pointer to
   `get_pipeline`, lists 40 columns per frame, and a label cannot break out of its line.

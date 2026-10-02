@@ -270,10 +270,23 @@ _POINTER_RESERVE = 120
 
 
 @dataclass(frozen=True, slots=True)
-class BriefFrame:
-    """One output frame's column names; `port` names it on a multi-frame node."""
+class BriefPort:
+    """One output port of a multi-frame node and how an edge reaches it.
 
-    port: str | None
+    `source_handle` is the `add_edge` handle that selects the port and
+    `input_name` the name the edge gives the frame in its target's code.
+    """
+
+    name: str
+    source_handle: str
+    input_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class BriefFrame:
+    """One output frame's column names; `port` is set on a multi-frame node."""
+
+    port: BriefPort | None
     columns: tuple[str, ...]
 
 
@@ -498,7 +511,13 @@ def _brief_node_lines(
         lines.append("  - output: not resolved")
     else:
         for frame in node.outputs:
-            where = "output" if frame.port is None else f"output port `{frame.port}`"
+            port = frame.port
+            where = (
+                "output"
+                if port is None
+                else f"output port `{port.name}` (add_edge source_handle "
+                f"`{port.source_handle}`, read as input `{port.input_name}`)"
+            )
             lines.append(f"  - {where}: {_columns(frame.columns)}")
     if node.scenarios:
         lines.append(f"  - scenarios: {_columns(node.scenarios)}")
@@ -751,6 +770,7 @@ __all__ = [
     "BriefFrame",
     "BriefInput",
     "BriefNode",
+    "BriefPort",
     "ChangedGraph",
     "ContextUpdate",
     "GraphBrief",

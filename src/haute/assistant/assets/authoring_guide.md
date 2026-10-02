@@ -64,6 +64,10 @@ one of those operations inside an unlabelled transform.
   `quotes`, `customer_features`, `rated_quotes`.
 - A function parameter with the exact upstream node name gives a clear implicit
   edge for a simple linear chain.
+- An input is named after its incoming edge: the upstream node's name, except
+  that an edge from a Quote Input frame, which `add_edge`'s `source_handle`
+  selects, is named by that frame, and an edge from a submodel output by its
+  port. Steps, code and config fields read inputs by these names.
 - Use `pipeline.connect("source", "target")` when a graph branches, has more
   than one input, or needs named ports.  Keep explicit connections together at
   the bottom of the module so the topology is easy to audit.

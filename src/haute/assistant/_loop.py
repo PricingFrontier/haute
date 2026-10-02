@@ -16,6 +16,7 @@ from haute._types import NodeType
 from haute.assistant._assets import example_index
 from haute.assistant._catalog import (
     EDGE_NAME_PLACEHOLDER,
+    INPUT_NAMING_RULE,
     INSPECT_NODE_PARTS,
     capability_manifest,
     compact_manifest,
@@ -283,10 +284,10 @@ def _steps_first_rule() -> str:
     return (
         "Write new Polars logic as steps with a free-code card: on a "
         f"{_or_list(names('start', 'input'))} node `{form('input')}`, with "
-        f"`{EDGE_NAME_PLACEHOLDER}` replaced by the incoming edge that becomes `df`, and on a "
-        f"{_or_list(names('start', 'frame'))} node `{form('frame')}`, where `df` is "
-        "already bound. The code transforms `df` and must assign the transformed result "
-        "to `df`; it reads other inputs by their edge names only on a "
+        f"`{EDGE_NAME_PLACEHOLDER}` replaced by the name of the input that becomes `df`, and "
+        f"on a {_or_list(names('start', 'frame'))} node `{form('frame')}`, where `df` is "
+        f"already bound. {INPUT_NAMING_RULE} The code transforms `df` and must assign the "
+        "transformed result to `df`; it reads other inputs by their edge names only on a "
         f"{_or_list(names('inputs', 'edges'))} node, and on a {load_file.display_name} "
         "node the loaded object is `obj`. Start the code with a one-line `# intent` "
         "comment, which titles the card. A hook that needs no post-processing keeps "

@@ -471,7 +471,7 @@
                         }
                       ],
                       "default": null,
-                      "description": "Input port on the target node, exactly as get_pipeline reports it under an edge's 'target_handle'. Only nodes with named input roles use it: an edgeJoin requires 'base' or 'join'. Omit it for an ordinary node such as polars, which binds inputs by source name and has no input ports.",
+                      "description": "Input port on the target node, exactly as get_pipeline reports it under an edge's 'target_handle'. Only nodes with named input roles use it: an edgeJoin requires 'base' or 'join'. Omit it for an ordinary node such as polars, which names each input after its incoming edge and has no input ports.",
                       "title": "Target Handle"
                     }
                   },
@@ -525,7 +525,7 @@
                         }
                       ],
                       "default": null,
-                      "description": "Input port on the target node, exactly as get_pipeline reports it under an edge's 'target_handle'. Only nodes with named input roles use it: an edgeJoin requires 'base' or 'join'. Omit it for an ordinary node such as polars, which binds inputs by source name and has no input ports.",
+                      "description": "Input port on the target node, exactly as get_pipeline reports it under an edge's 'target_handle'. Only nodes with named input roles use it: an edgeJoin requires 'base' or 'join'. Omit it for an ordinary node such as polars, which names each input after its incoming edge and has no input ports.",
                       "title": "Target Handle"
                     }
                   },

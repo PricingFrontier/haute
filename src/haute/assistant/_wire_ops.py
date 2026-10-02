@@ -96,7 +96,7 @@ _TARGET_HANDLE_DESCRIPTION = (
     "Input port on the target node, exactly as get_pipeline reports it under "
     "an edge's 'target_handle'. Only nodes with named input roles use it: an "
     "edgeJoin requires 'base' or 'join'. Omit it for an ordinary node such as "
-    "polars, which binds inputs by source name and has no input ports."
+    "polars, which names each input after its incoming edge and has no input ports."
 )
 _NODE_TYPE_DESCRIPTION = "Node type id, exactly as the prompt's node index lists it."
 # The compatible provider projection flattens the operation union into one

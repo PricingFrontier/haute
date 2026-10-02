@@ -502,6 +502,33 @@ def test_polars_usage_names_inputs_by_edge_without_input_mapping() -> None:
     assert "upstream node" in usage
 
 
+def test_every_text_that_names_inputs_states_the_one_naming_rule() -> None:
+    """An edge from a Quote Input frame or a submodel output is not named by
+    its node; a model told otherwise invented frame names (live transcript)."""
+
+    from importlib import resources
+
+    from haute.assistant._catalog import INPUT_NAMING_RULE
+    from haute.assistant._loop import build_system_prompt
+    from haute.assistant._node_cards import node_card
+
+    def flat(text: str) -> str:
+        return " ".join(text.split())
+
+    guide = (
+        resources.files("haute.assistant")
+        .joinpath("assets", "authoring_guide.md")
+        .read_text(encoding="utf-8")
+    )
+    assert INPUT_NAMING_RULE in _descriptors()["polars"].usage
+    assert INPUT_NAMING_RULE in build_system_prompt(source_file="main.py")
+    assert INPUT_NAMING_RULE in flat(guide)
+    for node_type in (NodeType.POLARS, NodeType.OUTPUT, NodeType.LIVE_SWITCH):
+        fields = node_card(node_type)["fields"]
+        assert INPUT_NAMING_RULE in fields["input names"], node_type
+        assert not any("(the upstream node's name)" in text for text in fields.values())
+
+
 class TestStepAuthoring:
     """Stepped descriptors say how steps start, what they see and how new
     logic is written, read from the step builder's surface table."""

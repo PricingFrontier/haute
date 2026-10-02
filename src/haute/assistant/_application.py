@@ -31,7 +31,7 @@ from haute._rating import normalise_combined_outputs, validate_banding_config
 from haute._rating_step_config import normalise_rating_step_config
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
 from haute._user_exec import user_code_line
-from haute.assistant._catalog import new_logic_steps
+from haute.assistant._catalog import INPUT_NAMING_RULE, new_logic_steps
 from haute.assistant._change_record import (
     change_data_check,
     change_headline,
@@ -706,9 +706,9 @@ def _unrouted_scenario(
 ) -> AssistantOperationError:
     """``scenario_unrouted``, naming the inputs the switch's incoming edges provide.
 
-    An input is named by its edge's source node (a Quote Input's table label),
-    never by the edge's target handle, so a plan that maps the handle it gave
-    an edge is told the name that edge provides.
+    An input is named after its incoming edge (``INPUT_NAMING_RULE``), never by
+    the edge's target handle, so a plan that maps the handle it gave an edge is
+    told the name that edge provides.
     """
 
     message = (
@@ -725,8 +725,8 @@ def _unrouted_scenario(
         )
     inputs = ", ".join(repr(name) for name in sorted(provided))
     message += (
-        f" Its incoming edges provide {inputs}: an input is named by its edge's source "
-        "node (a Quote Input's table label), never by add_edge's target_handle."
+        f" Its incoming edges provide {inputs}; add_edge's target_handle never names an "
+        f"input. {INPUT_NAMING_RULE}"
     )
     handled = [name for name in sorted(provided) if provided[name].targetHandle in routed]
     if handled:

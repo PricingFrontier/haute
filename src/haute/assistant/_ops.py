@@ -68,7 +68,7 @@ from haute._types import (
     PipelineGraph,
     SubmodelDefinition,
 )
-from haute.assistant._catalog import capability_manifest, new_logic_steps
+from haute.assistant._catalog import INPUT_NAMING_RULE, capability_manifest, new_logic_steps
 from haute.assistant._wire_ops import (
     MAX_DECLARED_POSTCONDITIONS,
     MAX_PLAN_OPERATIONS,
@@ -120,8 +120,9 @@ def _invalid(
     *,
     fix: str,
     where: Mapping[str, object] | None = None,
+    did_you_mean: Sequence[str] = (),
 ) -> NoReturn:
-    raise OpValidationError(message, where=where, fix=fix)
+    raise OpValidationError(message, where=where, fix=fix, did_you_mean=did_you_mean)
 
 
 class UnknownNodeReferenceError(OpValidationError):
@@ -2916,6 +2917,17 @@ def _df_indexing_fix(
     )
 
 
+def _plain_edge_input_name(node: GraphNode) -> str | None:
+    """The input name an edge from *node* gives without a source handle, if it can."""
+
+    try:
+        return executable_input_name(
+            node_type=node.data.nodeType, label=node.data.label, source_handle=None
+        )
+    except ValueError:
+        return None  # a Quote Input's or a submodel's edge selects a frame or port
+
+
 def _unwired_step_input(
     graph: PipelineGraph,
     node: GraphNode,
@@ -2925,8 +2937,9 @@ def _unwired_step_input(
 ) -> str | None:
     """The node a failing source, join or concat step reads that no edge connects.
 
-    Only an input name that is the id of a node in *graph* counts, so the fix
-    can name the ``add_edge`` that connects it.
+    Only an input name that is the id of a node in *graph* counts, and only
+    when a plain edge from that node gives that name, so the fix can name the
+    ``add_edge`` that connects it.
     """
 
     if step_index is None:
@@ -2935,7 +2948,11 @@ def _unwired_step_input(
     if not isinstance(step, Mapping):
         return None
     names = step.get("inputs") if step.get("kind") == "concat" else [step.get("input")]
-    nodes = {candidate.id for candidate in graph.nodes if candidate.id != node.id}
+    nodes = {
+        candidate.id
+        for candidate in graph.nodes
+        if candidate.id != node.id and _plain_edge_input_name(candidate) == candidate.id
+    }
     return next(
         (
             name
@@ -2944,6 +2961,54 @@ def _unwired_step_input(
         ),
         None,
     )
+
+
+def _unread_source_input(
+    node_type: NodeType,
+    steps: Sequence[object],
+    step_index: int | None,
+    input_names: Sequence[str],
+) -> str | None:
+    """The input a failing source step names that no incoming edge gives, if any."""
+
+    if stepped_surface_for(node_type).start != "input" or step_index != 0:
+        return None
+    step = steps[0]
+    if not isinstance(step, Mapping) or step.get("kind") != "source":
+        return None
+    name = step.get("input")
+    return name if isinstance(name, str) and name not in input_names else None
+
+
+def _source_input_fix(node_id: str, name: str, input_names: Sequence[str]) -> tuple[str, list[str]]:
+    """The fix for a source step reading *name*, which no incoming edge gives.
+
+    With no incoming edge the step has nothing to read, so the fix adds one
+    and says how an edge names its input. Otherwise it lists the names the
+    edges give and suggests one: the only one, or the one closest to *name*.
+    Returns the fix and its suggestion.
+    """
+
+    if not input_names:
+        return (
+            f"{node_id!r} has no incoming edge, so its source step reads nothing. Add "
+            f'{{"op": "add_edge", "source": "<upstream node>", "target": "{node_id}"}} to '
+            'this plan, with "source_handle": "<frame>" when the source is a Quote Input, '
+            "and set the source step's input to the name that edge gives. " + INPUT_NAMING_RULE,
+            [],
+        )
+    names = list(dict.fromkeys(input_names))
+    provided = (
+        f"The edges into {node_id!r} provide the input{'s' if len(names) > 1 else ''} "
+        + ", ".join(repr(item) for item in names)
+        + "; set the source step's input to "
+    )
+    if len(names) == 1:
+        return f"{provided}{names[0]!r}.", names
+    close = difflib.get_close_matches(name, names, n=1, cutoff=0.6)
+    if close:
+        return f"{provided}{close[0]!r} if that is the frame df starts from.", close
+    return f"{provided}the one df starts from.", []
 
 
 def _validate_assistant_authored_steps(
@@ -2974,16 +3039,21 @@ def _validate_assistant_authored_steps(
     except PolarsStepError as exc:
         step = _step_id_at(steps, exc.step_index)
         unwired = _unwired_step_input(result, node, steps, exc.step_index, input_names)
+        unread = _unread_source_input(node_type, steps, exc.step_index, input_names)
         detail, fix = _unrendered_steps(node_type, steps, exc)
+        suggested: list[str] = []
+        if unwired is not None:
+            fix = (
+                f"Connect {unwired!r} to {node.id!r} in the same plan: "
+                f'{{"op": "add_edge", "source": "{unwired}", "target": "{node.id}"}}.'
+            )
+        elif unread is not None:
+            fix, suggested = _source_input_fix(node.id, unread, input_names)
         _invalid(
             f"Node {node.id!r} has an invalid step list: {detail}",
             where={"node": node.id, "field": "steps", **({} if step is None else {"step": step})},
-            fix=(
-                fix
-                if unwired is None
-                else f"Connect {unwired!r} to {node.id!r} in the same plan: "
-                f'{{"op": "add_edge", "source": "{unwired}", "target": "{node.id}"}}.'
-            ),
+            fix=fix,
+            did_you_mean=suggested,
         )
     lines = rendered.code.split("\n")
     frame_names = {_BARE_INPUT_NAME, *input_names}

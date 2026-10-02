@@ -1221,7 +1221,8 @@ class TestSubmodelOccurrenceSchema:
             '"region"]' in context
         )
         assert (
-            '- output port `factored`: ["policy_id", "vehicle_year", "base_rate", "region", '
+            "- output port `factored` (add_edge source_handle `out__factored`, read as input "
+            '`factored`): ["policy_id", "vehicle_year", "base_rate", "region", '
             '"vehicle_age", "vehicle_factor"]' in context
         )
         assert "- input `factored` from `vehicle_factors`: [" in context
@@ -2815,6 +2816,60 @@ class TestStepsFirstAuthoring:
         assert len(result.preview) == 5
 
 
+def _input_naming_rule() -> str:
+    from haute.assistant._catalog import INPUT_NAMING_RULE
+
+    return INPUT_NAMING_RULE
+
+
+#: The fix for a source step on a node no edge reaches yet.
+_NO_EDGE_FIX = (
+    "'claims_agg' has no incoming edge, so its source step reads nothing. Add "
+    '{"op": "add_edge", "source": "<upstream node>", "target": "claims_agg"} to '
+    'this plan, with "source_handle": "<frame>" when the source is a Quote '
+    "Input, and set the source step's input to the name that edge gives. " + _input_naming_rule()
+)
+
+
+def _quote_table(label: str, path: str, columns: dict[str, str]) -> dict[str, object]:
+    return {
+        "path": path,
+        "label": label,
+        "emit": True,
+        "row_id_column": None,
+        "columns": [
+            {
+                "name": name,
+                "path": f"{path}.{name}",
+                "type": dtype,
+                "status": "Confirmed",
+                "selected": True,
+                "levels": None,
+            }
+            for name, dtype in columns.items()
+        ],
+    }
+
+
+#: A Quote Input whose request yields a quote frame and a driver-claims frame.
+_CLAIMS_QUOTE_INPUT = {
+    "op": "add_node",
+    "node_type": "apiInput",
+    "name": "quote_inputs",
+    "config": {
+        "path": "quote.json",
+        "tables": [
+            _quote_table("quote", "$[:]", {"quote_id": "str"}),
+            _quote_table(
+                "additional_driver_claims",
+                "$[:].claims[:]",
+                {"quote_id": "str", "amount": "float"},
+            ),
+        ],
+    },
+}
+
+
 def _egress_toml(root: Path, *, max_sensitivity: str) -> None:
     (root / "haute.toml").write_text(
         '[assistant]\nprovider = "openai"\nmodel = "test"\n'
@@ -3577,10 +3632,10 @@ async def test_an_unrouted_scenario_names_the_inputs_the_edges_provide(
     assert error["message"] == (
         "Source Switch 'policies' routes scenario 'renewal_batch' to 'renewal_batch_queue', "
         "which no incoming edge provides, so under that scenario it would have no input. Its "
-        "incoming edges provide 'quotes', 'regions', 'renewal_quotes': an input is named by "
-        "its edge's source node (a Quote Input's table label), never by add_edge's "
-        "target_handle. The edge from 'renewal_quotes' has target_handle "
-        "'renewal_batch_queue', which does not name an input; it provides 'renewal_quotes'."
+        "incoming edges provide 'quotes', 'regions', 'renewal_quotes'; add_edge's "
+        f"target_handle never names an input. {_input_naming_rule()} The edge from "
+        "'renewal_quotes' has target_handle 'renewal_batch_queue', which does not name an "
+        "input; it provides 'renewal_quotes'."
     )
     assert error["fix"] == (
         "Map 'renewal_quotes' to 'renewal_batch' in input_scenario_map, and list "
@@ -3824,6 +3879,100 @@ class TestActionableErrors:
             "Connect 'quotes' to 'august_totals' in the same plan: {\"op\": \"add_edge\", "
             '"source": "quotes", "target": "august_totals"}.'
         )
+
+    @pytest.mark.parametrize(
+        ("read", "handles", "fix", "did_you_mean"),
+        [
+            pytest.param(
+                "ad_driver_claims",
+                (),
+                _NO_EDGE_FIX,
+                None,
+                id="no-edge",
+            ),
+            pytest.param(
+                # An edge from a Quote Input is named by its frame, never the
+                # node, so the fix is not a plain add_edge from the node.
+                "quote_inputs",
+                (),
+                _NO_EDGE_FIX,
+                None,
+                id="no-edge-reading-the-quote-input-node",
+            ),
+            pytest.param(
+                "ad_driver_claims",
+                ("additional_driver_claims",),
+                "The edges into 'claims_agg' provide the input 'additional_driver_claims'; "
+                "set the source step's input to 'additional_driver_claims'.",
+                ["additional_driver_claims"],
+                id="an-edge-under-another-name",
+            ),
+            pytest.param(
+                "ad_driver_claims",
+                ("quote", "additional_driver_claims"),
+                "The edges into 'claims_agg' provide the inputs 'quote', "
+                "'additional_driver_claims'; set the source step's input to "
+                "'additional_driver_claims' if that is the frame df starts from.",
+                ["additional_driver_claims"],
+                id="two-edges-under-other-names",
+            ),
+        ],
+    )
+    async def test_a_source_step_reading_an_input_no_edge_gives_says_how_inputs_are_named(
+        self,
+        steps_first_project: Path,
+        read: str,
+        handles: tuple[str, ...],
+        fix: str,
+        did_you_mean: list[str] | None,
+    ):
+        """The live transcript: the model named the source step's input after
+        the frame in its own words, first with no edge from the Quote Input and
+        then with one, and needed a third dry run to learn the edge's name."""
+
+        from haute.assistant._tools import build_tool_executor
+
+        _egress_toml(steps_first_project, max_sensitivity="internal")
+        steps = [
+            {"id": "start", "kind": "source", "input": read},
+            {"id": "logic", "kind": "free_code", "code": "# Keep it\ndf = df"},
+        ]
+        result = await build_tool_executor("main.py")(
+            "dry_run_graph_edits",
+            {
+                "summary": "Aggregate the driver claims per quote.",
+                "ops": [
+                    _CLAIMS_QUOTE_INPUT,
+                    {
+                        "op": "add_node",
+                        "node_type": "polars",
+                        "name": "claims_agg",
+                        "config": {"steps": steps},
+                    },
+                    *(
+                        {
+                            "op": "add_edge",
+                            "source": "quote_inputs",
+                            "target": "claims_agg",
+                            "source_handle": handle,
+                        }
+                        for handle in handles
+                    ),
+                ],
+            },
+        )
+
+        error = result["error"]
+        assert (error["code"], error["retryable"]) == ("invalid_ops", True)
+        assert error["where"] == {
+            "op_index": 1,
+            "node": "claims_agg",
+            "field": "steps",
+            "step": "start",
+        }
+        assert f"Unknown input {read!r}" in error["message"]
+        assert error["fix"] == fix
+        assert error.get("did_you_mean") == did_you_mean
 
     async def test_an_edge_to_a_node_added_later_in_the_plan_names_the_move(
         self, steps_first_project: Path
@@ -5307,25 +5456,56 @@ class TestBriefBoundaries:
 
         monkeypatch.setattr(_tools, "_BRIEF_CACHE", OrderedDict())
 
-    def test_a_multi_frame_node_lists_each_port(self, monkeypatch: pytest.MonkeyPatch):
+    def test_each_quote_input_frame_names_its_edge_handle_and_input(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A frame is reached by add_edge's source_handle and read by the name
+        the edge gives, which for a Quote Input is the frame, not the node."""
+
         from haute.assistant import _tools
-        from haute.assistant._render import Authoring, BriefFrame, BriefNode
+        from haute.assistant._render import (
+            BriefFrame,
+            BriefNode,
+            BriefPort,
+            GraphBrief,
+            TurnContext,
+            render_turn_context,
+        )
 
-        ports = {"main": pl.LazyFrame({"x": [1]}), "rest": pl.LazyFrame({"y": [1]})}
-        monkeypatch.setattr(_tools, "_resolve_schema_outputs", lambda *_a, **_k: {"a": ports})
+        claims = "additional_drivers_claims"
+        ports = {
+            "quotes": pl.LazyFrame({"quote_id": ["q1"]}),
+            claims: pl.LazyFrame({"quote_id": ["q1"], "amount": [1.0]}),
+        }
+        monkeypatch.setattr(
+            _tools, "_resolve_schema_outputs", lambda *_a, **_k: {"quote_inputs": ports}
+        )
+        graph = PipelineGraph(nodes=[_node("quote_inputs", "apiInput")], edges=[])
 
-        nodes = _tools._brief_nodes(PipelineGraph(nodes=[_node("a")], edges=[]))
+        nodes = _tools._brief_nodes(graph)
 
         assert nodes == (
             BriefNode(
-                "a",
-                "polars",
-                "a",
-                Authoring("incomplete"),
+                "quote_inputs",
+                "apiInput",
+                "quote_inputs",
+                None,
                 (),
-                (BriefFrame("main", ("x",)), BriefFrame("rest", ("y",))),
+                (
+                    BriefFrame(BriefPort("quotes", "quotes", "quotes"), ("quote_id",)),
+                    BriefFrame(BriefPort(claims, claims, claims), ("quote_id", "amount")),
+                ),
             ),
         )
+        text = render_turn_context(
+            TurnContext(_turn_policy(), GraphBrief("main", "rev", nodes, (), None))
+        )
+        assert (
+            "  - output port `quotes` (add_edge source_handle `quotes`, read as input "
+            '`quotes`): ["quote_id"]\n'
+            f"  - output port `{claims}` (add_edge source_handle `{claims}`, read as input "
+            f'`{claims}`): ["quote_id", "amount"]'
+        ) in text
 
     def test_the_brief_cache_keeps_only_the_latest_revisions(self, monkeypatch: pytest.MonkeyPatch):
         from haute.assistant import _tools

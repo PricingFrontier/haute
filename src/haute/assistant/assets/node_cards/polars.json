@@ -3,7 +3,8 @@
   "authorable": true,
   "fields": {
     "steps": "The node's logic as step cards run in order. New logic is [source, free_code]: a source step binds df to one incoming edge, then a free_code step transforms df.",
-    "steps[kind=source].input": "The incoming edge (the upstream node's name) that becomes df.",
+    "steps[kind=source].input": "The name of the input that becomes df.",
+    "input names": "An input is named after its incoming edge: the upstream node's name, except that an edge from a Quote Input frame, which `add_edge`'s `source_handle` selects, is named by that frame, and an edge from a submodel output by its port.",
     "steps[kind=free_code].code": "Polars code that starts with a one-line `# intent` comment and assigns the transformed frame to df. Other inputs are available by their edge names; pl is imported.",
     "steps[].id": "A stable id unique within the node; keep existing ids when editing."
   },

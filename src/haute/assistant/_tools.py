@@ -45,7 +45,7 @@ from haute._execution_context import (
     ExecutionContext,
     ExecutionProfile,
 )
-from haute._graph_utils import edge_input_name
+from haute._graph_utils import edge_input_name, executable_input_name
 from haute._interactive_workers import (
     InteractiveWorkerError,
     InteractiveWorkerStoppedError,
@@ -112,6 +112,7 @@ from haute.assistant._render import (
     BriefFrame,
     BriefInput,
     BriefNode,
+    BriefPort,
     ChangedGraph,
     ContextUpdate,
     GraphBrief,
@@ -1203,13 +1204,36 @@ def _incomplete(exc: Exception | None) -> bool:
     )
 
 
-def _brief_frames(output: object) -> tuple[BriefFrame, ...]:
+def _output_columns(output: object) -> tuple[tuple[str | None, tuple[str, ...]], ...]:
+    """Each output frame's port (None for a single frame) and column names."""
+
     if isinstance(output, dict):
         return tuple(
-            BriefFrame(port, tuple(_frame_column_names(frame, None)))
-            for port, frame in output.items()
+            (port, tuple(_frame_column_names(frame, None))) for port, frame in output.items()
         )
-    return (BriefFrame(None, tuple(_frame_column_names(output, None))),)
+    return ((None, tuple(_frame_column_names(output, None))),)
+
+
+def _brief_port(node: GraphNode, name: str, source_handle: str) -> BriefPort:
+    """An output port of *node*, with the handle an edge selects it by and the
+    input name that edge gives, derived as the executor derives it."""
+
+    return BriefPort(
+        name,
+        source_handle,
+        executable_input_name(
+            node_type=node.data.nodeType, label=node.data.label, source_handle=source_handle
+        ),
+    )
+
+
+def _brief_frames(node: GraphNode, output: object) -> tuple[BriefFrame, ...]:
+    """A node's output frames; a multi-frame node's ports are its frame handles."""
+
+    return tuple(
+        BriefFrame(None if port is None else _brief_port(node, port, port), columns)
+        for port, columns in _output_columns(output)
+    )
 
 
 def _brief_nodes(graph: PipelineGraph) -> tuple[BriefNode, ...]:
@@ -1241,7 +1265,7 @@ def _brief_nodes(graph: PipelineGraph) -> tuple[BriefNode, ...]:
                 )
                 # A lazy frame raises a column its plan reads but its input lacks
                 # only when its schema is read, after resolution has returned.
-                _brief_frames(output)
+                _output_columns(output)
                 resolved[node_id] = (output, None)
             except Exception as exc:  # noqa: BLE001 - an unresolved node is reported as such
                 logger.info(
@@ -1273,7 +1297,9 @@ def _brief_nodes(graph: PipelineGraph) -> tuple[BriefNode, ...]:
             output, _failure = output_of(runtime)
             if output is None:
                 return None
-            frames.append(BriefFrame(name, tuple(_frame_column_names(output, handle))))
+            # A parent edge selects a public output port by its `out__<name>` handle.
+            port = _brief_port(occurrence.node, name, f"out__{name}")
+            frames.append(BriefFrame(port, tuple(_frame_column_names(output, handle))))
         return tuple(frames)
 
     occurrences = resolve_submodel_instances(graph)
@@ -1310,7 +1336,7 @@ def _brief_nodes(graph: PipelineGraph) -> tuple[BriefNode, ...]:
                 node.data.label,
                 authoring,
                 inputs,
-                None if output is None else _brief_frames(output),
+                None if output is None else _brief_frames(node, output),
                 _switch_scenarios(node),
             )
         )

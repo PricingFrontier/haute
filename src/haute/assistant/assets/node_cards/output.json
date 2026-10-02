@@ -3,7 +3,8 @@
   "authorable": true,
   "fields": {
     "outputMapping": "One row per response field: which input column fills which JSON path. Only mapped, enabled columns reach the response.",
-    "outputMapping[].source_port": "The name of the incoming edge (the upstream node's name) the column comes from.",
+    "outputMapping[].source_port": "The name of the input the column comes from.",
+    "input names": "An input is named after its incoming edge: the upstream node's name, except that an edge from a Quote Input frame, which `add_edge`'s `source_handle` selects, is named by that frame, and an edge from a submodel output by its port.",
     "outputMapping[].source_column": "The column on that input.",
     "outputMapping[].output_path": "Where the value goes in the response. Always starts with \"$[:]\" (one response object per row), then \".name\" keys: \"$[:].premium\", or \"$[:].pricing.premium\" for a nested object. A bare \"premium\" or \"$.premium\" is refused.",
     "outputMapping[].enabled": "true to include the row; false keeps it listed but leaves it out of the response.",

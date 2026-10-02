@@ -158,7 +158,10 @@ places after the analyst's message and never stores in the session history:
   incomplete list fails at and a marker when the editor discarded the node's steps), one
   line per step (its id and kind, with a free-code step's `# intent` line only when
   executable source is permitted), each input's
-  code-visible name, source and column names, and its output column names. Columns are
+  code-visible name, source and column names, and its output column names; a node with
+  several output ports (a Quote Input's frames, a submodel's outputs) lists each port with
+  the `add_edge` `source_handle` that selects it and the input name an edge from it gives,
+  derived by the executor's own naming function. Columns are
   resolved schema-only on the same engine path as `inspect_node`'s schema part, and a node that does
   not resolve says so without its error. The brief is bounded at about 8,000 characters;
   the analyst's selected nodes come first, and any node left out is counted with a pointer
@@ -659,9 +662,14 @@ it reads other inputs by their edge names only on a Transform and a Load File (w
 `df` is the first input and the loaded object is `obj`), and elsewhere sees only `df`,
 the frame the node produced. It starts with a one-line `# intent` comment, which the
 step builder shows as the card's title. A hook that needs no post-processing keeps
-`steps: []`. Existing structured steps keep their ids and order, and code-mode nodes
+`steps: []`. The system prompt, the Polars descriptor, the authoring guide and the node
+cards that name inputs (Polars, Quote Response, Source Switch) state one input-naming
+rule in the same words: an input is named after its incoming edge, the upstream node's
+name, except that an edge from a Quote Input frame, which `add_edge`'s `source_handle`
+selects, is named by that frame, and an edge from a submodel output by its port.
+Existing structured steps keep their ids and order, and code-mode nodes
 keep code editing: code on a code-mode Transform starts from a named input (each input
-is named by its upstream node, and `df` is only the output variable) and must assign
+is named after its incoming edge, and `df` is only the output variable) and must assign
 the transformed frame to `df` or return it; immutable
 expressions whose results would be discarded, and code that reads `df` before
 an assignment that definitely dominates that read across control flow, are
@@ -670,7 +678,11 @@ rather than silently weakening the output-only contract. A step list the batch
 authors is rendered by the product's step renderer, and each free-code step in it is
 checked against its surface: a bare frame method call whose result is discarded is
 refused with the step, and on a surface whose code sees only `df` a step that reads an
-input or upstream node by name is refused with "<Surface> code sees only df".
+input or upstream node by name is refused with "<Surface> code sees only df". A
+Transform's source step that reads an input no incoming edge gives is refused with a fix
+that teaches the naming: when no edge reaches the node, add an `add_edge` into it in the
+same plan and name the input after that edge, with the rule; otherwise the names its
+edges give, suggesting the only one or the one closest to the name written.
 
 **Writes to stepped nodes land in the saved config or fail naming the fix.** A node
 the assistant adds starts from the palette's config for its type (`node_defaults.json`),
@@ -2067,8 +2079,9 @@ Loud, typed, and never averaged away:
   a blocker asking the analyst to edit it in the editor.
 - **Every scenario a Source Switch routes is validated** — a dry-run refuses a switch the
   plan touches that routes a scenario to no connected input (`scenario_unrouted`), naming
-  the inputs its incoming edges do provide; an input is named by its edge's source node (a
-  Quote Input's table label), never by an edge's target handle, so a plan that maps the
+  the inputs its incoming edges do provide and stating the input-naming rule (a Quote
+  Input frame's label, a submodel output's port, otherwise the upstream node's name),
+  never an edge's target handle, so a plan that maps the
   handle it gave a new edge is told the name that edge provides and the mapping to write; and
   resolves every target again under each other scenario a switch maps, so dropping an input
   a batch scenario needs fails loudly instead of passing because only the live scenario
