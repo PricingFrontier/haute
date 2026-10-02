@@ -323,17 +323,6 @@ describe("Training configuration readiness", () => {
     expect(screen.queryByText(/Parameters JSON/)).toBeNull()
     expect(onPaneIssuesChange).toHaveBeenLastCalledWith("node_1", [])
   })
-  it("names one_hot_max_size beneath CatBoost's Parameters JSON only", () => {
-    const note = /one_hot_max_size.*one-hot encoded.*target statistics, which are much slower to train/
-    renderConfig({ activePane: "params" })
-    expect(screen.getByText(note)).toBeInTheDocument()
-    cleanup()
-    renderConfig({
-      activePane: "params",
-      config: { _nodeId: "xgb", algorithm: "xgboost", target: "loss_ratio", loss_function: "RMSE", params: {} },
-    })
-    expect(screen.queryByText(note)).toBeNull()
-  })
   it("starts an XGBoost study from XGBoost's own parameter keys (MOD-F02)", () => {
     const { props } = renderConfig({
       activePane: "params",

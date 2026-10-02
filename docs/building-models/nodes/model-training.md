@@ -274,7 +274,7 @@ For CatBoost, GPU training is set in the **TRAIN** pane rather than here.
     | `learning_rate` | Step-size shrinkage: smaller values are slower but often more accurate |
     | `l2_leaf_reg` | L2 regularisation of leaf values |
     | `early_stopping_rounds` | Stop a validation fit when its metric stops improving |
-    | `one_hot_max_size` | Categorical columns with up to this many levels are one-hot encoded; above it CatBoost uses target statistics, which are much slower to train. The pane repeats this under the box, and the **TRAIN** pane's run summary shows the resulting **Categorical encoding**. |
+    | `one_hot_max_size` | Categorical columns with up to this many levels are one-hot encoded; above it CatBoost uses target statistics, which are much slower to train. The **TRAIN** pane's run summary shows the resulting **Categorical encoding**. |
 
 ??? info "XGBoost parameters"
     XGBoost trains CPU histogram trees. **Parameters JSON** accepts `num_boost_round`,

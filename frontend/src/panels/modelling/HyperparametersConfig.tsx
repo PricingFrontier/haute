@@ -29,8 +29,6 @@ type Props = {
   onReviewSplit?: () => void
   /** The search space "Tune parameters" starts from; it must use the family's own keys. */
   starterSearchSpace?: Record<string, unknown>
-  /** A one-line note beneath Parameters JSON, such as a parameter that sets training time. */
-  parametersNote?: string
 }
 
 const CATBOOST_STARTER_SEARCH_SPACE: Record<string, unknown> = {
@@ -41,7 +39,6 @@ const CATBOOST_STARTER_SEARCH_SPACE: Record<string, unknown> = {
 
 export function HyperparametersConfig({
   starterSearchSpace = CATBOOST_STARTER_SEARCH_SPACE,
-  parametersNote,
   algorithmLabel,
   params,
   reservedKeys = [],
@@ -167,11 +164,6 @@ export function HyperparametersConfig({
               style={{ ...MODELLING_INPUT_STYLE, resize: "vertical" }}
             />
           </label>
-          {parametersNote && (
-            <p className="mt-1.5 text-xs leading-5" style={{ color: "var(--text-muted)" }}>
-              {parametersNote}
-            </p>
-          )}
         </div>
       ) : (
         <>

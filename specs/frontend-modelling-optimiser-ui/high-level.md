@@ -222,10 +222,8 @@ strip; it never falls through to CatBoost. Pane ownership:
   **Tune parameters** choices. Exactly one strategy body is visible. Fixed parameters
   shows only the algorithm-neutral **Parameters JSON** object editor; Tune parameters
   instead shows Trial count, Seed, Selection metric and **Search space JSON**. Neither
-  JSON editor has Apply/Revert controls or an inline explanatory block; CatBoost's
-  Parameters JSON has only a one-line note beneath it naming `one_hot_max_size`: categorical
-  columns with up to that many levels are one-hot encoded, and above it CatBoost uses target
-  statistics, which are much slower to train. A new CatBoost node's starter parameters include
+  JSON editor has Apply/Revert controls, an inline explanatory block or a note beneath it.
+  A new CatBoost node's starter parameters include
   `one_hot_max_size: 10`, visible and editable in that JSON; Haute adds no hidden default, and
   nodes created earlier keep their parameters. A syntactically
   valid top-level object updates its corresponding config automatically, except that a
@@ -369,7 +367,7 @@ settings; inline arrow-based, role/final-selection-aware monotonic controls; the
 interaction editors against the shared dtype-class and expression-grammar fixtures; unset-only algorithm selection, read-only selected-algorithm
 context, and the absence of an in-place change action; mutually exclusive fixed/tuned Params
 bodies, arbitrary params JSON round trips, valid fixed/search-space autosave, compact default
-draft presentation, CatBoost's starter `one_hot_max_size` and its Parameters note, the run
+draft presentation, CatBoost's starter `one_hot_max_size`, the run
 summary's categorical encoding, invalid/non-object/reserved-key draft persistence without Apply/Revert or
 inline warnings, selected-strategy click-time validation, and GPU task-type merge; plain setup-tab
 labels, click-time-only aggregate validation beneath Train, authoritative bounded live-history
