@@ -12308,6 +12308,7 @@
               "type": "null"
             }
           ],
+          "default": null,
           "title": "High"
         },
         "low": {
@@ -12319,6 +12320,7 @@
               "type": "null"
             }
           ],
+          "default": null,
           "title": "Low"
         },
         "mean_shap": {
@@ -12350,6 +12352,7 @@
               "type": "null"
             }
           ],
+          "default": null,
           "title": "Value"
         }
       },

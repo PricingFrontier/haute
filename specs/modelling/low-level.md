@@ -1479,7 +1479,10 @@ rows/features) and retry.
     band whose value is outside its `low`..`high`, more than one missing point or a
     numeric missing point that is not last, omitted levels on a numeric feature), a
     rank outside 0 to 1, a point with no rows, and a 10th percentile above the 90th.
-    `TrainResponse` requires `shap_link` exactly when `shap_curves` is non-empty.
+    `TrainResponse` requires `shap_link` exactly when `shap_curves` is non-empty. The
+    training worker sends its response with `exclude_none`, so a curve point's `value`,
+    `low` and `high` default to null: an absent field is a null one, and the published
+    response carries the nulls again.
   - MLflow (`shap/`) and the model card log `shap_summary` only.
 - **MLflow logging errors** — `_log_model_card` inside `log_experiment` is wrapped in
   `try/except Exception: logger.warning(...)`, so a model-card bug never fails an
@@ -1663,6 +1666,9 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
   `test_lightgbm_family.py` train a real model on more than 5,000 diagnostics rows and
   prove the adapter's `shap_values` receives exactly 5,000 rows, the result carries a
   2,000-row beeswarm and a curve per feature, and `shap_link` names the loss's link.
+  `test_training_worker_protocol.py::test_train_service_publishes_shap_views_with_their_nulls`
+  sends SHAP views with missing values and categorical levels through the worker and the
+  service's publication and proves their nulls survive.
 - `test_algorithms_coverage.py` — targeted coverage of `_algorithms.py` /
   `_training_job.py` paths not hit elsewhere (platform-specific RSS reads, CatBoost and
   MLflow mocked out via `unittest.mock`).

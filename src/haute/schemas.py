@@ -2832,13 +2832,15 @@ class TrainShapCurvePoint(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # The training worker sends its response without null fields
+    # (``exclude_none``), so a null must be what an absent field means.
     #: A numeric band's mean feature value or a categorical level; null for the
     #: rows whose value is missing.
-    value: float | str | None
+    value: float | str | None = None
     #: A numeric band's lowest and highest feature value; null for a level and
     #: for the missing rows.
-    low: float | None
-    high: float | None
+    low: float | None = None
+    high: float | None = None
     rows: int = Field(strict=True, ge=1)
     mean_shap: float
     p10_shap: float
