@@ -667,15 +667,20 @@ class TestCodexFindings:
         assert result.result_value == dt.date(2024, 6, 1)
 
     @pytest.mark.parametrize(
-        ("literal", "expected"),
+        ("literal", "computed"),
         [
-            ("pl.lit(global_constants.effective, dtype=pl.Date)", "date"),
-            ("pl.lit(value=global_constants.effective)", "date"),
-            ("pl.lit(global_constants.effective, dtype=pl.Datetime)", "datetime"),
+            ("pl.lit(global_constants.effective)", True),
+            ("pl.lit(value=global_constants.effective)", True),
+            ("pl.lit(global_constants.effective, dtype=None)", True),
+            ("pl.lit(global_constants.effective, dtype=pl.Date)", True),
+            ("pl.lit(global_constants.effective, pl.Date)", True),
+            ("pl.lit(global_constants.effective, dtype=pl.Datetime)", False),
+            ("pl.lit(global_constants.effective, pl.Datetime).cast(pl.Int64)", False),
+            ("pl.lit(global_constants.effective, dtype=pl.String)", False),
         ],
     )
-    def test_a_trace_evaluates_a_date_constant_in_every_literal_form(
-        self, literal: str, expected: str
+    def test_a_trace_computes_a_date_literal_only_as_pl_lit_would(
+        self, literal: str, computed: bool
     ) -> None:
         import datetime as dt
 
@@ -684,12 +689,18 @@ class TestCodexFindings:
         effective = GlobalConstant(name="effective", type="date", value="2024-06-01")
         namespace = {"global_constants": GlobalConstantsNamespace([effective], source="live")}
         code = f'df = df.with_columns(({literal}).alias("e"))'
+        executed = pl.DataFrame({"x": [1]}).with_columns(
+            eval(literal, {"pl": pl, "global_constants": namespace["global_constants"]}).alias("e")
+        )["e"][0]
 
         result = evaluate_expression(code, "e", {}, namespace)
 
-        assert result.result_value == (
-            dt.date(2024, 6, 1) if expected == "date" else dt.datetime(2024, 6, 1)
-        )
+        if computed:
+            assert result.result_value == executed == dt.date(2024, 6, 1)
+        else:
+            # Never a different value: a dtype the trace would have to guess at is not computed.
+            assert result.result_value is None
+            assert result.not_computable_reason
 
     @pytest.mark.parametrize("name", ["restricted_to", "for_graph", "constants"])
     def test_every_valid_name_reads_its_constant(self, name: str) -> None:

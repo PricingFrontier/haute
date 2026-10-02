@@ -1470,10 +1470,24 @@ class _InlineGlobalConstants(ast.NodeTransformer):
         built = f"pl.date({value.year}, {value.month}, {value.day})"
         return ast.copy_location(ast.parse(built, mode="eval").body, node)
 
+    @staticmethod
+    def _is_date_dtype(node: ast.AST | None) -> bool:
+        """Whether *node* is no dtype at all, ``None`` or ``pl.Date``: what a date infers."""
+        if node is None or (isinstance(node, ast.Constant) and node.value is None):
+            return True
+        return (
+            isinstance(node, ast.Attribute)
+            and node.attr == "Date"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "pl"
+        )
+
     def visit_Call(self, node: ast.Call) -> ast.AST:
         # The step renderer writes a constant in expression position as
         # ``pl.lit(global_constants.<name>)``; a date is already an expression,
-        # so the call becomes it (cast to the ``dtype`` the call names).
+        # so that call becomes it. A call that names another dtype is left as
+        # written, so the trace reports it as not computable rather than
+        # guessing how ``pl.lit`` would apply the dtype.
         if (
             isinstance(node.func, ast.Attribute)
             and node.func.attr == "lit"
@@ -1483,19 +1497,14 @@ class _InlineGlobalConstants(ast.NodeTransformer):
             keywords = {keyword.arg: keyword.value for keyword in node.keywords}
             argument = node.args[0] if node.args else keywords.get("value")
             value = None if argument is None else self._date_read(argument)
-            if value is not None and set(keywords) <= {"value", "dtype", "allow_object"}:
-                expression = self._date_expression(value, node)
-                dtype = keywords.get("dtype")
-                if dtype is None:
-                    return expression
-                cast_call = ast.Call(
-                    func=ast.Attribute(
-                        value=cast(ast.expr, expression), attr="cast", ctx=ast.Load()
-                    ),
-                    args=[cast(ast.expr, self.visit(dtype))],
-                    keywords=[],
+            if value is not None:
+                dtype = node.args[1] if len(node.args) > 1 else keywords.get("dtype")
+                equivalent = (
+                    len(node.args) <= 2
+                    and set(keywords) <= {"value", "dtype"}
+                    and self._is_date_dtype(dtype)
                 )
-                return ast.copy_location(cast_call, node)
+                return self._date_expression(value, node) if equivalent else node
         return self.generic_visit(node)
 
     def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
