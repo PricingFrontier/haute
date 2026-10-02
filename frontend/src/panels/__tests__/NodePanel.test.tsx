@@ -379,7 +379,7 @@ describe("NodePanel", () => {
     modellingConfigProps.length = 0
     optimiserConfigProps.length = 0
     fetchExplorePivotMembers.mockReset()
-    useSettingsStore.setState({ activeSource: "live", streamingChunkSize: 500_000 })
+    useSettingsStore.setState({ activeSource: "live" })
   })
 
   afterEach(cleanup)

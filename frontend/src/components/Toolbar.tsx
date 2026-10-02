@@ -25,15 +25,17 @@ const REPORT_BUG_URL = "https://github.com/PricingFrontier/haute/issues/new"
 const HELP_ITEM_CLASS =
   "w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--chrome-hover)] focus-visible:bg-[var(--chrome-hover)] focus:outline-none"
 
-const WS_STATUS_CONFIG: Record<WsStatus, { color: string; title: string }> = {
-  connected: { color: "var(--success)", title: "Live sync connected" },
-  reconnecting: { color: "var(--warning-strong)", title: "Reconnecting to server\u2026" },
-  disconnected: { color: "var(--danger)", title: "Server unreachable - restart haute serve" },
+// Only these statuses mean the server is known to be unreachable; idle and
+// connecting are not evidence, so a page load never flashes "Offline".
+const OFFLINE_TITLES: Partial<Record<WsStatus, string>> = {
+  reconnecting: "Server offline - reconnecting\u2026",
+  disconnected: "Server offline - reload the page once haute serve is running",
 }
+
+const PIPELINE_SETTINGS_TITLE = "Pipeline settings - preview rows, chunk rows and cached data"
 
 interface ToolbarProps {
   nodeCount: number
-  dirty: boolean
   canUndo: boolean
   canRedo: boolean
   onUndo: () => void
@@ -64,7 +66,7 @@ interface ToolbarProps {
 }
 
 export default function Toolbar({
-  nodeCount, dirty,
+  nodeCount,
   canUndo, canRedo, onUndo, onRedo,
   onZoomIn, onZoomOut,
   onOpenUtility, onOpenImports,
@@ -116,7 +118,7 @@ export default function Toolbar({
     if (helpOpen) helpItems()[0]?.focus()
   }, [helpOpen])
   const setShortcutsOpen = useUIStore((s) => s.setShortcutsOpen)
-  const wsConfig = WS_STATUS_CONFIG[wsStatus]
+  const offlineTitle = OFFLINE_TITLES[wsStatus]
 
   const mlflowSettingsOpen = useUIStore((s) => s.mlflowSettingsOpen)
   const setMlflowSettingsOpen = useUIStore((s) => s.setMlflowSettingsOpen)
@@ -134,7 +136,7 @@ export default function Toolbar({
 
   return (
     <header role="toolbar" aria-label="Pipeline toolbar" className="min-h-11 flex flex-wrap items-center gap-y-2 px-4 py-1.5 shrink-0 [&>div]:shrink-0" style={{ background: 'var(--chrome)', borderBottom: '1px solid var(--chrome-border)' }}>
-      {/* Haute brand column — lowercase "haute" heading taking ~2/3 vertical space, centered version underneath, status dots centered at the row-gap level to the right.
+      {/* Haute brand column — lowercase "haute" heading taking ~2/3 vertical space, centered version underneath.
           Width is pinned to 165px (180px node palette + 1px border - 16px header px-4 padding) so the Source label starts at exactly x + 1 = 181px from the left edge of the page. */}
       <div className="h-[56px] w-[165px] flex items-center gap-2 select-none" data-testid="toolbar-brand">
         <div className="flex flex-col items-center justify-center">
@@ -144,18 +146,6 @@ export default function Toolbar({
           <span className="text-[10px] font-mono tracking-tight leading-none mt-1" style={{ color: 'var(--text-muted)' }}>
             v{__APP_VERSION__}
           </span>
-        </div>
-        <div className="flex items-center gap-1.5" data-testid="toolbar-status-dots">
-          <span
-            className={`w-2 h-2 rounded-full shrink-0${wsStatus === "reconnecting" ? " animate-pulse-dot" : ""}`}
-            style={{ background: wsConfig.color }}
-            title={wsConfig.title}
-          />
-          <span
-            className={`w-1.5 h-1.5 rounded-full shrink-0 ${dirty ? "bg-amber-400 animate-pulse-dot" : "invisible"}`}
-            title={dirty ? "Unsaved changes" : undefined}
-            aria-hidden={!dirty ? true : undefined}
-          />
         </div>
       </div>
       {/* Source and Pipeline column — the Source selector sits on the top row, in
@@ -282,15 +272,20 @@ export default function Toolbar({
           )}
         </div>
         <label className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>Pipeline:</label>
+        {/* The button names the pipeline's live state, so the server going
+            away is reported here: nothing calculates while it is offline.
+            "Offline" is no wider than "Calculating", so going offline never
+            widens the column; like "Manual", it can narrow it. */}
         <button
           data-testid="toolbar-pipeline-settings"
           onClick={() => setPipelineSettingsOpen(true)}
           aria-haspopup="dialog"
           aria-expanded={pipelineSettingsOpen}
           className="toolbar-btn w-full px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center"
-          title="Pipeline settings - preview rows, chunk rows and cached data"
+          style={offlineTitle ? { color: 'var(--danger)' } : undefined}
+          title={offlineTitle ?? PIPELINE_SETTINGS_TITLE}
         >
-          {calculationMode === "manual" ? "Manual" : "Calculating"}
+          {offlineTitle ? "Offline" : calculationMode === "manual" ? "Manual" : "Calculating"}
         </button>
       </div>
       {/* Canvas actions (Undo/Redo through Utility/Imports) sit on the left,

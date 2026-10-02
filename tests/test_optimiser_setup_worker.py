@@ -60,9 +60,16 @@ _TERMINAL = {
 
 
 @pytest.fixture()
-def project(tmp_path: Path) -> Path:
-    """A project root a spawned worker can open its stores under."""
+def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A project root a spawned worker can open its stores under.
+
+    The optimiser budgets are pinned small. An adaptive one reserves nearly the
+    whole in-flight budget, and a job releases its reservation only after it
+    reports its outcome, so the next job a test starts at once would be refused.
+    """
     set_project_root(tmp_path)
+    monkeypatch.setenv("HAUTE_OPTIMISER_MEMORY_LIMIT_MB", "1024")
+    monkeypatch.setenv("HAUTE_OPTIMISER_SOLVE_MEMORY_LIMIT_MB", "1024")
     return tmp_path
 
 
@@ -625,15 +632,27 @@ class TestWorkerOutcomes:
         assert stop_reason() == "cancelled"
 
     def test_the_worker_timeout_times_the_job_out(
-        self, project: Path, monkeypatch: pytest.MonkeyPatch
+        self, project: Path, monkeypatch: pytest.MonkeyPatch, pipeline_settings
     ) -> None:
+        pipeline_settings(optimisation_time_limit_minutes=30)
         worker = _InlineWorker(raises=IsolatedWorkerTimeoutError(timeout_seconds=1.0))
         service, job_id, raised = self._auto_range(project, monkeypatch, worker)
         job = service._store.require_job(job_id)
 
         assert isinstance(raised, BackgroundJobStoppedError)
         assert job["status"] == "timed_out"
-        assert worker.calls[0]["config"].timeout_seconds > 0
+        assert 0 < worker.calls[0]["config"].timeout_seconds <= 30 * 60
+
+    def test_an_auto_range_without_a_time_limit_runs_its_worker_unbounded(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The optimisation time limit is automatic: no limit.
+        worker = _InlineWorker()
+        service, job_id, raised = self._auto_range(project, monkeypatch, worker)
+
+        assert raised is None, raised
+        assert worker.calls[0]["config"].timeout_seconds is None
+        assert service._store.require_job(job_id)["status"] == "completed"
 
     def test_a_solve_setup_child_failure_ends_the_job_and_leaves_no_input(
         self, client, project: Path, monkeypatch: pytest.MonkeyPatch
@@ -856,8 +875,9 @@ class TestWorkerOutcomes:
         assert loads and all(loads)
 
     def test_an_auto_range_out_of_time_before_its_worker_starts_is_timed_out(
-        self, project: Path, monkeypatch: pytest.MonkeyPatch
+        self, project: Path, monkeypatch: pytest.MonkeyPatch, pipeline_settings
     ) -> None:
+        pipeline_settings(optimisation_time_limit_minutes=30)
         _process_mode(monkeypatch)
         worker = _InlineWorker()
         monkeypatch.setattr(_optimiser_service, "run_isolated_worker", worker)

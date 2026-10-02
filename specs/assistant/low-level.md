@@ -564,8 +564,8 @@ parses the saved graph, validates the target and input name, and admits one
 `PREVIEW_EAGER` execution context. Frame preparation and the bounded collection then run
 in the interactive preview worker through
 `src/haute/_interactive_workers.py::run_in_interactive_worker`, under the isolated budget
-derived from that admission and the worker's native memory cap, with the preview timeout
-(`HAUTE_PREVIEW_TIMEOUT`). Under that cap a join or group-by whose materialisation cannot
+derived from that admission and the worker's native memory cap, bounded by the pipeline
+settings' pipeline time limit. Under that cap a join or group-by whose materialisation cannot
 be estimated runs conservatively inside its reserved envelope instead of being refused, so
 frames downstream of joins and aggregations profile like any other. The worker renders an
 execution failure itself, with the same row-value rules as every execution error, because

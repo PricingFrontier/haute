@@ -221,13 +221,15 @@ label that repositions to avoid clipping the viewport edge. `ContextMenu` is
 the right-click node menu with roving-tabindex arrow-key navigation.
 `Toolbar` is the app's top chrome: it organizes controls into a 56px 2-tier stacked
 column layout. The brand section displays the lowercase brand heading and
-package-derived browser version alongside live status dots, aligned to the node palette
+package-derived browser version, aligned to the node palette
 boundary (x = 181px). Adjacent columns house the source selector stacked above a
 Pipeline control that shares its width and opens the pipeline settings pane
 (preview/chunk row limits and the cached-data inventory), integer-ms timing and memory breakdowns, undo/redo with
 text labels, zoom in/out, centre/layout, Submodel/Instance selection actions, utility/imports,
 assistant and a Help menu (Documentation, Hotkeys, Report a bug), and the working branch indicator stacked above
-equal-width Save and Commit buttons.
+equal-width Save and Commit buttons. The Pipeline control reports the pipeline's live state:
+the calculation mode while the server is reachable, and "Offline" once live sync has lost
+the server. The toolbar carries no unsaved-changes indicator.
 `NodeSearch` is the Ctrl+K command palette, windowed to
 render only visible rows for large graphs; the application loads its module
 only when the palette is opened, so this user-triggered surface is not part

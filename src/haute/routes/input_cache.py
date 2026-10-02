@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
 from fastapi import APIRouter, HTTPException, status
 
 from haute._credential_security import redact_sensitive_text
-from haute._env import float_env, int_env
+from haute._env import int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
     IsolatedExecutionBudget,
@@ -48,6 +48,7 @@ from haute._input_providers import (
 )
 from haute._logging import get_logger
 from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
+from haute._pipeline_settings import PipelineSettingsError, project_pipeline_settings
 from haute._polars_io_registry import PolarsIoConfigError, validate_data_input_config
 from haute._project import _toml_configured_pipeline
 from haute._source_cache import (
@@ -118,8 +119,8 @@ _building_tables: dict[str, str] = {}
 
 
 def _build_timeout() -> float:
-    """Return the cooperative snapshot-build deadline in seconds."""
-    return float_env("HAUTE_BUILD_TIMEOUT", 1800.0)
+    """Return the cooperative snapshot-build deadline in seconds: the pipeline time limit."""
+    return project_pipeline_settings().pipeline_time_limit_seconds
 
 
 def _max_concurrent_builds() -> int:
@@ -699,13 +700,13 @@ def _run_build(
     jobs: CancellableJobRegistry,
     singleflight: SingleFlightCoordinator,
     token: Any,
+    timeout: float,
     api_input: ApiInputSnapshotSource | None = None,
 ) -> None:
     global _active_builds
 
     started_at = time.monotonic()
     execution_context: ExecutionContext | None = None
-    timeout = _build_timeout()
     deadline = started_at + timeout
     timeout_timer = threading.Timer(
         timeout,
@@ -901,6 +902,25 @@ def _run_build(
                 },
                 elapsed_seconds=time.monotonic() - started_at,
             )
+    except PipelineSettingsError as exc:
+        # Admission reads the settings file again; its message names what to fix.
+        logger.warning("input_cache_pipeline_settings_invalid", job_id=job_id, error=str(exc))
+        lifecycle.transition(
+            job_id,
+            to="error",
+            message=str(exc),
+            fields={
+                "error": str(exc),
+                "error_code": "pipeline_settings_invalid",
+                "progress": {
+                    **_progress_payload(store.require_job(job_id)).model_dump(
+                        exclude={"elapsed_seconds"}
+                    ),
+                    "phase": "failed",
+                },
+            },
+            elapsed_seconds=time.monotonic() - started_at,
+        )
     except Exception as exc:
         logger.error(
             "input_cache_build_failed",
@@ -1044,6 +1064,9 @@ def _start_build(
                 detail=("input_cache_busy: The input snapshot build limit is currently reached."),
             )
 
+        # Read before the job exists: an invalid settings file refuses the
+        # request (409) rather than registering a build that can never run.
+        timeout = _build_timeout()
         initial_job: _InputCacheRunningJob = {
             "status": "running",
             "identity_digest": key,
@@ -1072,6 +1095,7 @@ def _start_build(
                 "jobs": _jobs,
                 "singleflight": _singleflight,
                 "token": token,
+                "timeout": timeout,
             },
             daemon=True,
             name=f"haute-input-cache-{job_id}",

@@ -26,8 +26,6 @@ from haute._execution_context import ExecutionProfile
 from haute._hashing import content_hash
 from haute._node_config_recovery import _DISCRIMINANTS
 from haute._node_snapshots import (
-    AUTOMATIC_CAPTURE_BUDGET_CEILING_BYTES,
-    AUTOMATIC_CAPTURE_BUDGET_ENV,
     BOUNDED_SEMANTICS_CLASS,
     NodeSnapshotColumns,
     NodeSnapshotPublication,
@@ -36,6 +34,12 @@ from haute._node_snapshots import (
     automatic_capture_budget,
     snapshot_read_classes,
     snapshot_write_class,
+)
+from haute._pipeline_settings import (
+    AUTOMATIC_CACHE_SIZE_CEILING_BYTES,
+    SETTINGS_PATH,
+    PipelineSettingsError,
+    update_pipeline_settings,
 )
 from haute._source_cache import (
     SourceCacheBuildContext,
@@ -55,6 +59,11 @@ class _LazyBuilder:
     def build(self, context: SourceCacheBuildContext) -> pl.LazyFrame:
         context.checkpoint()
         return self.frame
+
+
+def _budget(root: Path, budget_bytes: int) -> None:
+    """Set the automatic captures' budget, in exact bytes, in *root*'s pipeline settings."""
+    update_pipeline_settings(root, {"cache_size_gb": budget_bytes / 1024**3})
 
 
 def _input_identity(name: str = "input1", provider: str = "file") -> SourceCacheIdentity:
@@ -390,7 +399,7 @@ def test_automatic_captures_beyond_the_budget_evict_the_least_recently_leased_fi
     _last_used_at(store, older, now - 600)
     _last_used_at(store, newer, now - 300)
     older_dir = _current_dir(store, older)
-    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, str(2 * generation_bytes(older_dir)))
+    _budget(tmp_path, 2 * generation_bytes(older_dir))
 
     _published_id(store, latest, frame)
 
@@ -403,7 +412,7 @@ def test_automatic_captures_beyond_the_budget_evict_the_least_recently_leased_fi
 def test_the_budget_never_evicts_a_pinned_leased_or_input_generation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, "1")
+    _budget(tmp_path, 1)
     store = NodeSnapshotStore(tmp_path)
     frame = pl.DataFrame({"a": [1]})
     pinned, leased, first, second = (
@@ -436,7 +445,7 @@ def test_an_explicit_build_triggers_no_eviction(
     store = NodeSnapshotStore(tmp_path)
     automatic = _slot(tmp_path, "automatic").identity("s1")
     _published_id(store, automatic, pl.DataFrame({"a": [1]}))
-    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, "1")
+    _budget(tmp_path, 1)
 
     with _publish(
         store, _slot(tmp_path, "explicit").identity("s1"), pl.DataFrame({"a": [2]}), explicit=True
@@ -455,7 +464,7 @@ def test_a_deferred_eviction_stays_indexed_and_a_later_budget_check_retires_it(
     _published_id(store, identity, pl.DataFrame({"a": [1]}))
     generation_dir = _current_dir(store, identity)
     size = generation_bytes(generation_dir)
-    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, "1")
+    _budget(tmp_path, 1)
 
     # A Windows handle still open inside the generation blocks the rename.
     with monkeypatch.context() as blocked:
@@ -488,7 +497,7 @@ def test_two_budget_checks_at_once_evict_only_the_excess(
 ) -> None:
     store = NodeSnapshotStore(tmp_path)
     identities, size = _equal_captures(store, tmp_path, "abcd")
-    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, str(3 * size))
+    _budget(tmp_path, 3 * size)
     scan = store._scan_usage
     first_scanned, second_scanned, release = (threading.Event() for _ in range(3))
     scans = 0
@@ -534,7 +543,7 @@ def test_a_capture_that_left_after_the_scan_is_accounted_before_anything_is_evic
     """Whichever capture a Clear or a pin takes out of the total, the excess is already met."""
     store = NodeSnapshotStore(tmp_path)
     identities, size = _equal_captures(store, tmp_path, "abcd")
-    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, str(3 * size))
+    _budget(tmp_path, 3 * size)
     scan = store._scan_usage
 
     def scan_then_change() -> tuple[int, list[Any]]:
@@ -557,7 +566,7 @@ def test_a_capture_leased_after_the_scan_is_passed_over_for_the_next_oldest(
 ) -> None:
     store = NodeSnapshotStore(tmp_path)
     identities, size = _equal_captures(store, tmp_path, "abcd")
-    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, str(3 * size))
+    _budget(tmp_path, 3 * size)
     scan = store._scan_usage
 
     with contextlib.ExitStack() as held:
@@ -585,7 +594,7 @@ def test_a_generation_the_budget_cannot_classify_is_counted_and_never_evicted(
     slot_index = tmp_path / ".haute_cache" / "inputs" / ".node-slots" / f"{slot.digest}.json"
     assert slot_index.exists()
     slot_index.write_text("{", encoding="utf-8")
-    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, "1")
+    _budget(tmp_path, 1)
 
     assert store.enforce_automatic_budget() == 0
     usage = store.usage()
@@ -597,7 +606,7 @@ def test_a_generation_the_budget_cannot_classify_is_counted_and_never_evicted(
 def test_usage_totals_the_store_and_counts_only_automatic_captures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, str(10**12))
+    _budget(tmp_path, 10**12)
     store = NodeSnapshotStore(tmp_path)
     _build_input_snapshot(store, _input_identity())
     with _publish(
@@ -619,19 +628,19 @@ def test_the_default_budget_is_the_smaller_of_20_gib_and_a_tenth_of_free_disk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     gib = 1024**3
-    monkeypatch.delenv(AUTOMATIC_CAPTURE_BUDGET_ENV, raising=False)
+    store = NodeSnapshotStore(tmp_path)
     for free, expected in ((100 * gib, 10 * gib), (1024 * gib, 20 * gib)):
         monkeypatch.setattr(
             shutil, "disk_usage", lambda _path, free=free: SimpleNamespace(free=free)
         )
-        assert automatic_capture_budget(tmp_path) == expected
-    assert AUTOMATIC_CAPTURE_BUDGET_CEILING_BYTES == 20 * gib
+        assert automatic_capture_budget(store) == expected
+    assert AUTOMATIC_CACHE_SIZE_CEILING_BYTES == 20 * gib
 
-    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, "12345")
-    assert automatic_capture_budget(tmp_path) == 12345
-    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, "0")
-    with pytest.raises(RuntimeError, match=AUTOMATIC_CAPTURE_BUDGET_ENV):
-        automatic_capture_budget(tmp_path)
+    _budget(tmp_path, 12345)
+    assert automatic_capture_budget(store) == 12345
+    (tmp_path / SETTINGS_PATH).write_text('{"cache_size_gb": 0}', encoding="utf-8")
+    with pytest.raises(PipelineSettingsError, match="cache_size_gb"):
+        automatic_capture_budget(store)
 
 
 def test_a_store_fault_while_enforcing_the_budget_never_fails_the_capture(
@@ -653,11 +662,12 @@ def test_a_store_fault_while_enforcing_the_budget_never_fails_the_capture(
 def test_a_misconfigured_budget_fails_the_capture_and_releases_its_lease(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, "lots")
     store = NodeSnapshotStore(tmp_path)
+    (tmp_path / SETTINGS_PATH).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / SETTINGS_PATH).write_text('{"cache_size_gb": "lots"}', encoding="utf-8")
     identity = _slot(tmp_path).identity("s1")
 
-    with pytest.raises(RuntimeError, match=AUTOMATIC_CAPTURE_BUDGET_ENV):
+    with pytest.raises(PipelineSettingsError, match="cache_size_gb"):
         _publish(store, identity, pl.DataFrame({"a": [1]}))
 
     assert not store._leases

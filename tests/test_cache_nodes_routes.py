@@ -722,7 +722,9 @@ def test_clearing_a_row_removes_exactly_what_that_row_reported(
 def test_usage_reports_the_stores_size_and_the_automatic_budget(
     client: TestClient, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("HAUTE_AUTOMATIC_CAPTURE_MAX_BYTES", str(10**12))
+    from haute._pipeline_settings import update_pipeline_settings
+
+    update_pipeline_settings(project, {"cache_size_gb": 10**12 / 1024**3})
     store = NodeSnapshotStore(project)
     _publish(store, project, "join", "live", 5)
 

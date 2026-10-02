@@ -21,7 +21,6 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from haute._env import float_env
 from haute._execution_admission import (
     IsolatedExecutionBudget,
     create_admitted_execution_context,
@@ -39,6 +38,7 @@ from haute._interactive_workers import (
 )
 from haute._logging import get_logger
 from haute._output_assembler import OutputMappingSchemaError, validate_v2_output_mapping
+from haute._pipeline_settings import project_pipeline_settings
 from haute._worker_isolation import resolve_worker_memory_enforcement
 from haute.errors import ConfigError, ContractMismatchError
 from haute.executor import execute_graph
@@ -64,10 +64,9 @@ logger = get_logger(component="server.output_assemble")
 router = APIRouter(prefix="/api/output-assemble", tags=["output-assemble"])
 
 
-# Timeout (seconds) — resolved per request so env overrides set after
-# import take effect.
 def _dry_run_timeout() -> float:
-    return float_env("HAUTE_OUTPUT_DRY_RUN_TIMEOUT", 120.0)
+    """The pipeline time limit in seconds, read from the pipeline settings per request."""
+    return project_pipeline_settings().pipeline_time_limit_seconds
 
 
 class OutputAssembleDryRunRequest(BaseModel):

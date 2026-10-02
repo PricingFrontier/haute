@@ -874,10 +874,6 @@ function FlowEditor() {
     touchOptimiserPreview(activePanelNodeId)
   }, [activePanelNodeId, setPinnedPreviewNodeId, touchModellingPreview, touchOptimiserPreview])
 
-  // Store-maintained dirty flag.
-  // Subscribe to the primitive so frequent React Flow node updates do not
-  // serialize the graph from App's selector.
-  const dirty = useGraphStore((s) => s.dirty)
   const documentLoadStatus = useDocumentStatusStore((s) => s.loadStatus)
   const documentCapabilities = useDocumentStatusStore((s) => s.capabilities)
   const reservedApiInputFrameLabels = useMemo(
@@ -1537,11 +1533,12 @@ function FlowEditor() {
     if (!activePanelNodeId) return
     const refreshTarget = graphRef.current.nodes.find((node) => node.id === activePanelNodeId)
     if (!refreshTarget) return
-    refreshPreview(refreshTarget)
-    // Refresh means "bring this node up to date", so it covers the node's
-    // cached data as well as its preview. A panel that reads no cached data
+    // Refresh means "bring this node up to date". A structured Quote Input's
+    // file is re-read and its tables cached again before the preview, and the
+    // node's cached data is covered too: a panel that reads no cached data
     // never sees the ask; one that does decides whether anything needs
     // computing, and leaves data that is already current alone.
+    refreshPreview(refreshTarget, { rereadSource: true })
     refreshNodeDataCache(activePanelNodeId)
   }, [activePanelNodeId, refreshPreview])
 
@@ -1627,7 +1624,6 @@ function FlowEditor() {
     <div className="h-full w-full flex flex-col" style={{ background: 'var(--bg-base)' }}>
       <Toolbar
         nodeCount={nodes.length}
-        dirty={dirty}
         canUndo={canUndo}
         canRedo={canRedo}
         onUndo={undo}

@@ -38,9 +38,9 @@ to [server API](../server-api/high-level.md).
 **Cache storage and the automatic-capture budget.** Input snapshots and explicit
 builds have no byte or entry-count limit: they stay until the user refreshes or clears
 them. Automatic node-output captures, which are the node outputs a preview captures
-and no explicit build pins, share one byte budget. It defaults to the smaller of
-20 GiB and a tenth of the store's free disk, read when the budget is applied, and
-`HAUTE_AUTOMATIC_CAPTURE_MAX_BYTES` configures it. Each automatic capture that
+and no explicit build pins, share one byte budget: the pipeline settings' cache size
+(`cache_size_gb`), automatically the smaller of 20 GiB and a tenth of the store's free
+disk, read when the budget is applied. Each automatic capture that
 publishes brings the captures back within the budget, evicting the least recently
 leased first. Eviction never takes a pinned generation (an explicit build, or a
 capture that has since replaced one in its slot), a generation any process leases, or

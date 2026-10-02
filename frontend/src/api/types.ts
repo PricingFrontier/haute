@@ -57,11 +57,13 @@ export interface EditorIdentityBatchRequest {
   nodes: EditorIdentityRequestNode[]
 }
 
-// Editor identities, Polars step rendering and execution settings are generated.
+// Editor identities, Polars step rendering and pipeline settings are generated.
 export type {
   EditorIdentitiesResponse as EditorIdentityBatchResponse,
   EditorIdentityResponseNode as EditorNodeIdentity,
-  ExecutionSettings,
+  PipelineSettingsAutomatic,
+  PipelineSettingsResponse,
+  PipelineSettingsValues,
   PolarsFreeCodeColumnsResponse,
   PolarsStepsRenderResponse,
 } from "../generated/api-contracts.generated"

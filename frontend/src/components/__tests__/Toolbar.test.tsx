@@ -19,7 +19,6 @@ import useGitStore from "../../stores/useGitStore"
 function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
   return {
     nodeCount: 5,
-    dirty: false,
     canUndo: true,
     canRedo: false,
     onUndo: vi.fn(),
@@ -46,7 +45,6 @@ describe("Toolbar", () => {
   beforeEach(() => {
     useSettingsStore.setState({
       rowLimit: 1000,
-      streamingChunkSize: 500_000,
       sources: ["live"],
       activeSource: "live",
     })
@@ -523,30 +521,15 @@ describe("Toolbar", () => {
     expect(redoBtn).toBeDisabled()
   })
 
-  it("shows unsaved indicator when dirty", () => {
-    render(<Toolbar {...makeProps({ dirty: true })} />)
-    expect(screen.getByTitle("Unsaved changes")).toBeInTheDocument()
-  })
-
-  it("places the websocket status dot to the left of the unsaved indicator", () => {
-    render(<Toolbar {...makeProps({ dirty: true, wsStatus: "connected" })} />)
-    const wsDot = screen.getByTitle("Live sync connected")
-    const unsavedDot = screen.getByTitle("Unsaved changes")
-    expect(wsDot.compareDocumentPosition(unsavedDot) & 4).toBeTruthy()
-  })
-
-  it("reserves space for the unsaved indicator when clean to prevent layout shift", () => {
-    const { container } = render(<Toolbar {...makeProps({ dirty: false })} />)
-    const unsavedSlot = container.querySelector(".w-1\\.5.h-1\\.5")
-    expect(unsavedSlot).toBeInTheDocument()
-    expect(unsavedSlot).toHaveClass("invisible")
-  })
-
-  it("centers the status dots at the toolbar row-gap level without bottom alignment", () => {
-    render(<Toolbar {...makeProps({ dirty: true })} />)
-    const dotsContainer = screen.getByTestId("toolbar-status-dots")
-    expect(dotsContainer).toBeInTheDocument()
-    expect(dotsContainer).not.toHaveClass("self-end")
+  it("carries no status dots beside the brand, connected or not", () => {
+    for (const wsStatus of ["connected", "reconnecting", "disconnected"] as const) {
+      const { unmount } = render(<Toolbar {...makeProps({ wsStatus })} />)
+      const brand = screen.getByTestId("toolbar-brand")
+      // Only the heading and the version remain.
+      expect(brand.textContent).toBe("hautev999.0.0-test")
+      expect(brand.querySelector(".rounded-full")).toBeNull()
+      unmount()
+    }
   })
 
   it("zoom in button calls onZoomIn", () => {
@@ -585,27 +568,45 @@ describe("Toolbar", () => {
     expect(props.onRedo).toHaveBeenCalledOnce()
   })
 
-  it("shows websocket connected status dot", () => {
-    render(<Toolbar {...makeProps({ wsStatus: "connected" })} />)
-    const dot = screen.getByTitle("Live sync connected")
-    expect(dot).toBeInTheDocument()
+  it.each([
+    ["reconnecting", "Server offline - reconnecting\u2026"],
+    ["disconnected", "Server offline - reload the page once haute serve is running"],
+  ] as const)("the Pipeline button reads Offline while live sync is %s", async (wsStatus, title) => {
+    render(<Toolbar {...makeProps({ wsStatus })} />)
+    const button = screen.getByTestId("toolbar-pipeline-settings")
+    expect(button).toHaveTextContent(/^Offline$/)
+    expect(button).toHaveAttribute("title", title)
+    expect(button).toHaveStyle({ color: "var(--danger)" })
+
+    // Still the pipeline settings control.
+    fireEvent.click(button)
+    expect(await screen.findByTestId("pipeline-settings-stub")).toBeInTheDocument()
   })
 
-  it("shows websocket reconnecting status dot", () => {
-    render(<Toolbar {...makeProps({ wsStatus: "reconnecting" })} />)
-    const dot = screen.getByTitle("Reconnecting to server\u2026")
-    expect(dot).toBeInTheDocument()
-  })
+  it.each(["idle", "connecting", "connected"] as const)(
+    "the Pipeline button names the calculation mode while live sync is %s",
+    (wsStatus) => {
+      // Neither idle nor a first attempt in flight is evidence the server is
+      // down, so a page load never flashes "Offline".
+      render(<Toolbar {...makeProps({ wsStatus })} />)
+      const button = screen.getByTestId("toolbar-pipeline-settings")
+      expect(button).toHaveTextContent(/^Calculating$/)
+      expect(button).toHaveAttribute(
+        "title",
+        "Pipeline settings - preview rows, chunk rows and cached data",
+      )
+      expect(button.style.color).toBe("")
+    },
+  )
 
-  it("shows websocket disconnected status dot", () => {
-    render(<Toolbar {...makeProps({ wsStatus: "disconnected" })} />)
-    const dot = screen.getByTitle("Server unreachable - restart haute serve")
-    expect(dot).toBeInTheDocument()
-  })
-
-  it("does not show unsaved indicator when not dirty", () => {
-    render(<Toolbar {...makeProps({ dirty: false })} />)
-    expect(screen.queryByTitle("Unsaved changes")).not.toBeInTheDocument()
+  it("returns from Offline to the calculation mode when the server comes back", () => {
+    useUIStore.setState({ calculationMode: "manual" })
+    const { rerender } = render(<Toolbar {...makeProps({ wsStatus: "reconnecting" })} />)
+    const button = screen.getByTestId("toolbar-pipeline-settings")
+    expect(button).toHaveTextContent("Offline")
+    rerender(<Toolbar {...makeProps({ wsStatus: "connected" })} />)
+    expect(button).toHaveTextContent(/^Manual$/)
+    useUIStore.setState({ calculationMode: "automatic" })
   })
 
   it("source selector shows active source on trigger button", () => {

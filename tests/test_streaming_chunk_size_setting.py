@@ -40,23 +40,69 @@ def _report_pid_and_chunk_size() -> tuple[int, int]:
     return os.getpid(), current_streaming_chunk_size()
 
 
-def test_the_settings_route_reads_and_changes_the_server_value(client) -> None:
-    response = client.put("/api/execution-settings", json={"streaming_chunk_size": 123_000})
+@pytest.fixture()
+def project(haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.chdir(haute_scratch)
+    return haute_scratch
+
+
+def _read_settings_and_report_chunk_size(project_root: str) -> int:
+    from haute._pipeline_settings import read_pipeline_settings
+
+    read_pipeline_settings(project_root)
+    return current_streaming_chunk_size()
+
+
+def test_the_settings_route_reads_and_changes_the_server_value(client, project: Path) -> None:
+    response = client.patch("/api/pipeline-settings", json={"chunk_rows": 123_000})
 
     assert response.status_code == 200
-    assert response.json() == {"streaming_chunk_size": 123_000}
+    assert response.json()["settings"]["chunk_rows"] == 123_000
     assert current_streaming_chunk_size() == 123_000
-    assert client.get("/api/execution-settings").json() == {"streaming_chunk_size": 123_000}
+    assert client.get("/api/pipeline-settings").json()["settings"]["chunk_rows"] == 123_000
 
 
 @pytest.mark.parametrize("value", [0, -1, 10_000_001, True, "many"])
-def test_the_settings_route_refuses_an_invalid_value(client, value: object) -> None:
+def test_the_settings_route_refuses_an_invalid_value(client, project: Path, value: object) -> None:
     set_streaming_chunk_size(250_000)
 
-    response = client.put("/api/execution-settings", json={"streaming_chunk_size": value})
+    response = client.patch("/api/pipeline-settings", json={"chunk_rows": value})
 
     assert response.status_code == 422
     assert current_streaming_chunk_size() == 250_000
+
+
+def test_a_hand_edit_reaches_the_server_at_its_next_admission(project: Path) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+    from haute._execution_context import ExecutionProfile
+    from haute._pipeline_settings import SETTINGS_PATH, follow_chunk_rows, stop_following_chunk_rows
+
+    set_streaming_chunk_size(500_000)
+    follow_chunk_rows(project)
+    try:
+        (project / SETTINGS_PATH).parent.mkdir(parents=True, exist_ok=True)
+        (project / SETTINGS_PATH).write_text('{"chunk_rows": 77000}', encoding="utf-8")
+        assert current_streaming_chunk_size() == 500_000
+
+        context = create_admitted_execution_context(
+            operation="pipeline_preview", profile=ExecutionProfile.PREVIEW_EAGER
+        )
+        context.release_admission()
+
+        assert current_streaming_chunk_size() == 77_000
+    finally:
+        stop_following_chunk_rows()
+
+
+def test_a_workers_own_settings_read_never_changes_its_chunk_size(project: Path) -> None:
+    from haute._pipeline_settings import SETTINGS_PATH
+    from haute._worker_isolation import run_isolated_worker
+
+    (project / SETTINGS_PATH).parent.mkdir(parents=True, exist_ok=True)
+    (project / SETTINGS_PATH).write_text('{"chunk_rows": 3000}', encoding="utf-8")
+    set_streaming_chunk_size(234_000)
+
+    assert run_isolated_worker(_read_settings_and_report_chunk_size, str(project)) == 234_000
 
 
 def test_a_worker_spawned_after_a_change_runs_with_it() -> None:
@@ -95,10 +141,11 @@ def test_no_request_model_carries_a_chunk_size() -> None:
         for name, value in vars(schemas).items()
         if isinstance(value, type)
         and issubclass(value, BaseModel)
-        and "streaming_chunk_size" in value.model_fields
+        and {"streaming_chunk_size", "chunk_rows"} & set(value.model_fields)
     )
 
-    assert carriers == ["ExecutionSettings"]
+    # Only the pipeline settings name a chunk size; no execution request does.
+    assert carriers == ["PipelineSettingsAutomatic", "PipelineSettingsValues"]
 
 
 def _optimiser_graph(data_path: Path) -> dict:

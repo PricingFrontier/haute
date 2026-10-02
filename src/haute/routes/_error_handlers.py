@@ -20,6 +20,7 @@ from haute._execution_admission import ExecutionAdmissionError
 from haute._execution_context import ExecutionMemoryLimitExceededError
 from haute._git import GitError
 from haute._logging import get_logger
+from haute._pipeline_settings import PipelineSettingsError
 from haute.errors import InvalidPathError, PathOutsideProjectError
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
@@ -56,6 +57,12 @@ async def _git_error_handler(request: Request, exc: Exception) -> Response:
     return await _respond(request, exc, git_error_http_exception(cast(GitError, exc)))
 
 
+async def _pipeline_settings_error_handler(request: Request, exc: Exception) -> Response:
+    # The message names the settings file and the key, which is what to fix.
+    logger.warning("pipeline_settings_invalid", error=str(exc))
+    return await _respond(request, exc, HTTPException(status_code=409, detail=str(exc)))
+
+
 async def _path_error_handler(request: Request, exc: Exception) -> Response:
     # The detail is the bare message: the refused path stays in the log context.
     status_code = 400 if isinstance(exc, InvalidPathError) else 403
@@ -70,5 +77,6 @@ def install_exception_handlers(app: FastAPI) -> None:
     for memory_error_type in (ExecutionAdmissionError, ExecutionMemoryLimitExceededError):
         app.add_exception_handler(memory_error_type, _memory_limit_error_handler)
     app.add_exception_handler(GitError, _git_error_handler)
+    app.add_exception_handler(PipelineSettingsError, _pipeline_settings_error_handler)
     for path_error_type in (PathOutsideProjectError, InvalidPathError):
         app.add_exception_handler(path_error_type, _path_error_handler)

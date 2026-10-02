@@ -17,7 +17,6 @@ import useSettingsStore from "../../stores/useSettingsStore"
 function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
   return {
     nodeCount: 5,
-    dirty: false,
     canUndo: true,
     canRedo: false,
     onUndo: vi.fn(),

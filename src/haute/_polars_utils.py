@@ -26,10 +26,15 @@ from haute._file_ops import atomic_path, ensure_disk_headroom
 from haute._hashing import HashingWriter
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
+from haute._pipeline_settings import (
+    DEFAULT_STREAMING_CHUNK_SIZE as DEFAULT_STREAMING_CHUNK_SIZE,
+)
+from haute._pipeline_settings import (
+    MAX_STREAMING_CHUNK_SIZE as MAX_STREAMING_CHUNK_SIZE,
+)
 
 logger = get_logger(component="polars_utils")
 
-DEFAULT_STREAMING_CHUNK_SIZE: int = 500_000
 BOUNDED_MEMORY_EXEMPT_PROFILES = frozenset(
     {
         ExecutionProfile.PREVIEW_EAGER,
@@ -661,8 +666,6 @@ def _write_atomically_if_possible(path: Path, writer: Callable[[Path], _T]) -> _
             return writer(tmp)
     return writer(path)
 
-
-MAX_STREAMING_CHUNK_SIZE: int = 10_000_000
 
 # Polars reads its streaming chunk size from process-wide configuration. The
 # pipeline setting is the base; an active cap (``streaming_chunk_size_cap``)

@@ -109,15 +109,17 @@ describe("InputImportButton", () => {
   })
   afterEach(cleanup)
 
-  it("is offered only for inputs that read a snapshot", () => {
+  it("is offered only for Data Inputs that read a snapshot", () => {
     renderImport(node("direct", "dataInput", { inputType: "file", format: "parquet", mode: "scan", path: "a.parquet" }))
     renderImport(node("flat", "apiInput", { path: "quotes.csv", tables: [emittingTable] }))
-    renderImport(node("no-emit", "apiInput", { path: "quotes.jsonl", tables: [] }))
+    // A structured Quote Input's Refresh re-reads its source instead.
+    renderImport(node("quotes", "apiInput", { path: "quotes.jsonl", tables: [emittingTable] }))
+    const original = node("original", "apiInput", { path: "quotes.xml", tables: [emittingTable] })
+    renderImport(node("instance", "apiInput", { instanceOf: "original" }), [original])
     expect(screen.queryByTestId("input-import")).toBeNull()
 
     renderImport(node("csv", "dataInput", csvConfig))
-    renderImport(node("quotes", "apiInput", { path: "quotes.jsonl", tables: [emittingTable] }))
-    expect(screen.getAllByTestId("input-import")).toHaveLength(2)
+    expect(screen.getAllByTestId("input-import")).toHaveLength(1)
   })
 
   it("re-reads the original's source for an instance, then re-previews and invalidates downstream", async () => {
@@ -323,28 +325,11 @@ describe("importedTitle", () => {
   const at = now.getTime() / 1000 - 30
   const generation = { generation_id: "g", row_count: 1, column_count: 1, columns: {}, size_bytes: 1, created_at: at, build_class: "bounded" as const }
 
-  it("names a Quote Input whose failed import left some tables unpublished", () => {
-    expect(
-      importedTitle(
-        snapshot({
-          generation: null,
-          tables: [
-            { label: "quotes", identity_digest: "a", state: "ready", freshness: "fresh", generation },
-            { label: "drivers", identity_digest: "b", state: "missing", freshness: "unknown", generation: null },
-          ],
-        }),
-        now,
-      ),
-    ).toBe("Partly imported (1 of 2 tables), just now")
+  it("says when the published generation was imported", () => {
+    expect(importedTitle(snapshot({ generation }), now)).toBe("Imported just now")
   })
 
   it("says an input with nothing published was never imported", () => {
     expect(importedTitle(snapshot({ generation: null }), now)).toBe("Not imported yet")
-    expect(
-      importedTitle(
-        snapshot({ generation: null, tables: [{ label: "quotes", identity_digest: "a", state: "missing", freshness: "unknown", generation: null }] }),
-        now,
-      ),
-    ).toBe("Not imported yet")
   })
 })

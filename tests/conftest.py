@@ -8,7 +8,7 @@ import os
 import shutil
 import sys
 import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +19,7 @@ from hypothesis import settings as hypothesis_settings
 
 from haute._config_io import config_path_for_node
 from haute._execution_context import ExecutionProfile
+from haute._pipeline_settings import PipelineSettings
 from haute._ram_estimate import RamEstimate
 from haute._sandbox import _get_project_root, set_project_root
 from haute.executor import _preview_cache
@@ -165,8 +166,8 @@ def _restore_mlflow_databricks_binding() -> Iterator[None]:
 def _restore_streaming_chunk_size() -> Iterator[None]:
     """Put back the process-wide Polars streaming chunk size after each test.
 
-    ``set_streaming_chunk_size`` (directly or through ``PUT
-    /api/execution-settings``) sets it for the whole process, so a test's tiny
+    ``set_streaming_chunk_size`` (directly or through ``PATCH
+    /api/pipeline-settings``) sets it for the whole process, so a test's tiny
     chunk size would otherwise reach whichever test runs next on the same
     worker. Polars caches the value and rereads ``POLARS_STREAMING_CHUNK_SIZE``
     only through its ``Config`` API, so editing the environment (as
@@ -175,6 +176,26 @@ def _restore_streaming_chunk_size() -> Iterator[None]:
     before = os.environ.get("POLARS_STREAMING_CHUNK_SIZE")
     yield
     pl.Config.set_streaming_chunk_size(None if before is None else int(before))
+
+
+@pytest.fixture()
+def pipeline_settings(monkeypatch: pytest.MonkeyPatch) -> Callable[..., PipelineSettings]:
+    """Set the pipeline settings ``project_pipeline_settings()`` returns in this test.
+
+    For a test about something the settings drive (a preview's memory budget,
+    a route's time limit) rather than the settings file: whichever project an
+    execution runs in, admission and the time limits read these. A test of the
+    file itself, of caching off, or of the cache size writes a real file into
+    its own project root instead, because those read the store's project.
+    """
+    from haute import _pipeline_settings
+
+    def apply(**values: object) -> PipelineSettings:
+        settings = _pipeline_settings.validated_pipeline_settings(values)
+        monkeypatch.setattr(_pipeline_settings, "read_pipeline_settings", lambda _root: settings)
+        return settings
+
+    return apply
 
 
 @pytest.fixture(autouse=True)

@@ -894,12 +894,13 @@ def test_a_build_is_bounded_by_the_earlier_of_its_budget_and_the_callers_deadlin
     own_seconds: str,
     caller_seconds: float,
     bound_seconds: float,
+    pipeline_settings,
 ) -> None:
     store = _project(tmp_path, monkeypatch)
     path = tmp_path / "rows.csv"
     pl.DataFrame({"id": [1, 2, 3]}).write_csv(path)
     monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
-    monkeypatch.setenv("HAUTE_INPUT_PREPARATION_TIMEOUT_SECONDS", own_seconds)
+    pipeline_settings(pipeline_time_limit_minutes=float(own_seconds) / 60)
     timeouts: list[float] = []
 
     def spawn(function: Any, request: Any, budget: Any, *, config: Any) -> Any:
@@ -1701,12 +1702,13 @@ class _ScriptedClock:
 def test_the_spawned_worker_inherits_the_preparation_deadline(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    pipeline_settings,
 ) -> None:
     store = _project(tmp_path, monkeypatch)
     path = tmp_path / "rows.csv"
     pl.DataFrame({"id": [1, 2]}).write_csv(path)
     config = _csv_config(path)
-    monkeypatch.setenv("HAUTE_INPUT_PREPARATION_TIMEOUT_SECONDS", "30")
+    pipeline_settings(pipeline_time_limit_minutes=30 / 60)
     # ``started_at`` and the deadline are read first; every later reading
     # reports the five seconds this preparation has already spent.
     clock = _ScriptedClock(1_000.0, 5.0, settle_after=2)
