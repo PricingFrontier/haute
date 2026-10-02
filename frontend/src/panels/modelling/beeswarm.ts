@@ -15,6 +15,35 @@ export function valuePositionColor(position: number | null): string {
   return `color-mix(in srgb, ${VALUE_LOW_COLOR} ${lowPct}%, ${VALUE_HIGH_COLOR} ${highPct}%)`
 }
 
+/** The CSS custom properties behind the value colours, for painting them on a canvas. */
+export const VALUE_COLOR_TOKENS = {
+  low: "--chart-impact-value-low",
+  high: "--chart-impact-value-high",
+  neutral: "--chart-impact-value-neutral",
+} as const
+
+export type Rgb = readonly [number, number, number]
+
+/** A `#rgb` or `#rrggbb` colour token's channels; anything else throws. */
+export function parseHexColor(token: string): Rgb {
+  const hex = token.trim()
+  const short = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(hex)
+  const long = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex)
+  const channels = long?.slice(1) ?? short?.slice(1).map((digit) => digit + digit)
+  if (!channels) throw new Error(`Expected a hex colour for a beeswarm value colour, got "${token}"`)
+  return [parseInt(channels[0], 16), parseInt(channels[1], 16), parseInt(channels[2], 16)]
+}
+
+/**
+ * The canvas colour for a value at `position`, 0 (low) to 1 (high): the same
+ * sRGB mix, at the same whole-percent steps, as `valuePositionColor`.
+ */
+export function valuePositionRgb(position: number, low: Rgb, high: Rgb): string {
+  const highShare = Math.round(position * 100) / 100
+  const channel = (index: number) => Math.round(low[index] + (high[index] - low[index]) * highShare)
+  return `rgb(${channel(0)}, ${channel(1)}, ${channel(2)})`
+}
+
 /**
  * Each dot's offset from its row line. Dots whose x falls in the same
  * `bucketWidth` bucket take lanes 0, +1, -1, +2, -2, ... `laneStep` apart; the

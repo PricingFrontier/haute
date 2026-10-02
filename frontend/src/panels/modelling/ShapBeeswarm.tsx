@@ -1,21 +1,22 @@
 /**
  * The Features tab's SHAP beeswarm: one row per feature, one dot per sampled
  * row placed by its SHAP value and coloured by the row's feature value. The
- * dots are laid out once per width and drawn in a memoised layer with one
- * delegated pointer handler, so pointing at a dot re-renders only the overlay
- * and the detail line; each feature row is a single tab stop.
+ * dots are painted on a canvas between the SVG that carries the axes, feature
+ * rows and colour bar, and an SVG overlay that rings the pointed-at dot, so
+ * thousands of dots stay responsive. Each feature row is a single tab stop.
  */
-import { memo, useCallback, useMemo, useState, type KeyboardEvent, type MouseEvent } from "react"
+import { useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react"
 import type { TrainShapBeeswarmFeature } from "../../api/types"
-import { chartDomain, chartTicks, chartTickSpan, formatChartNumber, formatChartTicks } from "../../utils/chartHelpers"
+import { formatChartNumber, formatChartTicks } from "../../utils/chartHelpers"
+import { ChartLegend, ChartSvg, ChartValuesTable, ResponsiveChart, ValueColorBar } from "./ChartScaffold"
+import { VALUE_COLOR_TOKENS, VALUE_NEUTRAL_COLOR, parseHexColor, valuePositionRgb } from "./beeswarm"
 import {
-  ChartLegend,
-  ChartSvg,
-  ChartValuesTable,
-  ResponsiveChart,
-  ValueColorBar,
-} from "./ChartScaffold"
-import { VALUE_NEUTRAL_COLOR, beeswarmOffsets, valuePositionColor } from "./beeswarm"
+  SHAP_BEESWARM_GEOMETRY as G,
+  layoutShapBeeswarm,
+  nearestDot,
+  shapBeeswarmRowY,
+  type ShapBeeswarmLayout,
+} from "./shapBeeswarmLayout"
 
 interface ShapBeeswarmProps {
   features: TrainShapBeeswarmFeature[]
@@ -25,29 +26,9 @@ interface ShapBeeswarmProps {
 
 type Active = { kind: "dot"; feature: number; row: number } | { kind: "feature"; feature: number } | null
 
-type PlacedDot = { feature: number; row: number; x: number; y: number; fill: string }
-
-// ── Layout (pixels) ──────────────────────────────────────────────
-const MARGIN_TOP = 16
-const MARGIN_BOTTOM = 46
-const ROW_GAP = 30
-/** How far a dot may sit above or below its row line. */
-const ROW_HALF_HEIGHT = 12
-const LABEL_GAP = 12
-/** The feature labels take this share of the width, within these bounds. */
-const LABEL_AREA_SHARE = 0.22
-const MIN_LABEL_AREA = 88
-const MAX_LABEL_AREA = 160
-const MARGIN_RIGHT = 64
-const COLOR_BAR_INSET = 48
+const DOT_OPACITY = 0.6
 /** The approximate advance of a 12px feature label character. */
 const LABEL_CHAR_WIDTH = 7
-
-// ── Dots ─────────────────────────────────────────────────────────
-const DOT_RADIUS = 2.4
-const DOT_OPACITY = 0.7
-/** Dots within one bucket of the SHAP axis stack into lanes, scaled to fit the row. */
-const DOT_STACKING = { bucketWidth: DOT_RADIUS * 2, laneStep: DOT_RADIUS * 1.5, halfHeight: ROW_HALF_HEIGHT }
 
 // ── Theme tokens (the ratebook beeswarm's palette) ───────────────
 const PLOT_BG = "var(--chart-impact-plot-bg)"
@@ -59,10 +40,8 @@ const VALUE_GRADIENT_ID = "shap-beeswarm-value-gradient"
 
 const NO_ORDER_NOTE = "No value order (categorical level or missing value)"
 
-/** The y of feature row `index`'s line. */
-function rowY(index: number): number {
-  return MARGIN_TOP + ROW_GAP / 2 + index * ROW_GAP
-}
+/** The dot canvas and the pointed-dot ring sit over the chart and let the pointer through. */
+const OVERLAY_STYLE = { position: "absolute", left: 0, top: 0, pointerEvents: "none" } as const
 
 function clippedText(value: string, maxLength: number): string {
   return value.length <= maxLength ? value : `${value.slice(0, maxLength - 1)}…`
@@ -75,7 +54,13 @@ function median(values: readonly number[]): number {
 }
 
 function shapRange(feature: TrainShapBeeswarmFeature): [number, number] {
-  return [Math.min(...feature.shap_values), Math.max(...feature.shap_values)]
+  let low = Infinity
+  let high = -Infinity
+  for (const value of feature.shap_values) {
+    low = Math.min(low, value)
+    high = Math.max(high, value)
+  }
+  return [low, high]
 }
 
 function displayValue(value: number | string | null): string {
@@ -97,18 +82,60 @@ function describeFeature(feature: TrainShapBeeswarmFeature): string {
   return `${feature.feature}: ${feature.shap_values.length.toLocaleString()} rows, SHAP from ${formatChartNumber(low)} to ${formatChartNumber(high)}`
 }
 
+/** Paint every dot, batched by colour, at the device's pixel ratio. */
+function paintDots(
+  canvas: HTMLCanvasElement,
+  layout: ShapBeeswarmLayout,
+  features: readonly TrainShapBeeswarmFeature[],
+) {
+  const ratio = window.devicePixelRatio || 1
+  canvas.width = Math.round(layout.width * ratio)
+  canvas.height = Math.round(layout.height * ratio)
+  const context = canvas.getContext("2d")
+  if (!context) throw new Error("A 2D canvas context is unavailable for the SHAP beeswarm.")
+
+  const tokens = getComputedStyle(document.documentElement)
+  const low = parseHexColor(tokens.getPropertyValue(VALUE_COLOR_TOKENS.low))
+  const high = parseHexColor(tokens.getPropertyValue(VALUE_COLOR_TOKENS.high))
+  const neutral = parseHexColor(tokens.getPropertyValue(VALUE_COLOR_TOKENS.neutral))
+  // Colours 0..100 are the whole-percent rank mixes; 101 is the neutral colour.
+  const colours = [
+    ...Array.from({ length: 101 }, (_, percent) => valuePositionRgb(percent / 100, low, high)),
+    `rgb(${neutral[0]}, ${neutral[1]}, ${neutral[2]})`,
+  ]
+  const batches: number[][] = colours.map(() => [])
+  for (let index = 0; index < layout.x.length; index += 1) {
+    const rank = features[layout.feature[index]].value_ranks[layout.row[index]]
+    batches[rank === null ? 101 : Math.round(rank * 100)].push(index)
+  }
+
+  context.setTransform(ratio, 0, 0, ratio, 0, 0)
+  context.clearRect(0, 0, layout.width, layout.height)
+  context.globalAlpha = DOT_OPACITY
+  batches.forEach((batch, colour) => {
+    if (batch.length === 0) return
+    context.fillStyle = colours[colour]
+    context.beginPath()
+    for (const index of batch) {
+      context.moveTo(layout.x[index] + G.dotRadius, layout.y[index])
+      context.arc(layout.x[index], layout.y[index], G.dotRadius, 0, Math.PI * 2)
+    }
+    context.fill()
+  })
+}
+
 export default function ShapBeeswarm({ features, width }: ShapBeeswarmProps) {
   const [active, setActive] = useState<Active>(null)
-  const hasUnordered = features.some((feature) => feature.value_ranks.some((rank) => rank === null))
   if (features.length === 0) return null
 
+  const hasUnordered = features.some((feature) => feature.value_ranks.some((rank) => rank === null))
   const detailFeature = active ? features[active.feature] : null
 
   return (
     <section className="space-y-2" aria-label="SHAP beeswarm">
       <ResponsiveChart width={width}>
         {(chartWidth) => (
-          <BeeswarmSvg features={features} width={chartWidth} active={active} onActivate={setActive} />
+          <BeeswarmChart features={features} width={chartWidth} active={active} onActivate={setActive} />
         )}
       </ResponsiveChart>
 
@@ -159,7 +186,7 @@ export default function ShapBeeswarm({ features, width }: ShapBeeswarmProps) {
   )
 }
 
-function BeeswarmSvg({
+function BeeswarmChart({
   features,
   width,
   active,
@@ -170,176 +197,159 @@ function BeeswarmSvg({
   active: Active
   onActivate: (active: Active) => void
 }) {
-  const marginLeft = Math.min(MAX_LABEL_AREA, Math.max(MIN_LABEL_AREA, width * LABEL_AREA_SHARE))
-  const plotRight = Math.max(marginLeft + 1, width - MARGIN_RIGHT)
-  const chartW = plotRight - marginLeft
-  const height = MARGIN_TOP + features.length * ROW_GAP + MARGIN_BOTTOM
-  const labelChars = Math.max(4, Math.floor((marginLeft - LABEL_GAP) / LABEL_CHAR_WIDTH))
+  const layout = useMemo(() => layoutShapBeeswarm(features, width), [features, width])
+  const canvas = useRef<HTMLCanvasElement>(null)
+  useLayoutEffect(() => paintDots(canvas.current!, layout, features), [layout, features])
 
-  const { xScale, ticks, dots } = useMemo(() => {
-    const allShap = features.flatMap((feature) => feature.shap_values)
-    const [low, high] = chartDomain(allShap, true)
-    const scale = (value: number) => marginLeft + ((value - low) / (high - low)) * chartW
-    const [tickLow, tickHigh] = chartTickSpan([...allShap, 0])
-    const placed: PlacedDot[] = features.flatMap((feature, featureIndex) => {
-      const xs = feature.shap_values.map(scale)
-      const offsets = beeswarmOffsets(xs, DOT_STACKING)
-      return xs.map((x, row) => ({
-        feature: featureIndex,
-        row,
-        x,
-        y: rowY(featureIndex) + offsets[row],
-        fill: valuePositionColor(feature.value_ranks[row]),
-      }))
-    })
-    return { xScale: scale, ticks: chartTicks(tickLow, tickHigh, 5), dots: placed }
-  }, [features, marginLeft, chartW])
-
-  const pointAt = useCallback(
-    (event: MouseEvent<SVGGElement>) => {
-      const target = event.target as SVGElement
-      const feature = target.dataset.feature
-      const row = target.dataset.row
-      if (feature === undefined || row === undefined) return
-      onActivate({ kind: "dot", feature: Number(feature), row: Number(row) })
-    },
-    [onActivate],
-  )
-
+  const { height, marginLeft, plotRight, ticks, xScale } = layout
+  const labelChars = Math.max(4, Math.floor((marginLeft - G.labelGap) / LABEL_CHAR_WIDTH))
   const tickLabels = formatChartTicks(ticks)
   const zeroX = xScale(0)
-  const pointed = active?.kind === "dot" ? dots.find((dot) => dot.feature === active.feature && dot.row === active.row) : undefined
+  const pointedIndex =
+    active?.kind === "dot"
+      ? layout.feature.findIndex(
+          (feature, index) => feature === active.feature && layout.row[index] === active.row,
+        )
+      : -1
+
+  const pointAt = (event: MouseEvent<HTMLDivElement>) => {
+    const box = event.currentTarget.getBoundingClientRect()
+    const index = nearestDot(layout, event.clientX - box.left, event.clientY - box.top)
+    if (index === null || index === pointedIndex) return
+    onActivate({ kind: "dot", feature: layout.feature[index], row: layout.row[index] })
+  }
 
   return (
-    <ChartSvg
-      data-testid="shap-beeswarm"
-      width={width}
-      height={height}
-      style={{ background: PLOT_BG, borderRadius: 4, border: "1px solid var(--border)" }}
-    >
-      {ticks.map((tick, index) => (
-        <g key={tick}>
-          <line
-            x1={xScale(tick)}
-            y1={MARGIN_TOP}
-            x2={xScale(tick)}
-            y2={height - MARGIN_BOTTOM}
-            stroke={GRID_COLOR}
-            strokeDasharray="1,5"
-          />
-          <text x={xScale(tick)} y={height - MARGIN_BOTTOM + 16} textAnchor="middle" fontSize={11} fill={MUTED_COLOR}>
-            {tickLabels[index]}
-          </text>
-        </g>
-      ))}
-      <line
-        x1={zeroX}
-        y1={MARGIN_TOP - 4}
-        x2={zeroX}
-        y2={height - MARGIN_BOTTOM + 4}
-        stroke={AXIS_COLOR}
-        strokeWidth={1.5}
-      />
-
-      {features.map((feature, index) => {
-        const isActive = active?.feature === index && active.kind === "feature"
-        const activate = () => onActivate({ kind: "feature", feature: index })
-        return (
-          <g
-            key={feature.feature}
-            data-testid="shap-beeswarm-feature"
-            role="button"
-            tabIndex={0}
-            aria-label={describeFeature(feature)}
-            aria-pressed={isActive}
-            className="focus-ring"
-            onFocus={activate}
-            onClick={activate}
-            onKeyDown={(event: KeyboardEvent<SVGGElement>) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault()
-                activate()
-              }
-            }}
-          >
-            <rect
-              x={0}
-              y={rowY(index) - ROW_GAP / 2}
-              width={plotRight}
-              height={ROW_GAP}
-              fill={isActive ? GRID_COLOR : "transparent"}
-              opacity={isActive ? 0.45 : 1}
+    <div data-testid="shap-beeswarm" style={{ position: "relative", width, height }} onMouseMove={pointAt}>
+      <ChartSvg
+        width={width}
+        height={height}
+        ariaLabel={`SHAP beeswarm of ${features.length} features`}
+        style={{ background: PLOT_BG, borderRadius: 4, border: "1px solid var(--border)" }}
+      >
+        {ticks.map((tick, index) => (
+          <g key={tick}>
+            <line
+              x1={xScale(tick)}
+              y1={G.marginTop}
+              x2={xScale(tick)}
+              y2={height - G.marginBottom}
+              stroke={GRID_COLOR}
+              strokeDasharray="1,5"
             />
-            <line x1={marginLeft} y1={rowY(index)} x2={plotRight} y2={rowY(index)} stroke={GRID_COLOR} />
             <text
-              x={marginLeft - LABEL_GAP}
-              y={rowY(index) + 4}
-              textAnchor="end"
-              fontSize={12}
-              fontWeight={600}
-              fill={LABEL_COLOR}
+              x={xScale(tick)}
+              y={height - G.marginBottom + 16}
+              textAnchor="middle"
+              fontSize={11}
+              fill={MUTED_COLOR}
             >
-              <title>{feature.feature}</title>
-              {clippedText(feature.feature, labelChars)}
+              {tickLabels[index]}
             </text>
           </g>
-        )
-      })}
-
-      <BeeswarmDots dots={dots} onPoint={pointAt} />
-
-      {pointed && (
-        <circle
-          data-testid="shap-beeswarm-pointed"
-          cx={pointed.x}
-          cy={pointed.y}
-          r={DOT_RADIUS + 1.8}
-          fill={pointed.fill}
-          stroke={LABEL_COLOR}
+        ))}
+        <line
+          x1={zeroX}
+          y1={G.marginTop - 4}
+          x2={zeroX}
+          y2={height - G.marginBottom + 4}
+          stroke={AXIS_COLOR}
           strokeWidth={1.5}
-          pointerEvents="none"
         />
-      )}
 
-      <text x={marginLeft + chartW / 2} y={height - 8} textAnchor="middle" fontSize={12} fill={MUTED_COLOR}>
-        SHAP value (link scale)
-      </text>
+        {features.map((feature, index) => {
+          const isActive = active?.kind === "feature" && active.feature === index
+          const activate = () => onActivate({ kind: "feature", feature: index })
+          const lineY = shapBeeswarmRowY(index)
+          return (
+            <g
+              key={feature.feature}
+              data-testid="shap-beeswarm-feature"
+              role="button"
+              tabIndex={0}
+              aria-label={describeFeature(feature)}
+              aria-pressed={isActive}
+              className="focus-ring"
+              onFocus={activate}
+              onKeyDown={(event: KeyboardEvent<SVGGElement>) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault()
+                  activate()
+                }
+              }}
+            >
+              <rect
+                x={0}
+                y={lineY - G.rowGap / 2}
+                width={plotRight}
+                height={G.rowGap}
+                fill={isActive ? GRID_COLOR : "transparent"}
+                opacity={isActive ? 0.45 : 1}
+              />
+              <line x1={marginLeft} y1={lineY} x2={plotRight} y2={lineY} stroke={GRID_COLOR} />
+              <text
+                x={marginLeft - G.labelGap}
+                y={lineY + 4}
+                textAnchor="end"
+                fontSize={12}
+                fontWeight={600}
+                fill={LABEL_COLOR}
+                style={{ cursor: "pointer" }}
+                onClick={activate}
+              >
+                <title>{feature.feature}</title>
+                {clippedText(feature.feature, labelChars)}
+              </text>
+            </g>
+          )
+        })}
 
-      <ValueColorBar
-        gradientId={VALUE_GRADIENT_ID}
-        x={width - COLOR_BAR_INSET}
-        top={MARGIN_TOP}
-        bottom={height - MARGIN_BOTTOM}
-        title="Feature value"
-        captionColor={MUTED_COLOR}
-        testId="shap-beeswarm-colour-bar"
+        <text
+          x={(marginLeft + plotRight) / 2}
+          y={height - 8}
+          textAnchor="middle"
+          fontSize={12}
+          fill={MUTED_COLOR}
+        >
+          SHAP value (link scale)
+        </text>
+
+        <ValueColorBar
+          gradientId={VALUE_GRADIENT_ID}
+          x={width - G.colorBarInset}
+          top={G.marginTop}
+          bottom={height - G.marginBottom}
+          title="Feature value"
+          captionColor={MUTED_COLOR}
+          testId="shap-beeswarm-colour-bar"
+        />
+      </ChartSvg>
+
+      <canvas
+        ref={canvas}
+        data-testid="shap-beeswarm-dots"
+        aria-hidden="true"
+        style={{ ...OVERLAY_STYLE, width, height }}
       />
-    </ChartSvg>
+
+      {pointedIndex >= 0 && (
+        <svg
+          aria-hidden="true"
+          style={OVERLAY_STYLE}
+          width={width}
+          height={height}
+        >
+          <circle
+            data-testid="shap-beeswarm-pointed"
+            cx={layout.x[pointedIndex]}
+            cy={layout.y[pointedIndex]}
+            r={G.dotRadius + 2.5}
+            fill="none"
+            stroke={LABEL_COLOR}
+            strokeWidth={1.5}
+          />
+        </svg>
+      )}
+    </div>
   )
 }
-
-/** Every dot, drawn once per layout; pointing is read from the dot's data attributes. */
-const BeeswarmDots = memo(function BeeswarmDots({
-  dots,
-  onPoint,
-}: {
-  dots: PlacedDot[]
-  onPoint: (event: MouseEvent<SVGGElement>) => void
-}) {
-  return (
-    <g data-testid="shap-beeswarm-dots" onMouseOver={onPoint}>
-      {dots.map((dot) => (
-        <circle
-          key={`${dot.feature}:${dot.row}`}
-          data-feature={dot.feature}
-          data-row={dot.row}
-          cx={dot.x}
-          cy={dot.y}
-          r={DOT_RADIUS}
-          fill={dot.fill}
-          opacity={DOT_OPACITY}
-        />
-      ))}
-    </g>
-  )
-})

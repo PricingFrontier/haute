@@ -2003,6 +2003,8 @@ export interface TrainResponse {
     [k: string]: number;
   };
   shap_beeswarm: TrainShapBeeswarmFeature[];
+  shap_curves: TrainShapCurveFeature[];
+  shap_link: 'identity' | 'log' | 'logit' | null;
   shap_summary: {
     [k: string]: unknown;
   }[];
@@ -2119,6 +2121,30 @@ export interface TrainShapBeeswarmFeature {
   shap_values: number[];
   value_ranks: (number | null)[];
   values: (number | string | null)[];
+}
+/**
+ * One feature's SHAP curve: SHAP statistics per value band or level.
+ */
+export interface TrainShapCurveFeature {
+  feature: string;
+  kind: 'numeric' | 'categorical';
+  levels_omitted: number;
+  /**
+   * @minItems 1
+   */
+  points: TrainShapCurvePoint[];
+}
+/**
+ * One group of a SHAP curve: a numeric band or value, a level, or the missing rows.
+ */
+export interface TrainShapCurvePoint {
+  high: number | null;
+  low: number | null;
+  mean_shap: number;
+  p10_shap: number;
+  p90_shap: number;
+  rows: number;
+  value: number | string | null;
 }
 /**
  * The tuning study as published; its invariants are checked where the

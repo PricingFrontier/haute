@@ -272,6 +272,10 @@ class TrainResult:
     shap_summary: list[dict[str, Any]] = field(default_factory=list)
     #: Per-row SHAP values of the leading sampled rows for the top features.
     shap_beeswarm: list[dict[str, Any]] = field(default_factory=list)
+    #: Each feature's SHAP statistics per value band or level.
+    shap_curves: list[dict[str, Any]] = field(default_factory=list)
+    #: The link scale SHAP values add up on; None when no SHAP views exist.
+    shap_link: str | None = None
     feature_importance_loss: list[dict[str, Any]] = field(default_factory=list)
     ave_per_feature: list[dict[str, Any]] = field(default_factory=list)
     residuals_histogram: list[dict[str, Any]] = field(default_factory=list)
@@ -361,6 +365,8 @@ class _MetricsResult:
     double_lift: list[dict[str, Any]]
     shap_summary: list[dict[str, Any]]
     shap_beeswarm: list[dict[str, Any]]
+    shap_curves: list[dict[str, Any]]
+    shap_link: str | None
     feature_importance_loss: list[dict[str, Any]]
     ave_per_feature: list[dict[str, Any]]
     residuals_histogram: list[dict[str, Any]]
@@ -759,6 +765,8 @@ class TrainingJob:
                 double_lift=metrics_result.double_lift,
                 shap_summary=metrics_result.shap_summary,
                 shap_beeswarm=metrics_result.shap_beeswarm,
+                shap_curves=metrics_result.shap_curves,
+                shap_link=metrics_result.shap_link,
                 feature_importance_loss=metrics_result.feature_importance_loss,
                 ave_per_feature=metrics_result.ave_per_feature,
                 residuals_histogram=metrics_result.residuals_histogram,
@@ -1118,6 +1126,10 @@ class TrainingJob:
         task = "classification" if self.task == "classification" else "regression"
         link = algorithm_descriptor(self.algorithm).native_loss(task, str(loss)).link
         return "log" if link == "log" else "identity"
+
+    def _shap_link(self) -> str:
+        """The scale SHAP values add up on: log-odds for classification, else the offset link."""
+        return "logit" if self.task == "classification" else self._offset_link()
 
     def _require_positive_log_link_offset(
         self,
@@ -2596,19 +2608,27 @@ class TrainingJob:
         # surface in diagnostics_errors so the UI can flag a degraded run.)
         shap_summary: list[dict[str, Any]] = []
         shap_beeswarm: list[dict[str, Any]] = []
+        shap_curves: list[dict[str, Any]] = []
+        shap_link: str | None = None
         feature_importance_loss: list[dict[str, Any]] = []
         if hasattr(algo, "shap_values"):
             _report("Computing SHAP values", 0.85)
             try:
-                # One bounded sample for every family; both views or neither.
+                # One bounded sample for every family; every view or none.
                 shap_rows = shap_sample(diag_df)
-                shap_summary, shap_beeswarm = shap_diagnostics(
+                views = shap_diagnostics(
                     algo.shap_values(model, shap_rows, features, cat_features),
                     shap_rows,
                     features,
                     cat_features,
                 )
                 del shap_rows
+                shap_link = self._shap_link()
+                shap_summary, shap_beeswarm, shap_curves = (
+                    views.summary,
+                    views.beeswarm,
+                    views.curves,
+                )
             except Exception as exc:
                 _record_diag_error(diagnostics_errors, "shap", exc)
         if hasattr(algo, "feature_importance_typed"):
@@ -2687,6 +2707,8 @@ class TrainingJob:
             double_lift=double_lift,
             shap_summary=shap_summary,
             shap_beeswarm=shap_beeswarm,
+            shap_curves=shap_curves,
+            shap_link=shap_link,
             feature_importance_loss=feature_importance_loss,
             ave_per_feature=ave_per_feature,
             residuals_histogram=residuals_histogram,

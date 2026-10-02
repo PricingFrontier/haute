@@ -556,9 +556,16 @@ appears only when the result has something to show in it:
   or down (on the model's link scale), and its colour runs from blue for a low value to
   red for a high one. A categorical feature's dots have no value order and take one
   colour; point at a dot to see its row's value. SHAP is computed on a sample of up to
-  1,000 diagnostics rows, and the beeswarm draws 500 of them.
+  5,000 diagnostics rows, and the beeswarm draws 2,000 of them.
 - **AvE**: actual against expected across each feature's groups, with exposure.
 - **PDP**: partial dependence, how predictions change as one feature varies.
+- **SHAP curves** (CatBoost, XGBoost, LightGBM): for each feature, the average SHAP value
+  of the sampled rows in each band of its values (up to 20 bands) or in each of its 30
+  most common levels, with a shaded range from the 10th to the 90th percentile and the
+  rows with a missing value shown on their own. For a Poisson, Gamma or Tweedie loss the
+  curve reads as a relativity around 1.0, like a GLM's relativities; for other losses it
+  shows the average SHAP value around 0. Unlike PDP, which sets every row to the same
+  value, it only uses the values the rows really have.
 
 The Summary keeps model-selection evidence distinct from final performance:
 

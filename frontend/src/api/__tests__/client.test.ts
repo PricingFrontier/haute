@@ -204,6 +204,8 @@ function makeTrainResponse(overrides: Record<string, unknown> = {}) {
     double_lift: [],
     shap_summary: [],
     shap_beeswarm: [],
+    shap_curves: [],
+    shap_link: null,
     feature_importance_loss: [],
     ave_per_feature: [],
     residuals_histogram: [],

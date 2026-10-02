@@ -1,9 +1,13 @@
-import { describe, it, expect, afterEach } from "vitest"
+import { describe, it, expect, afterEach, vi } from "vitest"
 import { render, screen, fireEvent, cleanup } from "@testing-library/react"
 import { FeaturesTab } from "../FeaturesTab"
+import { stubBeeswarmCanvas } from "../../../test-utils/beeswarmCanvas"
 import { makeTrainResult } from "../../../test-utils/factories"
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+})
 
 describe("FeaturesTab", () => {
   it("shows empty state when no feature importance data", () => {
@@ -147,6 +151,7 @@ describe("FeaturesTab", () => {
   })
 
   it("replaces the search and Features shown controls with the beeswarm's scope", () => {
+    stubBeeswarmCanvas()
     const names = Array.from({ length: 25 }, (_, i) => `feat_${i}`)
     const result = makeTrainResult({
       feature_importance: names.map((feature, i) => ({ feature, importance: 25 - i })),

@@ -510,6 +510,8 @@ def _training_response_payload(
         double_lift=train_result.double_lift,
         shap_summary=train_result.shap_summary,
         shap_beeswarm=train_result.shap_beeswarm,
+        shap_curves=train_result.shap_curves,
+        shap_link=train_result.shap_link,
         feature_importance_loss=train_result.feature_importance_loss,
         ave_per_feature=train_result.ave_per_feature,
         residuals_histogram=train_result.residuals_histogram,

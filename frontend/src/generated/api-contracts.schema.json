@@ -12057,6 +12057,30 @@
           "title": "Shap Beeswarm",
           "type": "array"
         },
+        "shap_curves": {
+          "items": {
+            "$ref": "#/$defs/TrainShapCurveFeature"
+          },
+          "title": "Shap Curves",
+          "type": "array"
+        },
+        "shap_link": {
+          "anyOf": [
+            {
+              "enum": [
+                "identity",
+                "log",
+                "logit"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Shap Link"
+        },
         "shap_summary": {
           "items": {
             "additionalProperties": true,
@@ -12140,6 +12164,8 @@
         "double_lift",
         "shap_summary",
         "shap_beeswarm",
+        "shap_curves",
+        "shap_link",
         "feature_importance_loss",
         "ave_per_feature",
         "residuals_histogram",
@@ -12228,6 +12254,115 @@
         "value_ranks"
       ],
       "title": "TrainShapBeeswarmFeature",
+      "type": "object"
+    },
+    "TrainShapCurveFeature": {
+      "additionalProperties": false,
+      "description": "One feature's SHAP curve: SHAP statistics per value band or level.",
+      "properties": {
+        "feature": {
+          "title": "Feature",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "numeric",
+            "categorical"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "levels_omitted": {
+          "minimum": 0,
+          "title": "Levels Omitted",
+          "type": "integer"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/TrainShapCurvePoint"
+          },
+          "minItems": 1,
+          "title": "Points",
+          "type": "array"
+        }
+      },
+      "required": [
+        "feature",
+        "kind",
+        "points",
+        "levels_omitted"
+      ],
+      "title": "TrainShapCurveFeature",
+      "type": "object"
+    },
+    "TrainShapCurvePoint": {
+      "additionalProperties": false,
+      "description": "One group of a SHAP curve: a numeric band or value, a level, or the missing rows.",
+      "properties": {
+        "high": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "High"
+        },
+        "low": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Low"
+        },
+        "mean_shap": {
+          "title": "Mean Shap",
+          "type": "number"
+        },
+        "p10_shap": {
+          "title": "P10 Shap",
+          "type": "number"
+        },
+        "p90_shap": {
+          "title": "P90 Shap",
+          "type": "number"
+        },
+        "rows": {
+          "minimum": 1,
+          "title": "Rows",
+          "type": "integer"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "value",
+        "low",
+        "high",
+        "rows",
+        "mean_shap",
+        "p10_shap",
+        "p90_shap"
+      ],
+      "title": "TrainShapCurvePoint",
       "type": "object"
     },
     "TrainStatusResponse": {

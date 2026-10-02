@@ -87,6 +87,7 @@ def test_each_loss_trains_weighted_and_reloads_with_its_objective(
     # SHAP summary, importances, PDP, lift and AvE all ran for XGBoost.
     assert result.diagnostics_errors == []
     assert result.shap_summary and result.pdp_data
+    assert result.shap_link == ("log" if loss in {"Poisson", "Gamma", "Tweedie"} else "identity")
     model = XGBoostModel.load(result.model_path)
     assert model.objective() == objective
     identity = load_contract(Path(result.model_path).parent / model_contract_filename("xgb")).model
@@ -108,12 +109,12 @@ def test_shap_runs_on_the_bounded_sample_and_returns_the_beeswarm(
         tmp_path,
         target="severity",
         loss="RMSE",
-        data=frame(n=1_500),
+        data=frame(n=SHAP_SAMPLE_ROWS + 1_000),
         evaluation={**EVALUATION, "validation": {"method": "none"}},
     )
 
     assert result.diagnostics_errors == []
-    assert result.development_rows == 1_500
+    assert result.development_rows == SHAP_SAMPLE_ROWS + 1_000
     assert received == [SHAP_SAMPLE_ROWS]
     assert [entry["feature"] for entry in result.shap_beeswarm] == [
         row["feature"] for row in result.shap_summary
@@ -123,6 +124,11 @@ def test_shap_runs_on_the_bounded_sample_and_returns_the_beeswarm(
     assert beeswarm["region"]["kind"] == "categorical"
     assert set(beeswarm["region"]["values"]) <= {*LEVELS, None}
     assert beeswarm["age"]["kind"] == "numeric"
+    curves = {curve["feature"]: curve for curve in result.shap_curves}
+    assert set(curves) == {"region", "age"}
+    assert sum(point["rows"] for point in curves["age"]["points"]) == SHAP_SAMPLE_ROWS
+    assert curves["region"]["kind"] == "categorical"
+    assert result.shap_link == "identity"
 
 
 def test_save_reload_is_bit_identical_and_scoring_matches_the_native_booster(

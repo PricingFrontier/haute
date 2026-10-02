@@ -28,7 +28,7 @@ results are supplied by API and result-store layers.
   Boolean, date/datetime, target, weight, and excluded columns are never offered.
 - Modelling preview exposes summary unconditionally as the fallback tab whenever a result
   exists, presents remaining tabs (coefficients/relativities, loss, lift, residuals,
-  feature importance, AVE and PDP) only when backed by non-empty result data, and resets
+  feature importance, AVE, PDP and SHAP curves) only when backed by non-empty result data, and resets
   selection to summary when the result changes. When a node has no result because the one the
   browser remembered is gone from the server (it restarted, or the job expired), its results
   panel says so in place of the data preview: training results are not kept across a server
@@ -37,16 +37,27 @@ results are supplied by API and result-store layers.
 - The Features tab switches between importance measures with one button each: Prediction,
   then Loss and SHAP (mean absolute SHAP) when the result has them, then SHAP beeswarm when
   it has beeswarm rows (CatBoost, XGBoost, LightGBM). The beeswarm draws one row per feature,
-  in mean-absolute-SHAP order, and one dot per sampled row placed by its SHAP value on the
-  link scale around a zero line; a numeric feature's dots run from the low to the high
-  colour by the value's rank, and a categorical feature's dots are neutral, with a legend
-  entry saying they have no value order. It replaces the search and Features shown controls
-  with one line saying it shows the top 20 of N features by mean |SHAP| over the sampled
-  rows. Dots stack within their row so dense regions show as height, scaled so the densest
-  stack fits the row. Pointing at a dot names its feature, value (the level for a
-  categorical feature) and SHAP value; each feature row is a single tab stop whose focus
-  states that feature's rows and SHAP range. A closed values table lists, per feature, the
-  rows and the minimum, median and maximum SHAP value.
+  in mean-absolute-SHAP order, and one dot per sampled row (up to 2,000) placed by its SHAP
+  value on the link scale around a zero line; a numeric feature's dots run from the low to
+  the high colour by the value's rank, and a categorical feature's dots are neutral, with a
+  legend entry saying they have no value order. The dots are painted on a canvas layer under
+  the chart's labels so thousands of them stay responsive. It replaces the search and
+  Features shown controls with one line saying it shows the top 20 of N features by mean
+  |SHAP| over the sampled rows. Dots stack within their row so dense regions show as height,
+  scaled so the densest stack fits the row. Pointing at a dot names its feature, value (the
+  level for a categorical feature) and SHAP value; each feature row is a single tab stop
+  whose focus states that feature's rows and SHAP range. A closed values table lists, per
+  feature, the rows and the minimum, median and maximum SHAP value.
+- A SHAP curves tab follows PDP when the result has curves (CatBoost, XGBoost, LightGBM). It
+  uses the AvE/PDP per-feature layout and shares their selected feature. Under a log link
+  (`shap_link` `log`) it shows relativities, exp of the mean SHAP value, around a 1.0
+  baseline; otherwise mean SHAP values around 0. A numeric feature draws a line through each
+  band's mean value with a shaded 10th to 90th percentile range and a separate "(missing)"
+  point when missing rows exist; a categorical feature draws one bar per level in the
+  result's order (most rows first) with 10th to 90th percentile whiskers and a row-count
+  strip, and says how many less frequent levels are not shown. Points and bars are
+  focusable and name their band or level, rows, mean SHAP, relativity under a log link and
+  percentile range; a closed values table lists the same per point.
 - Completed training accepts missing categorical PDP levels as JSON `null` and labels
   them `(missing)` in the chart. Numeric PDP levels remain non-null. Invalid status
   responses stop polling with a visible response error for every background job type

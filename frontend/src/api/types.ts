@@ -917,6 +917,8 @@ export type {
   ModelFileExportReceipt,
   TrainExportReceipts,
   TrainShapBeeswarmFeature,
+  TrainShapCurveFeature,
+  TrainShapCurvePoint,
   TuningReportPayload as TuningReport,
   TuningTrialPayload as TuningTrial,
 } from "../generated/api-contracts.generated"

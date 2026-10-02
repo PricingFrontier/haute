@@ -2827,6 +2827,69 @@ class TrainShapBeeswarmFeature(BaseModel):
         return self
 
 
+class TrainShapCurvePoint(BaseModel):
+    """One group of a SHAP curve: a numeric band or value, a level, or the missing rows."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: A numeric band's mean feature value or a categorical level; null for the
+    #: rows whose value is missing.
+    value: float | str | None
+    #: A numeric band's lowest and highest feature value; null for a level and
+    #: for the missing rows.
+    low: float | None
+    high: float | None
+    rows: int = Field(strict=True, ge=1)
+    mean_shap: float
+    p10_shap: float
+    p90_shap: float
+
+    @model_validator(mode="after")
+    def _validate_percentiles(self) -> TrainShapCurvePoint:
+        if self.p10_shap > self.p90_shap:
+            raise ValueError("p10_shap must not exceed p90_shap")
+        return self
+
+
+class TrainShapCurveFeature(BaseModel):
+    """One feature's SHAP curve: SHAP statistics per value band or level."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    feature: str
+    kind: Literal["numeric", "categorical"]
+    points: list[TrainShapCurvePoint] = Field(min_length=1)
+    #: Levels past the most frequent ones, not in ``points`` (0 for a numeric feature).
+    levels_omitted: int = Field(strict=True, ge=0)
+
+    @model_validator(mode="after")
+    def _validate_points(self) -> TrainShapCurveFeature:
+        missing = [index for index, point in enumerate(self.points) if point.value is None]
+        if len(missing) > 1:
+            raise ValueError("a SHAP curve has at most one missing-value point")
+        if self.kind == "categorical":
+            for point in self.points:
+                if point.value is not None and not isinstance(point.value, str):
+                    raise ValueError("a categorical curve's points must be levels (text) or null")
+                if point.low is not None or point.high is not None:
+                    raise ValueError("a categorical curve's points have no low or high")
+            return self
+        if self.levels_omitted:
+            raise ValueError("a numeric curve omits no levels")
+        if missing and missing[0] != len(self.points) - 1:
+            raise ValueError("a numeric curve's missing-value point comes last")
+        for point in self.points:
+            if point.value is None:
+                if point.low is not None or point.high is not None:
+                    raise ValueError("the missing-value point has no low or high")
+                continue
+            if isinstance(point.value, str) or point.low is None or point.high is None:
+                raise ValueError("a numeric curve's bands need a numeric value, low and high")
+            if not point.low <= point.value <= point.high:
+                raise ValueError("a numeric band's value must lie between its low and high")
+        return self
+
+
 class TrainResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2852,6 +2915,9 @@ class TrainResponse(BaseModel):
     double_lift: list[dict[str, Any]] = Field(default_factory=list)
     shap_summary: list[dict[str, Any]] = Field(default_factory=list)
     shap_beeswarm: list[TrainShapBeeswarmFeature] = Field(default_factory=list)
+    shap_curves: list[TrainShapCurveFeature] = Field(default_factory=list)
+    #: The link scale SHAP values add up on; null when the result has no SHAP views.
+    shap_link: Literal["identity", "log", "logit"] | None = None
     feature_importance_loss: list[dict[str, Any]] = Field(default_factory=list)
     ave_per_feature: list[dict[str, Any]] = Field(default_factory=list)
     residuals_histogram: list[dict[str, Any]] = Field(default_factory=list)
@@ -2889,6 +2955,12 @@ class TrainResponse(BaseModel):
         if value == {}:
             return {}
         return _strict_finite_metric_mapping(value, field=info.field_name)
+
+    @model_validator(mode="after")
+    def _validate_shap_link(self) -> TrainResponse:
+        if bool(self.shap_curves) != (self.shap_link is not None):
+            raise ValueError("shap_link names the scale exactly when shap_curves exist")
+        return self
 
 
 class MlflowExportReceipt(BaseModel):

@@ -74,7 +74,7 @@ In scope:
 - Bounded deterministic CatBoost hyperparameter tuning over the persisted
   development-only validation plan.
 - Metric and diagnostic computation (Gini, deviances, double lift, AvE, residuals,
-  Lorenz curve, partial dependence, SHAP importance and beeswarm, GLM
+  Lorenz curve, partial dependence, SHAP importance, beeswarm and curves, GLM
   coefficients/relativities/fit statistics).
 - The train-to-deploy feature contract (schema pinning + hash verification).
 - MLflow experiment logging, including a `ModelSignature` built from the same contract.
@@ -620,15 +620,27 @@ SHAP never announce that stage. This presentation change preserves diagnostic
 values, sampling, and training parameters.
 
 SHAP runs for the tree families (CatBoost, XGBoost, LightGBM) on one seeded, shuffled
-sample of at most 1,000 diagnostics rows, the same for every family, so its cost does
+sample of at most 5,000 diagnostics rows, the same for every family, so its cost does
 not grow with the diagnostics partition. From that one matrix of per-row SHAP values the
-result carries two views: the mean absolute SHAP value per feature (an importance
-ranking), and a beeswarm of the first 500 sampled rows for the 20 features with the
-largest mean absolute SHAP value. Each beeswarm point keeps its row's feature value
-and, for a numeric feature, that value's rank among the plotted rows, which colours
-it from low to high. A categorical level has no order, so it is named rather than
-ranked. SHAP values are on the model's link scale. MLflow and the model card keep
-logging the mean absolute SHAP summary only; the beeswarm is a results-panel view.
+result carries three views:
+
+- the mean absolute SHAP value per feature (an importance ranking);
+- a beeswarm of the first 2,000 sampled rows for the 20 features with the largest mean
+  absolute SHAP value. Each point keeps its row's feature value and, for a numeric
+  feature, that value's rank among the plotted rows, which colours it from low to high.
+  A categorical level has no order, so it is named rather than ranked. SHAP values and
+  numeric values are rounded for transport (4 and 6 significant figures);
+- a SHAP curve for every feature over all sampled rows: the rows grouped into up to 20
+  quantile bands of a numeric feature (one per value when it has 20 or fewer distinct
+  values) or the 30 most frequent levels of a categorical one, each group reporting its
+  row count, mean SHAP value and 10th and 90th percentile SHAP values. Missing values form
+  their own group.
+
+SHAP values are on the model's link scale, which the result names (`shap_link`: `log`
+for a log-link regression loss, `logit` for classification, else `identity`). Under a log
+link a curve also reads as a relativity, exp of the mean SHAP value, comparable to a GLM's
+relativities. MLflow and the model card keep logging the mean absolute SHAP summary only;
+the beeswarm and the curves are results-panel views.
 
 Optional diagnostics occupy a deliberate middle ground: neither "abort the whole run if
 SHAP fails" nor "silently drop it and say nothing." Each optional block is wrapped so a

@@ -67,7 +67,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/modelling/_target_check.py` | `training_target_task_issue()` — data-dependent target-column vs task/metric gate returning an actionable message (or nothing when the pairing is valid), keyed on the effective reported-metric set (explicit config metrics or the objective-implied defaults), shared by the train route's pre-dispatch validation and `TrainingJob._prepare_data`. |
 | `src/haute/modelling/_split.py` | Internal partition-mask execution used by a final or selection fit. Its `SplitConfig` is a private test seam for direct callers exercising the shared partition/fit machinery; it is not a public modelling-node config contract and is not exported. |
 | `src/haute/modelling/_metrics.py` | Primary metric functions and diagnostic data computation (double lift, AvE, residuals, actual-vs-predicted, Lorenz, PDP). |
-| `src/haute/modelling/_shap.py` | The SHAP diagnostics every SHAP-capable family shares: `shap_sample` (the seeded, shuffled sample of at most `SHAP_SAMPLE_ROWS` = 1,000 diagnostics rows) and `shap_diagnostics`, which turns the algorithm's per-row SHAP matrix into the mean-absolute summary and the beeswarm (`BEESWARM_ROWS` = 500 rows, `BEESWARM_FEATURES` = 20 features). |
+| `src/haute/modelling/_shap.py` | The SHAP diagnostics every SHAP-capable family shares: `shap_sample` (the seeded, shuffled sample of at most `SHAP_SAMPLE_ROWS` = 5,000 diagnostics rows) and `shap_diagnostics`, which turns the algorithm's per-row SHAP matrix into `ShapViews`: the mean-absolute summary, the beeswarm (`BEESWARM_ROWS` = 2,000 rows, `BEESWARM_FEATURES` = 20 features) and the per-feature curves (`CURVE_BANDS` = 20 numeric bands, `CURVE_LEVELS` = 30 categorical levels). |
 | `src/haute/modelling/_feature_contract.py` | `FeatureContract` build/save/load/cache, contract comparison, and categorical-level normalisation/validation. |
 | `src/haute/modelling/_signature.py` | `build_signature()` — MLflow `ModelSignature` construction with loud dtype/metadata validation, structural Date/parameterised-Datetime mapping, and the explicit no-lossy-Decimal policy. |
 | `src/haute/modelling/_candidate_run.py` | The candidate-run contract builder shared by canvas and scripted logging (`CANDIDATE_RUN_CONTRACT_VERSION`, `training_identity_sha256`, `CandidateProvenance` capture including git state, `CandidateArtifacts.require_files`, `build_candidate_run`); see [mlflow-model-registry](../mlflow-model-registry/low-level.md#candidate-run-contract). |
@@ -1432,32 +1432,54 @@ rows/features) and retry.
   pin stage order, the absence of a SHAP stage for algorithms without it, and
   cancellation before loss importance.
 - SHAP is computed once per run, on `shap_sample(diag_df)`: `diag_df.sample(n,
-  seed=42, shuffle=True)` with `n = min(height, 1,000)`, so the rows come in random
-  order even when the partition is smaller than the cap, and the first 500 are a
-  uniform sample rather than the partition's leading (on a temporal split, oldest)
+  seed=42, shuffle=True)` with `n = min(height, 5,000)`, so the rows come in random
+  order even when the partition is smaller than the cap, and the beeswarm's leading rows
+  are a uniform sample rather than the partition's leading (on a temporal split, oldest)
   rows. Every SHAP-capable adapter receives this sample: XGBoost and LightGBM no
   longer compute contributions over the whole partition. `shap_values(model, df,
   features, cat_features)` returns a `float64` matrix of one row per sampled row and
   one column per feature in training order, without the bias column; an adapter
   whose model records a different feature order raises rather than mislabelling
-  columns. `shap_diagnostics` builds both views from that matrix, and the job
-  assigns them together: a failure anywhere records one `shap` entry in
-  `diagnostics_errors` and leaves `shap_summary` and `shap_beeswarm` both empty.
+  columns. `shap_diagnostics` builds every view from that matrix, and the job
+  assigns them, with `shap_link`, together: a failure anywhere records one `shap`
+  entry in `diagnostics_errors` and leaves `shap_summary`, `shap_beeswarm` and
+  `shap_curves` empty and `shap_link` null.
   - `shap_summary` is `[{feature, mean_abs_shap}]`, largest first, ties in training
     order.
   - `shap_beeswarm` is one entry per feature for the first 20 features of
     `shap_summary`, in that order: `{feature, kind, shap_values, values,
-    value_ranks}`, where the three lists hold one item per plotted row (the first 500
+    value_ranks}`, where the three lists hold one item per plotted row (the first 2,000
     sampled rows) in the same row order. `kind` is `categorical` for a feature in
-    `cat_features`, else `numeric`. A numeric value is the column cast to `Float64`
-    (as `encode_frame` casts it), NaN reported as null; its rank is the average rank
+    `cat_features`, else `numeric`. SHAP values are rounded to 4 significant figures.
+    A numeric value is the column cast to `Float64` (as `encode_frame` casts it), NaN
+    reported as null, rounded to 6 significant figures; its rank is the average rank
     among the plotted rows' non-null values, scaled to 0 (lowest) to 1 (highest) and
     rounded to 3 decimals, and is null for a null value or when the feature has fewer
     than two distinct non-null values. A categorical value is the level as a string
     (null when missing) and its rank is always null.
-  - `TrainShapBeeswarmFeature` in `schemas.py` (`extra="forbid"`) refuses lists of
-    unequal length, a numeric entry carrying text or a categorical entry carrying a
-    number or a rank, and a rank outside 0 to 1.
+  - `shap_curves` is one entry per feature, in `shap_summary` order, over every sampled
+    row: `{feature, kind, points, levels_omitted}`. Each point is `{value, low, high,
+    rows, mean_shap, p10_shap, p90_shap}` (percentiles by linear interpolation). A
+    numeric feature with at most 20 distinct non-null values has one point per value
+    (`low == high == value`); otherwise its values are cut at their 0th, 5th, ...,
+    100th percentiles, duplicate cut points merged, a value on an inner cut point
+    falling in the upper band, and each non-empty band reports its lowest and highest
+    value as `low`/`high` and its mean value as `value`. Points run in ascending value
+    order, then one point with null `value`, `low` and `high` for the rows whose value
+    is null or NaN. A categorical feature's points are its 30 most frequent levels
+    (a missing level, `value` null, counted like any other), most rows first with
+    ties in level order, `low`/`high` null, and `levels_omitted` counts the levels left
+    out (always 0 for a numeric feature).
+  - `shap_link` is `logit` for a classification task, else the run's offset link
+    (`log` for CatBoost `Poisson`/`Tweedie` and the native families' log-link losses,
+    else `identity`), and null when no SHAP views exist.
+  - `TrainShapBeeswarmFeature` and `TrainShapCurveFeature` in `schemas.py`
+    (`extra="forbid"`) refuse lists of unequal length, values inconsistent with the
+    kind (text for a numeric feature, a number or rank for a categorical one, a numeric
+    band whose value is outside its `low`..`high`, more than one missing point or a
+    numeric missing point that is not last, omitted levels on a numeric feature), a
+    rank outside 0 to 1, a point with no rows, and a 10th percentile above the 90th.
+    `TrainResponse` requires `shap_link` exactly when `shap_curves` is non-empty.
   - MLflow (`shap/`) and the model card log `shap_summary` only.
 - **MLflow logging errors** — `_log_model_card` inside `log_experiment` is wrapped in
   `try/except Exception: logger.warning(...)`, so a model-card bug never fails an
@@ -1626,16 +1648,21 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
 - `test_train_service_coverage.py` and
   `test_train_service_helpers_coverage.py` — `TrainService` error/cleanup
   branches and its pure column-demand helper functions.
-- `test_shap_diagnostics.py` — `shap_sample` caps at 1,000 rows, shuffles a smaller
+- `test_shap_diagnostics.py` — `shap_sample` caps at 5,000 rows, shuffles a smaller
   partition and is deterministic; `shap_diagnostics` orders the summary largest first,
-  keeps the beeswarm to the summary's first 20 features and the first 500 rows, ranks
-  numeric values with ties averaged, gives a null or NaN value and a single-valued
-  feature null ranks, and reports categorical levels as strings with null ranks; an
-  XGBoost model whose feature order differs from the requested one raises; the payload
-  model refuses unequal lengths and kind-inconsistent values.
-  `test_xgboost_family.py` and `test_lightgbm_family.py` train a real model on more than
-  1,000 diagnostics rows and prove the adapter's `shap_values` receives exactly 1,000
-  rows and the result carries a 500-row beeswarm.
+  keeps the beeswarm to the summary's first 20 features and the first 2,000 rows, rounds
+  its SHAP and numeric values, ranks numeric values with ties averaged, gives a null or
+  NaN value and a single-valued feature null ranks, and reports categorical levels as
+  strings with null ranks; curves give a few-valued numeric feature one point per value,
+  band a many-valued one into at most 20 ordered bands whose bounds cover their rows,
+  put missing rows last, keep a categorical feature's 30 most frequent levels with the
+  rest counted as omitted, and report each group's rows, mean and percentiles; an XGBoost
+  model whose feature order differs from the requested one raises; the payload models
+  refuse unequal lengths, kind-inconsistent values and inconsistent curve points, and
+  `TrainResponse` refuses curves without a link. `test_xgboost_family.py` and
+  `test_lightgbm_family.py` train a real model on more than 5,000 diagnostics rows and
+  prove the adapter's `shap_values` receives exactly 5,000 rows, the result carries a
+  2,000-row beeswarm and a curve per feature, and `shap_link` names the loss's link.
 - `test_algorithms_coverage.py` — targeted coverage of `_algorithms.py` /
   `_training_job.py` paths not hit elsewhere (platform-specific RSS reads, CatBoost and
   MLflow mocked out via `unittest.mock`).

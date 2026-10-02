@@ -21,6 +21,7 @@ import { LiftTab } from "./modelling/LiftTab"
 import { LossTab } from "./modelling/LossTab"
 import { PdpTab } from "./modelling/PdpTab"
 import { ResidualsTab } from "./modelling/ResidualsTab"
+import { ShapCurvesTab } from "./modelling/ShapCurvesTab"
 import { SummaryTab } from "./modelling/SummaryTab"
 import { diagnosticsRowCount, diagnosticsSetLabel, headlineMetrics } from "./modelling/diagnosticsSet"
 import { shownFit } from "./modelling/lossHistory"
@@ -50,6 +51,7 @@ const TAB_KEYS = [
   "features",
   "ave",
   "pdp",
+  "shap_curves",
 ] as const
 type TabKey = (typeof TAB_KEYS)[number]
 
@@ -64,6 +66,7 @@ const TAB_LABELS: Record<TabKey, string> = {
   features: "Features",
   ave: "AvE",
   pdp: "PDP",
+  shap_curves: "SHAP curves",
 }
 
 const VIEW_INTRODUCTIONS: Record<
@@ -109,6 +112,11 @@ const VIEW_INTRODUCTIONS: Record<
     title: "Partial dependence",
     description: "Explore how model predictions change as one feature varies.",
   },
+  shap_curves: {
+    title: "SHAP curves",
+    description:
+      "See how each feature's value moves the sampled rows' predictions, band by band or level by level.",
+  },
 }
 
 export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewProps) {
@@ -134,6 +142,7 @@ export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewPr
     ...new Set([
       ...result.ave_per_feature.map((item) => item.feature),
       ...result.pdp_data.map((item) => item.feature),
+      ...result.shap_curves.map((item) => item.feature),
     ]),
   ]
   const featureBrowser = {
@@ -180,6 +189,8 @@ export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewPr
         return result.ave_per_feature && result.ave_per_feature.length > 0
       case "pdp":
         return result.pdp_data && result.pdp_data.length > 0
+      case "shap_curves":
+        return result.shap_curves.length > 0
       default:
         return false
     }
@@ -266,6 +277,9 @@ export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewPr
       {activeTab === "features" && <FeaturesTab result={result} />}
       {activeTab === "ave" && <AveTab result={result} featureBrowser={featureBrowser} />}
       {activeTab === "pdp" && <PdpTab result={result} featureBrowser={featureBrowser} />}
+      {activeTab === "shap_curves" && (
+        <ShapCurvesTab result={result} featureBrowser={featureBrowser} />
+      )}
     </ResultsWorkspace>
   )
 }

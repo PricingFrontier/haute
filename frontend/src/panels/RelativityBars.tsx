@@ -1,8 +1,8 @@
 /**
- * A diverging-around-1.0 bar list: one row per item, in the caller's order,
- * with the bar running right of the centre line above 1.0 and left of it
- * below. GLM relativities, the optimiser's ratebook rates and its segments
- * share it. A `null` value is unavailable: the row draws no bar and shows "—".
+ * A diverging bar list around a baseline (1.0 unless the caller names another):
+ * one row per item, in the caller's order, with the bar running right of the
+ * centre line above the baseline and left of it below. GLM relativities, the
+ * optimiser's ratebook rates and its segments, and the SHAP curves share it. A `null` value is unavailable: the row draws no bar and shows "—".
  */
 import type { KeyboardEvent, ReactNode } from "react"
 import { chartLabelIndices } from "../utils/chartHelpers"
@@ -46,14 +46,14 @@ function hasInterval(bar: RelativityBar): bar is RelativityBar & { ciLower: numb
   return bar.ciLower != null && bar.ciUpper != null && Number.isFinite(bar.ciLower) && Number.isFinite(bar.ciUpper)
 }
 
-function halfScale(bars: readonly RelativityBar[]): number {
-  let largest = MIN_HALF_SCALE
+function halfScale(bars: readonly RelativityBar[], baseline: number, floor: number): number {
+  let largest = floor
   for (const bar of bars) {
     if (bar.value === null) continue
     if (!Number.isFinite(bar.value)) throw new Error(`${bar.label} has a non-finite value ${bar.value}`)
-    largest = Math.max(largest, Math.abs(bar.value - 1))
+    largest = Math.max(largest, Math.abs(bar.value - baseline))
     if (hasInterval(bar)) {
-      largest = Math.max(largest, Math.abs(bar.ciLower - 1), Math.abs(bar.ciUpper - 1))
+      largest = Math.max(largest, Math.abs(bar.ciLower - baseline), Math.abs(bar.ciUpper - baseline))
     }
   }
   return largest
@@ -62,6 +62,8 @@ function halfScale(bars: readonly RelativityBar[]): number {
 export function RelativityBars({
   bars,
   ariaLabel,
+  baseline = 1,
+  minHalfScale = MIN_HALF_SCALE,
   formatValue = (value) => formatFixed(value, 3),
   labelWidth = 140,
   maxHeight = 480,
@@ -71,6 +73,10 @@ export function RelativityBars({
 }: {
   bars: readonly RelativityBar[]
   ariaLabel: string
+  /** The value the bars diverge from: 1.0 for relativities, 0 for additive effects. */
+  baseline?: number
+  /** The smallest half-scale; the default suits relativities around 1.0. */
+  minHalfScale?: number
   formatValue?: (value: number) => string
   labelWidth?: number
   maxHeight?: number
@@ -79,12 +85,12 @@ export function RelativityBars({
   interaction?: RelativityBarsInteraction
   aside?: RelativityBarsAside
 }) {
-  const scale = halfScale(bars)
+  const scale = halfScale(bars, baseline, minHalfScale)
   const compact = compactFrom !== undefined && bars.length >= compactFrom
   const labelled = compact
     ? chartLabelIndices(bars.length, bars.length * COMPACT_ROW_HEIGHT, COMPACT_LABEL_SPACING)
     : null
-  const position = (value: number) => 50 + ((value - 1) / scale) * 50
+  const position = (value: number) => 50 + ((value - baseline) / scale) * 50
 
   return (
     <div className="overflow-y-auto" style={{ maxHeight }} role="group" aria-label={ariaLabel}>
@@ -100,7 +106,7 @@ export function RelativityBars({
       )}
       <div className={compact ? undefined : "space-y-0.5"}>
         {bars.map((bar, index) => {
-          const deviation = bar.value === null ? 0 : bar.value - 1
+          const deviation = bar.value === null ? 0 : bar.value - baseline
           const isAbove = deviation >= 0
           const width = (Math.abs(deviation) / scale) * 50
           const color = isAbove ? RELATIVITY_ABOVE_COLOR : RELATIVITY_BELOW_COLOR
