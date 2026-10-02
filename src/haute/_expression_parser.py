@@ -1489,8 +1489,10 @@ class _InlineGlobalConstants(ast.NodeTransformer):
                 if dtype is None:
                     return expression
                 cast_call = ast.Call(
-                    func=ast.Attribute(value=expression, attr="cast", ctx=ast.Load()),
-                    args=[self.visit(dtype)],
+                    func=ast.Attribute(
+                        value=cast(ast.expr, expression), attr="cast", ctx=ast.Load()
+                    ),
+                    args=[cast(ast.expr, self.visit(dtype))],
                     keywords=[],
                 )
                 return ast.copy_location(cast_call, node)
