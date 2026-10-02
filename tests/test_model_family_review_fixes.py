@@ -28,6 +28,7 @@ EVALUATION = {
 def classification_config(**overrides: object) -> dict[str, object]:
     config: dict[str, object] = {
         "target": "y",
+        "feature_columns": ["x"],
         "task": "classification",
         "loss_function": "Logloss",
         "params": {"iterations": 10},

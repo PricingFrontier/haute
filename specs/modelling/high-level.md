@@ -74,7 +74,8 @@ In scope:
 - Bounded deterministic CatBoost hyperparameter tuning over the persisted
   development-only validation plan.
 - Metric and diagnostic computation (Gini, deviances, double lift, AvE, residuals,
-  Lorenz curve, partial dependence, SHAP, GLM coefficients/relativities/fit statistics).
+  Lorenz curve, partial dependence, SHAP importance, beeswarm and curves, GLM
+  coefficients/relativities/fit statistics).
 - The train-to-deploy feature contract (schema pinning + hash verification).
 - MLflow experiment logging, including a `ModelSignature` built from the same contract.
 - Self-contained HTML model card generation with embedded SVG charts.
@@ -119,14 +120,23 @@ compatibility facade and route own no duplicate state or worker implementation.
 ## Behaviour
 
 - A user configures a "modelling" node: target column, optional weight/offset columns,
-  columns to exclude (or an explicit feature list), algorithm (`catboost` or `glm`),
+  the feature columns to train on (`feature_columns`), algorithm (`catboost` or `glm`),
   task, evaluation configuration, requested metrics, and algorithm-specific parameters
   (CatBoost hyperparameters, or GLM terms/family/link/regularization/solver/interactions).
   CatBoost hyperparameters live in the node's `params` object and its Tweedie power is
   `variance_power`; GLM settings live at the node's top level and its Tweedie power is
-  `var_power`. `exclude`, `feature_columns`, `monotone_constraints`, and `feature_weights`
-  apply only to CatBoost: a GLM's features are its terms and interaction factors, and GLM
+  `var_power`. `feature_columns`, `monotone_constraints`, and `feature_weights` apply only
+  to CatBoost: a GLM's features are its terms and interaction factors, and GLM
   monotonicity lives on each term.
+- CatBoost's features are opt-in: a column is a feature only when it is listed in
+  `feature_columns`, so a new node selects no features and a column that appears upstream
+  later is not selected until the user ticks it. A listed column that holds a role
+  (target, weight, offset, fold, identifier, or active evaluation key) is dormant: it
+  stays stored, is never a feature while it holds the role, and is selected again once it
+  leaves the role. A node with no selected features is incomplete, not malformed. The
+  node config has no `exclude` field: like the removed `model_name`, a config carrying
+  one is refused wherever it is loaded, saved or run, naming `feature_columns` as its
+  replacement.
 - Starting training (`POST /api/modelling/train`) performs the cheap graph/config
   validation synchronously, creates and registers the cancellable job, starts an owned
   preparation thread, and returns `status="started"` plus the job ID before RAM
@@ -146,8 +156,9 @@ compatibility facade and route own no duplicate state or worker implementation.
   reports the loss count on the next event/end marker, and retains only bounded history.
   The response includes a bounded, versioned diagnostic describing the
   feature choice and why other columns were retained as metadata or excluded.
-  A configuration that leaves no feature columns is rejected with HTTP 422 before a sink
-  or trainer runs.
+  A GLM whose terms leave no feature columns is rejected with HTTP 422 before a sink or
+  trainer runs (a CatBoost node with no selected feature is refused earlier, as HTTP 400),
+  and a target or selected feature the data lacks is a 422 naming the column.
   The training job store has
   one process-wide running slot shared by training and GLM dispersion estimation; a
   second request of either kind is rejected while the first is running.
@@ -227,10 +238,9 @@ compatibility facade and route own no duplicate state or worker implementation.
 - CatBoost monotonicity is the one additional capability lever exposed in
   modelling-node configuration. `monotone_constraints` maps configured numeric feature
   names to exactly `-1` (decreasing) or `1` (increasing); zero means absence and is
-  omitted by the editor. Entries for features made dormant by `exclude` remain stored:
-  the shared config builder omits them from live training and script export, so re-including
-  the feature restores its prior direction. The established explicit `feature_columns` contract
-  still wins over a stale exclusion. After the final CatBoost feature selection is known,
+  omitted by the editor. Entries for features that are not selected remain stored:
+  the shared config builder omits them from live training and script export, so re-selecting
+  the feature restores its prior direction. After the final CatBoost feature selection is known,
   training rejects a non-object mapping, malformed names or
   directions, active constraints on absent/non-selected features, and constraints on
   features whose dtype is not `Int64` or `Float64` before splitting
@@ -293,8 +303,8 @@ Invariants that always hold:
 - Optional diagnostics (SHAP, partial dependence, GLM inference statistics) can fail
   independently without aborting the run; failures are recorded and surfaced, not
   swallowed.
-- Training never silently proceeds with an empty feature set. Explicit features,
-  all-except selection, and GLM terms produce the same version-1 feature-selection
+- Training never silently proceeds with an empty feature set. CatBoost's selected
+  features and GLM terms produce the same version-1 feature-selection
   diagnostic shape in start/status results, including deterministic capped lists of
   selected features, retained metadata, and exclusions.
 - Numeric-only CatBoost input keeps Polars' native Fortran-contiguous `Float32`
@@ -537,7 +547,8 @@ case, readable field/help text and the modelling accent consistently. Target, we
 and offset selectors are searchable and show column types. Feature selection uses
 compact table rows with inclusion checkboxes, coloured dtype labels using the shared
 type palette, All/Included/Excluded filters, and numeric-only ↓ / − / ↑ monotonicity
-buttons. The buttons retain their decreasing/neutral/increasing colours and selected
+buttons. Every checkbox starts unticked on a new node; ticking writes the column to
+`feature_columns`. The buttons retain their decreasing/neutral/increasing colours and selected
 states; target/weight/offset roles remain excluded from predictors.
 
 The row-limit control appears first in Split for both algorithms, above allocation.
@@ -608,6 +619,29 @@ before the full-partition loss-importance calculation starts. Algorithms without
 SHAP never announce that stage. This presentation change preserves diagnostic
 values, sampling, and training parameters.
 
+SHAP runs for the tree families (CatBoost, XGBoost, LightGBM) on one seeded, shuffled
+sample of at most 5,000 diagnostics rows, the same for every family, so its cost does
+not grow with the diagnostics partition. From that one matrix of per-row SHAP values the
+result carries three views:
+
+- the mean absolute SHAP value per feature (an importance ranking);
+- a beeswarm of the first 2,000 sampled rows for the 20 features with the largest mean
+  absolute SHAP value. Each point keeps its row's feature value and, for a numeric
+  feature, that value's rank among the plotted rows, which colours it from low to high.
+  A categorical level has no order, so it is named rather than ranked. SHAP values and
+  numeric values are rounded for transport (4 and 6 significant figures);
+- a SHAP curve for every feature over all sampled rows: the rows grouped into up to 20
+  quantile bands of a numeric feature (one per value when it has 20 or fewer distinct
+  values) or the 30 most frequent levels of a categorical one, each group reporting its
+  row count, mean SHAP value and 10th and 90th percentile SHAP values. Missing values form
+  their own group.
+
+SHAP values are on the model's link scale, which the result names (`shap_link`: `log`
+for a log-link regression loss, `logit` for classification, else `identity`). Under a log
+link a curve also reads as a relativity, exp of the mean SHAP value, comparable to a GLM's
+relativities. MLflow and the model card keep logging the mean absolute SHAP summary only;
+the beeswarm and the curves are results-panel views.
+
 Optional diagnostics occupy a deliberate middle ground: neither "abort the whole run if
 SHAP fails" nor "silently drop it and say nothing." Each optional block is wrapped so a
 failure is recorded in `TrainResult.diagnostics_errors` with the failing diagnostic
@@ -646,10 +680,12 @@ browser without a server or JS bundle.
   setting.
 - A configured value that can never train is malformed and is refused when the pipeline
   is saved, from the editor and the assistant alike: an unknown algorithm or GLM family
-  (names are case-sensitive: `glm`, `poisson`), a link, solver setting or loss the chosen
-  family rejects, or a target also listed in `feature_columns`. An unfinished node is
+  (names are case-sensitive: `glm`, `poisson`), or a link, solver setting or loss the chosen
+  family rejects. An unfinished node is
   incomplete, not malformed, and still saves: a new modelling node is `{}`, and an unset
-  target, objective or feature set is reported when training starts.
+  target, objective or feature set is reported when training starts. A CatBoost node with
+  no selected feature is refused before any pipeline execution, as HTTP 400 asking the
+  user to tick at least one feature on the Features pane.
 - An admission failure discovered before a job handle can be returned surfaces as HTTP
   507. RAM or GPU-VRAM failure discovered during background preparation transitions the
   pollable job to `memory_limited` and preserves the equivalent structured 507 detail

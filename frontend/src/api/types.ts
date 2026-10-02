@@ -872,7 +872,7 @@ export interface TrainDiagnosticsError {
 
 export interface TrainFeatureSelectionExcludedColumn {
   column: string
-  reason: "target" | "weight" | "offset" | "fold" | "identifier" | "evaluation" | "configured_exclusion" | "not_selected" | "not_in_formula"
+  reason: "target" | "weight" | "offset" | "fold" | "identifier" | "evaluation" | "not_selected" | "not_in_formula"
 }
 
 export interface TrainFeatureSelectionCollection<T> {
@@ -883,7 +883,7 @@ export interface TrainFeatureSelectionCollection<T> {
 
 export interface TrainFeatureSelection {
   schema_version: 1
-  mode: "explicit" | "all_except" | "glm_terms"
+  mode: "explicit" | "glm_terms"
   feature_count: number
   detail_state: "available" | "truncated"
   features: TrainFeatureSelectionCollection<string>
@@ -918,6 +918,9 @@ export type {
   MlflowExportReceipt,
   ModelFileExportReceipt,
   TrainExportReceipts,
+  TrainShapBeeswarmFeature,
+  TrainShapCurveFeature,
+  TrainShapCurvePoint,
   TuningReportPayload as TuningReport,
   TuningTrialPayload as TuningTrial,
 } from "../generated/api-contracts.generated"

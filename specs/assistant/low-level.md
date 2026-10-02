@@ -2556,8 +2556,8 @@ fixture for route tests). The implemented coverage is:
   occurrence named like a node inside its definition fails at dry-run, and an
   edge out of Model Training is rejected at dry-run. Malformed and unready nodes fail at
   dry-run with the product's message: `algorithm: "GLM"` with `family: "Poisson"`,
-  `family: "poison"`, `algorithm: "gbm"` and a target listed in `feature_columns` as save
-  validation's 400; an `offset` the input lacks, a GLM with no family and a Load File whose
+  `family: "poison"` and `algorithm: "gbm"` as save validation's 400; an `offset` the input
+  lacks, a GLM with no family, a tree model with no `feature_columns` and a Load File whose
   path does not exist as `node_not_ready`. A valid GLM (`glm`, `poisson`, log link,
   `exposure` offset) applies, and an edit beside a saved empty modelling node applies.
   A plan adding a CSV Data Input with a `;` separator and a schema override, a Transform

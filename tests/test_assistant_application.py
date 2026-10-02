@@ -1530,16 +1530,6 @@ class TestWrittenNodesAreReady:
                 "Unknown algorithm 'gbm'",
                 id="algorithm",
             ),
-            pytest.param(
-                {
-                    "target": "claims",
-                    "algorithm": "catboost",
-                    "loss_function": "Poisson",
-                    "feature_columns": ["age", "claims"],
-                },
-                "Target column 'claims' is also listed in feature_columns",
-                id="target-is-a-feature",
-            ),
         ],
     )
     def test_a_malformed_value_fails_save_validation_at_dry_run(
@@ -1578,6 +1568,17 @@ class TestWrittenNodesAreReady:
                 {**_VALID_GLM, "evaluation": None},
                 "Modelling config has no evaluation object",
                 id="no-evaluation",
+            ),
+            pytest.param(
+                {
+                    "target": "claims",
+                    "algorithm": "catboost",
+                    "loss_function": "Poisson",
+                    "feature_columns": ["claims"],
+                    "evaluation": _VALID_GLM["evaluation"],
+                },
+                "Modelling config has no features",
+                id="tree-no-features",
             ),
         ],
     )

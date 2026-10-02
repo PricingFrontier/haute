@@ -40,6 +40,7 @@ from haute.modelling._evaluation import (
     save_evaluation_report,
     save_evaluation_results,
 )
+from haute.modelling._shap import shap_diagnostics
 from haute.modelling._training_job import (
     TrainResult,
     evaluation_artifact_filenames,
@@ -320,6 +321,26 @@ class _SuccessfulTrainingJob:
         )
 
 
+class _SuccessfulShapTrainingJob(_SuccessfulTrainingJob):
+    """A run whose SHAP views carry nulls: a missing numeric value and a categorical level."""
+
+    def run(self, progress, on_iteration, **kwargs):
+        result = super().run(progress, on_iteration, **kwargs)
+        sample = pl.DataFrame({"x": [1.0, None, 3.0], "region": ["north", None, "north"]})
+        views = shap_diagnostics(
+            np.array([[0.1, 0.2], [0.3, -0.1], [-0.2, 0.2]]), sample, ["x", "region"], ["region"]
+        )
+        return replace(
+            result,
+            features=["x", "region"],
+            cat_features=["region"],
+            shap_summary=views.summary,
+            shap_beeswarm=views.beeswarm,
+            shap_curves=views.curves,
+            shap_link="log",
+        )
+
+
 class _SuccessfulTunedTrainingJob(_SuccessfulTrainingJob):
     def run(self, progress, on_iteration, **kwargs):
         result = super().run(progress, on_iteration, **kwargs)
@@ -471,6 +492,7 @@ def _launch(
             "target": "y",
             "algorithm": "catboost",
             "loss_function": "RMSE",
+            "feature_columns": ["x"],
             "output_dir": str(output_dir),
             "evaluation": _request(tmp_path).payload["job_kwargs"]["evaluation"],
         },
@@ -683,6 +705,33 @@ def test_train_service_publishes_complete_evaluation_run(tmp_path: Path) -> None
         )
     ]
     assert not prepared.exists() and (published / "quoted.cbm").read_bytes() == b"model"
+
+
+def test_train_service_publishes_shap_views_with_their_nulls(tmp_path: Path) -> None:
+    """The worker sends its response without null fields; the published curves keep them."""
+    store = JobStore()
+    service = TrainService(store, protocol_runner=_inline_protocol_runner)
+    with patch("haute.modelling.TrainingJob", _SuccessfulShapTrainingJob):
+        job_id, _prepared = _launch(service, store, tmp_path, tmp_path / "outputs")
+    job = store.require_job(job_id)
+
+    assert job["status"] == "completed", job.get("error")
+    result = job["result"]
+    assert result.shap_link == "log"
+    curves = {curve.feature: curve for curve in result.shap_curves}
+    assert [(point.value, point.low, point.high) for point in curves["x"].points] == [
+        (1.0, 1.0, 1.0),
+        (3.0, 3.0, 3.0),
+        (None, None, None),
+    ]
+    assert [(point.value, point.low, point.high) for point in curves["region"].points] == [
+        ("north", None, None),
+        (None, None, None),
+    ]
+    assert [entry.values for entry in result.shap_beeswarm] == [
+        [1.0, None, 3.0],
+        ["north", None, "north"],
+    ]
 
 
 def test_train_service_publishes_complete_tuned_run_and_terminal_progress(tmp_path: Path) -> None:
@@ -1426,6 +1475,7 @@ def test_completed_job_owns_its_artifact_directory_after_parent_cleanup(
                 "target": "y",
                 "algorithm": "catboost",
                 "loss_function": "RMSE",
+                "feature_columns": ["x"],
                 "evaluation": _request(tmp_path).payload["job_kwargs"]["evaluation"],
             },
             {"iterations": 2},
@@ -1480,6 +1530,7 @@ def _complete_training_job(
                 "target": "y",
                 "algorithm": "catboost",
                 "loss_function": "RMSE",
+                "feature_columns": ["x"],
                 "evaluation": _request(tmp_path).payload["job_kwargs"]["evaluation"],
             },
             {"iterations": 2},
@@ -1621,6 +1672,7 @@ def test_terminal_job_after_preparation_does_not_launch_worker(tmp_path: Path) -
             "target": "y",
             "algorithm": "catboost",
             "loss_function": "RMSE",
+            "feature_columns": ["x"],
             "output_dir": str(tmp_path / "outputs"),
             "evaluation": _request(tmp_path).payload["job_kwargs"]["evaluation"],
         },
@@ -1678,6 +1730,7 @@ def test_train_service_publication_wins_late_cancel_and_records_elapsed(tmp_path
                 "target": "y",
                 "algorithm": "catboost",
                 "loss_function": "RMSE",
+                "feature_columns": ["x"],
                 "output_dir": str(output),
                 "evaluation": _request(tmp_path).payload["job_kwargs"]["evaluation"],
             },
@@ -1720,6 +1773,7 @@ def test_live_training_never_auto_logs(tmp_path: Path) -> None:
                 "target": "y",
                 "algorithm": "catboost",
                 "loss_function": "RMSE",
+                "feature_columns": ["x"],
                 "output_dir": str(output),
                 "evaluation": _request(tmp_path).payload["job_kwargs"]["evaluation"],
                 "mlflow_experiment": "/Shared/x",

@@ -29,6 +29,7 @@ from haute.modelling._algorithm_base import (
     IterationCallback,
 )
 from haute.modelling._native_encoding import encode_frame, fit_categorical_levels
+from haute.modelling._shap import require_feature_order
 
 _META_ATTRIBUTE = "haute"
 _DEFAULT_ROUNDS = 1000
@@ -351,18 +352,16 @@ class XGBoostAlgorithm(BaseAlgorithm):
         ]
         return sorted(rows, key=lambda row: row["importance"], reverse=True)
 
-    def shap_summary(
+    def shap_values(
         self,
         model: Any,
         df: pl.DataFrame,
         features: list[str],
         cat_features: list[str],
-    ) -> list[dict[str, Any]]:
-        """Mean absolute native contribution per feature, largest first."""
-        values = model.contributions(df).values
-        mean_abs = np.abs(values).mean(axis=0) if len(values) else np.zeros(len(features))
-        pairs = sorted(zip(model.features, mean_abs, strict=True), key=lambda x: -x[1])
-        return [{"feature": name, "mean_abs_shap": float(value)} for name, value in pairs]
+    ) -> np.ndarray:
+        """Native contributions for every row of *df*, one column per feature, no bias."""
+        require_feature_order(model.features, features)
+        return np.asarray(model.contributions(df).values, dtype=np.float64)
 
     def save(self, model: Any, path: Path) -> None:
         model.save(path)

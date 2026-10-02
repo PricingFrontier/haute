@@ -10,7 +10,6 @@ from haute.errors import HauteValidationError
 from haute.routes._training_preparation import (
     _glm_training_term_columns,
     _training_required_columns_by_node,
-    _training_sink_exclusions,
     build_training_feature_selection,
     resolve_training_input_schema,
 )
@@ -27,7 +26,6 @@ GLM_CONFIG = {
         "age_sq": {"type": "expression", "expr": "age ** 2"},
     },
     "interactions": [{"factors": ["income", "region"], "include_main": True}],
-    "exclude": ["age"],
 }
 
 
@@ -51,7 +49,7 @@ SCHEMA = {
 }
 
 
-def test_feature_selection_ignores_exclude_and_feature_columns_for_glm():
+def test_feature_selection_ignores_feature_columns_for_glm():
     payload = build_training_feature_selection(
         {**GLM_CONFIG, "feature_columns": ["unused"]}, SCHEMA
     )
@@ -75,10 +73,13 @@ def test_feature_selection_rejects_role_columns_and_unsupported_dtypes():
         build_training_feature_selection(GLM_CONFIG, {**SCHEMA, "region": "Date"})
 
 
-def test_sink_exclusions_are_none_for_glm_and_configured_for_catboost():
-    assert _training_sink_exclusions(GLM_CONFIG) is None
-    assert _training_sink_exclusions({"algorithm": "catboost", "exclude": ["age"]}) == ["age"]
-    assert _training_sink_exclusions({"algorithm": "catboost", "exclude": []}) is None
+def test_catboost_demand_is_its_selected_features_and_role_columns():
+    config = {"algorithm": "catboost", "target": "y", "weight": "w"}
+    assert _training_required_columns_by_node("m1", config) == {"m1": frozenset({"y", "w"})}
+    selected = {**config, "feature_columns": ["age", "y", "region"]}
+    assert _training_required_columns_by_node("m1", selected) == {
+        "m1": frozenset({"age", "region", "y", "w"})
+    }
 
 
 def test_resolve_training_input_schema_reflects_added_renamed_and_dropped_columns(tmp_path):

@@ -20,20 +20,6 @@ from haute.schemas import TrainRequest
 from tests.conftest import make_graph
 
 
-def _all_except_parts(demand: object) -> tuple[frozenset[str], frozenset[str]]:
-    """Return structural AllExcept demand fields without pinning its module."""
-    assert type(demand).__name__ == "AllExcept"
-    required = getattr(demand, "required_columns", None)
-    if required is None:
-        required = getattr(demand, "include_columns", None)
-    excluded = getattr(demand, "exclude_columns", None)
-    if excluded is None:
-        excluded = getattr(demand, "excluded_columns", None)
-    assert required is not None
-    assert excluded is not None
-    return frozenset(required), frozenset(excluded)
-
-
 def _training_request(config: dict[str, Any]) -> TrainRequest:
     graph = make_graph(
         {
@@ -63,8 +49,8 @@ def test_catboost_explicit_feature_columns_yield_exact_training_projection_seed(
         {
             "algorithm": "catboost",
             "target": "claim_count",
-            "feature_columns": ["driver_age", "territory", "vehicle_age"],
-            "exclude": ["policy_id", "debug_payload"],
+            # The weight is listed too: a ticked role column is dormant, not a feature.
+            "feature_columns": ["driver_age", "territory", "vehicle_age", "exposure"],
             "weight": "exposure",
             "offset": "log_exposure",
             "evaluation": {
@@ -94,13 +80,13 @@ def test_catboost_explicit_feature_columns_yield_exact_training_projection_seed(
     }
 
 
-def test_catboost_without_feature_columns_yields_all_except_training_demand() -> None:
+def test_catboost_without_feature_columns_demands_only_its_role_columns() -> None:
+    """Features are opt-in: an unticked node demands no feature, never all-except."""
     demand_by_node = _training_required_columns_by_node(
         "train",
         {
             "algorithm": "catboost",
             "target": "claim_count",
-            "exclude": ["policy_id", "debug_payload"],
             "weight": "exposure",
             "offset": "log_exposure",
             "evaluation": {
@@ -118,32 +104,19 @@ def test_catboost_without_feature_columns_yields_all_except_training_demand() ->
         },
     )
 
-    assert demand_by_node is not None
-    required, excluded = _all_except_parts(demand_by_node["train"])
-    assert required == frozenset(
-        {
-            "claim_count",
-            "exposure",
-            "log_exposure",
-            "quote_date",
-            "fold_id",
-            "quote_id",
-            "customer_id",
-        }
-    )
-    assert excluded == frozenset(
-        {
-            "claim_count",
-            "exposure",
-            "log_exposure",
-            "quote_date",
-            "fold_id",
-            "quote_id",
-            "customer_id",
-            "policy_id",
-            "debug_payload",
-        }
-    )
+    assert demand_by_node == {
+        "train": frozenset(
+            {
+                "claim_count",
+                "exposure",
+                "log_exposure",
+                "quote_date",
+                "fold_id",
+                "quote_id",
+                "customer_id",
+            }
+        )
+    }
 
 
 def test_catboost_schema_derived_features_exclude_metadata_and_keep_categorical_order(
@@ -267,7 +240,6 @@ def test_missing_target_fails_before_training_sink_write(
         _preparation_request(
             body,
             parquet_path,
-            exclude=None,
             keep_columns=["missing_target"],
         )
     )
@@ -311,7 +283,6 @@ def test_missing_explicit_feature_fails_before_training_sink_write(
         _preparation_request(
             body,
             parquet_path,
-            exclude=None,
             keep_columns=["claim_count"],
             required_columns_by_node={
                 "train": frozenset({"claim_count", "driver_age", "missing_feature"})

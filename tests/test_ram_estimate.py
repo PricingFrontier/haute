@@ -50,6 +50,7 @@ from haute._ram_estimate import (
 from haute._types import NodeType
 from haute.errors import ConfigError
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
+from haute.modelling._train_config import TrainingConfigError
 from tests.conftest import build_test_input_snapshot
 
 
@@ -166,6 +167,8 @@ def _make_modelling_node(
     label: str = "model",
     config: dict | None = None,
 ) -> GraphNode:
+    # A GLM keeps every column, so a plain target measures the pipeline's width;
+    # tests of a tree model's feature selection pass their own algorithm.
     return GraphNode(
         id=node_id,
         type="custom",
@@ -173,7 +176,7 @@ def _make_modelling_node(
         data=NodeData(
             label=label,
             nodeType="modelling",
-            config=config or {},
+            config={"algorithm": "glm", **(config or {})},
         ),
     )
 
@@ -755,8 +758,8 @@ class TestEstimateSafeTrainingRows:
         assert result.estimated_bytes > numeric_baseline
         assert result.bytes_per_row > 2 * 8 * 3.0
 
-    def test_excluded_edge_join_key_still_counts_for_pipeline_peak(self, tmp_path) -> None:
-        """Join keys excluded from modelling remain needed during edgeJoin execution."""
+    def test_unselected_edge_join_key_still_counts_for_pipeline_peak(self, tmp_path) -> None:
+        """Join keys a tree model does not train on remain needed during edgeJoin execution."""
         base_path = tmp_path / "base.parquet"
         join_path = tmp_path / "join.parquet"
         rows = 1000
@@ -795,7 +798,13 @@ class TestEstimateSafeTrainingRows:
             },
         )
         joined.data.nodeType = NodeType.EDGE_JOIN
-        target = _make_modelling_node(config={"exclude": ["quote_id"]})
+        target = _make_modelling_node(
+            config={
+                "algorithm": "catboost",
+                "target": "claim_count",
+                "feature_columns": ["premium", "competitor_premium"],
+            }
+        )
         graph = PipelineGraph(
             nodes=[base, join, joined, target],
             edges=[
@@ -934,15 +943,35 @@ class TestEstimateSafeTrainingRows:
         assert result.bytes_per_row is None
         assert result.probe_columns == 0
 
-    def test_string_exclude_config_is_ignored_as_invalid_sequence(self, tmp_path) -> None:
-        """A bare string is not treated as a sequence of excluded column names."""
+    def test_string_feature_columns_fail_loud(self, tmp_path) -> None:
+        """A bare string is not a list of feature names, and is refused."""
         path = tmp_path / "cols.parquet"
         pl.DataFrame({"a": range(20), "b": range(20)}).write_parquet(str(path))
         src = _make_source_node(
             node_type="dataInput",
             config=_ready_file_input_config(path),
         )
-        target = _make_modelling_node(config={"exclude": "a"})
+        target = _make_modelling_node(config={"algorithm": "catboost", "feature_columns": "a"})
+        graph = PipelineGraph(
+            nodes=[src, target],
+            edges=[GraphEdge(id="e1", source=src.id, target=target.id)],
+        )
+
+        with pytest.raises(TrainingConfigError, match="feature_columns must be a list"):
+            estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
+
+    def test_tree_model_counts_only_its_selected_features_and_roles(self, tmp_path) -> None:
+        """Features are opt-in: an unticked column never enters the split or pools."""
+        path = tmp_path / "cols.parquet"
+        frame = pl.DataFrame({"y": range(20), "a": range(20), "b": range(20), "c": range(20)})
+        frame.write_parquet(str(path))
+        src = _make_source_node(
+            node_type="dataInput",
+            config=_ready_file_input_config(path),
+        )
+        target = _make_modelling_node(
+            config={"algorithm": "catboost", "target": "y", "feature_columns": ["a", "y"]}
+        )
         graph = PipelineGraph(
             nodes=[src, target],
             edges=[GraphEdge(id="e1", source=src.id, target=target.id)],
@@ -995,7 +1024,13 @@ class TestEstimateSafeTrainingRows:
             },
         )
         joined.data.nodeType = NodeType.EDGE_JOIN
-        target = _make_modelling_node(config={"exclude": ["quote_id"]})
+        target = _make_modelling_node(
+            config={
+                "algorithm": "catboost",
+                "target": "claim_count",
+                "feature_columns": ["premium", "competitor_premium"],
+            }
+        )
         graph = PipelineGraph(
             nodes=[base, join, joined, target],
             edges=[
@@ -1051,7 +1086,13 @@ class TestEstimateSafeTrainingRows:
             },
         )
         joined.data.nodeType = NodeType.EDGE_JOIN
-        target = _make_modelling_node(config={"exclude": ["quote_id"]})
+        target = _make_modelling_node(
+            config={
+                "algorithm": "catboost",
+                "target": "claim_count",
+                "feature_columns": ["premium", "competitor_premium"],
+            }
+        )
         graph = PipelineGraph(
             nodes=[base, join, joined, target],
             edges=[
@@ -1067,7 +1108,7 @@ class TestEstimateSafeTrainingRows:
         assert result.bytes_per_row == 5 * 8 * 3.0
         assert result.estimated_bytes == _estimate_peak_bytes(rows, 5)
 
-    def test_excluded_coalesce_false_right_key_still_counts_for_pipeline_peak(
+    def test_unselected_coalesce_false_right_key_still_counts_for_pipeline_peak(
         self,
         tmp_path,
     ) -> None:
@@ -1110,7 +1151,13 @@ class TestEstimateSafeTrainingRows:
             },
         )
         joined.data.nodeType = NodeType.EDGE_JOIN
-        target = _make_modelling_node(config={"exclude": ["quote_id", "quote_id_right"]})
+        target = _make_modelling_node(
+            config={
+                "algorithm": "catboost",
+                "target": "claim_count",
+                "feature_columns": ["premium", "competitor_premium"],
+            }
+        )
         graph = PipelineGraph(
             nodes=[base, join, joined, target],
             edges=[

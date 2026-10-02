@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
 
 import numpy as np
 import polars as pl
@@ -31,7 +30,7 @@ from haute.modelling._training_job import TrainingJob, TrainResult
 
 def _stub_optional_catboost_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep training-path tests focused on their contract, not optional charts."""
-    monkeypatch.setattr(CatBoostAlgorithm, "shap_summary", lambda *a, **kw: [])
+    monkeypatch.delattr(CatBoostAlgorithm, "shap_values")
     monkeypatch.setattr(CatBoostAlgorithm, "feature_importance_typed", lambda *a, **kw: [])
     monkeypatch.setattr("haute.modelling._metrics.compute_pdp", lambda *a, **kw: [])
 
@@ -939,11 +938,8 @@ class TestTrainingJob:
             }
         )
         output_dir = tmp_path_factory.mktemp("trainingjob-basic")
-        with (
-            patch.object(CatBoostAlgorithm, "shap_summary", return_value=[]),
-            patch.object(CatBoostAlgorithm, "feature_importance_typed", return_value=[]),
-            patch("haute.modelling._metrics.compute_pdp", return_value=[]),
-        ):
+        with pytest.MonkeyPatch.context() as optional_diagnostics:
+            _stub_optional_catboost_diagnostics(optional_diagnostics)
             job = TrainingJob(
                 name="test_model",
                 data=synth_data,
@@ -1440,21 +1436,13 @@ class TestSHAP:
         )
         return algo, fit_result.model, df
 
-    def test_shap_summary(self, trained_model):
+    def test_shap_values(self, trained_model):
         algo, model, df = trained_model
-        summary = algo.shap_summary(model, df, ["x1", "x2"])
-        assert len(summary) == 2
-        assert "feature" in summary[0]
-        assert "mean_abs_shap" in summary[0]
+        values = algo.shap_values(model, df, ["x1", "x2"])
+        assert values.shape == (df.height, 2)
         # x1 has 2x coefficient so should have higher SHAP
-        x1_shap = next(s for s in summary if s["feature"] == "x1")
-        x2_shap = next(s for s in summary if s["feature"] == "x2")
-        assert x1_shap["mean_abs_shap"] > x2_shap["mean_abs_shap"]
-
-    def test_shap_summary_subsamples(self, trained_model):
-        algo, model, df = trained_model
-        summary = algo.shap_summary(model, df, ["x1", "x2"], max_rows=50)
-        assert len(summary) == 2
+        mean_abs = np.abs(values).mean(axis=0)
+        assert mean_abs[0] > mean_abs[1]
 
     def test_feature_importance_typed(self, trained_model):
         from catboost import Pool
@@ -1467,10 +1455,10 @@ class TestSHAP:
         assert len(loss_imp) == 2
         assert all("feature" in fi and "importance" in fi for fi in loss_imp)
 
-    def test_shap_summary_with_categorical_features(self):
+    def test_shap_values_with_categorical_features(self):
         """SHAP must work when the model was trained with categorical features.
 
-        Regression: shap_summary previously called _build_pool without
+        Regression: SHAP previously called _build_pool without
         cat_features, so CatBoost tried to cast string columns to float
         and raised a Polars casting error.
         """
@@ -1497,13 +1485,11 @@ class TestSHAP:
             task="regression",
         )
 
-        summary = algo.shap_summary(
+        values = algo.shap_values(
             fit_result.model, df, ["cover_type", "x_num"], cat_features=["cover_type"]
         )
-        assert len(summary) == 2
-        shap_features = {s["feature"] for s in summary}
-        assert shap_features == {"cover_type", "x_num"}
-        assert all(s["mean_abs_shap"] >= 0 for s in summary)
+        assert values.shape == (n, 2)
+        assert np.isfinite(values).all()
 
     def test_training_job_shap_with_categorical_features(self, tmp_path):
         """End-to-end: TrainingJob produces SHAP values when data has string columns."""
@@ -1527,6 +1513,17 @@ class TestSHAP:
         assert len(result.shap_summary) == 2
         shap_features = {s["feature"] for s in result.shap_summary}
         assert shap_features == {"cat_col", "num_col"}
+        beeswarm = {entry["feature"]: entry for entry in result.shap_beeswarm}
+        assert [entry["feature"] for entry in result.shap_beeswarm] == [
+            row["feature"] for row in result.shap_summary
+        ]
+        assert beeswarm["cat_col"]["kind"] == "categorical"
+        assert set(beeswarm["cat_col"]["values"]) <= {"a", "b", "c"}
+        assert set(beeswarm["cat_col"]["value_ranks"]) == {None}
+        assert beeswarm["num_col"]["kind"] == "numeric"
+        ranks = beeswarm["num_col"]["value_ranks"]
+        assert min(ranks) == 0.0 and max(ranks) == 1.0
+        assert len(beeswarm["num_col"]["shap_values"]) == len(ranks)
 
     def test_training_job_includes_shap(self, tmp_path):
         rng = np.random.RandomState(42)

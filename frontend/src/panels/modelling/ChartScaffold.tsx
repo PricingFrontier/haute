@@ -269,6 +269,74 @@ export function ChartLegend({ items, compact = false }: ChartLegendProps) {
   )
 }
 
+const VALUE_COLOR_BAR_WIDTH = 8
+
+/**
+ * A vertical colour bar from `lowColor` to `highColor` at `x` from `top` to
+ * `bottom`, captioned High and Low, with `title` rotated beside it.
+ */
+export function ValueColorBar({
+  gradientId,
+  x,
+  top,
+  bottom,
+  title,
+  lowColor,
+  highColor,
+  captionColor,
+  fontSize,
+  testId,
+}: {
+  gradientId: string
+  x: number
+  top: number
+  bottom: number
+  title: string
+  lowColor: string
+  highColor: string
+  captionColor: string
+  fontSize: number
+  testId?: string
+}) {
+  const captionX = x + VALUE_COLOR_BAR_WIDTH + 8
+  const titleX = x + VALUE_COLOR_BAR_WIDTH + 28
+  const titleY = (top + bottom) / 2
+  return (
+    <g>
+      <defs>
+        <linearGradient id={gradientId} x1="0" y1="1" x2="0" y2="0">
+          <stop offset="0%" stopColor={lowColor} />
+          <stop offset="100%" stopColor={highColor} />
+        </linearGradient>
+      </defs>
+      <rect
+        data-testid={testId}
+        x={x}
+        y={top}
+        width={VALUE_COLOR_BAR_WIDTH}
+        height={bottom - top}
+        fill={`url(#${gradientId})`}
+      />
+      <text x={captionX} y={top + 6} fontSize={fontSize} fill={captionColor}>
+        High
+      </text>
+      <text x={captionX} y={bottom + 4} fontSize={fontSize} fill={captionColor}>
+        Low
+      </text>
+      <text
+        x={titleX}
+        y={titleY}
+        fontSize={fontSize}
+        fill={captionColor}
+        textAnchor="middle"
+        transform={`rotate(90 ${titleX} ${titleY})`}
+      >
+        {title}
+      </text>
+    </g>
+  )
+}
+
 /**
  * Horizontal gridlines across the plot with each tick's value to the left of
  * the axis: the value axis every validation chart draws. A linear axis's

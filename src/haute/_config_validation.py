@@ -104,6 +104,9 @@ _REMOVED_REGISTRY_KEYS: dict[NodeType, frozenset[str]] = {
     NodeType.MODELLING: frozenset({"model_name"}),
     NodeType.OPTIMISER: frozenset({"model_name"}),
 }
+_REMOVED_FEATURE_SELECTION_KEYS: dict[NodeType, frozenset[str]] = {
+    NodeType.MODELLING: frozenset({"exclude"}),
+}
 
 
 def reject_removed_config_keys(
@@ -130,6 +133,16 @@ def reject_removed_config_keys(
             f"{nt.value} config contains the removed model_name field. Haute no longer "
             "registers models: remove the field and register or promote runs outside haute.",
             removed_config_keys=removed_registry,
+        )
+    removed_selection = sorted(
+        _REMOVED_FEATURE_SELECTION_KEYS.get(nt, frozenset()).intersection(config)
+    )
+    if removed_selection:
+        raise ConfigError(
+            f"{nt.value} config contains the removed exclude field. Features are opt-in: "
+            "list the columns to train on in feature_columns (tick them on the Features "
+            "pane) and remove exclude.",
+            removed_config_keys=removed_selection,
         )
 
 

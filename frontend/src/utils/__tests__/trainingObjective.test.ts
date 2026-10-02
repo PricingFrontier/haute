@@ -19,35 +19,52 @@ describe("trainingConfigurationIssues", () => {
       "training-target",
       "evaluation-config",
       "catboost-loss-function",
+      "feature-selection",
     ])
   })
 
+  it("reports a tree model with no ticked feature on the Features pane", () => {
+    const base = { algorithm: "catboost", target: "y", loss_function: "RMSE", evaluation }
+    const issues = trainingConfigurationIssues(base)
+    expect(issues).toEqual([{
+      code: "feature-selection",
+      message: "Tick at least one feature on the Features pane.",
+    }])
+    expect(trainingIssuePane(issues[0])).toBe("features")
+    // A ticked column that holds a role is dormant, so it does not count.
+    expect(trainingConfigurationIssues({ ...base, feature_columns: ["y"] }).map((issue) => issue.code))
+      .toEqual(["feature-selection"])
+    expect(trainingConfigurationIssues({ ...base, feature_columns: ["age"] })).toEqual([])
+    // A GLM's features are its terms.
+    expect(trainingConfigurationIssues({ algorithm: "glm" }).map((issue) => issue.code))
+      .not.toContain("feature-selection")
+  })
+
   it.each([1, 2, 0, NaN, Infinity, "1.5"])("rejects invalid CatBoost Tweedie power %s", (variance_power) => {
-    expect(trainingConfigurationIssues({ algorithm: "catboost", target: "y", loss_function: "Tweedie", variance_power, evaluation }))
+    expect(trainingConfigurationIssues({ algorithm: "catboost", target: "y", feature_columns: ["age"], loss_function: "Tweedie", variance_power, evaluation }))
       .toEqual([expect.objectContaining({ code: "catboost-tweedie-variance-power" })])
   })
 
   it.each([0.5, 0.8])("rejects validation plus final test consuming all rows (%s)", (size) => {
-    const issues = trainingConfigurationIssues({ algorithm: "catboost", target: "y", loss_function: "RMSE",
+    const issues = trainingConfigurationIssues({ algorithm: "catboost", target: "y", feature_columns: ["age"], loss_function: "RMSE",
       evaluation: { ...evaluation, validation: { method: "single", size }, test: { size: 0.5 } },
     })
     expect(issues).toEqual([expect.objectContaining({ code: "evaluation-config", message: expect.stringMatching(/below 100%/) })])
   })
 
   it("refuses LightGBM monotonicity under MAE on the Features pane (MOD-F03)", () => {
-    const base = { algorithm: "lightgbm", target: "y", loss_function: "MAE", evaluation }
+    const base = { algorithm: "lightgbm", target: "y", feature_columns: ["age"], loss_function: "MAE", evaluation }
     const issues = trainingConfigurationIssues({ ...base, monotone_constraints: { age: 1 } })
     expect(issues).toEqual([expect.objectContaining({
       code: "monotone-loss",
       message: expect.stringMatching(/LightGBM cannot apply monotonicity constraints with the MAE loss/),
     })])
     expect(trainingIssuePane(issues[0])).toBe("features")
-    // Dormant (excluded) constraints, other losses and other families are fine.
-    expect(trainingConfigurationIssues({ ...base, monotone_constraints: { age: 1 }, exclude: ["age"] })).toEqual([])
-    // Explicit feature_columns override a stale exclusion, as in the backend.
+    // Dormant (unticked or role) constraints, other losses and other families are fine.
+    expect(trainingConfigurationIssues({ ...base, monotone_constraints: { age: 1 }, feature_columns: ["region"] })).toEqual([])
     expect(trainingConfigurationIssues({
-      ...base, monotone_constraints: { age: 1 }, exclude: ["age"], feature_columns: ["age"],
-    }).map((issue) => issue.code)).toEqual(["monotone-loss"])
+      ...base, target: "age", monotone_constraints: { age: 1 }, feature_columns: ["age", "region"],
+    })).toEqual([])
     expect(trainingConfigurationIssues({ ...base, loss_function: "RMSE", monotone_constraints: { age: 1 } })).toEqual([])
     expect(trainingConfigurationIssues({ ...base, algorithm: "catboost", monotone_constraints: { age: 1 } })).toEqual([])
     // XGBoost's absolute-error objective re-fits leaves and breaks the constraint (MOD-F06).
@@ -60,7 +77,7 @@ describe("trainingConfigurationIssues", () => {
   })
 
   it("mirrors the backend's EBM budget and interaction rules (MOD-F04)", () => {
-    const base = { algorithm: "ebm", target: "y", loss_function: "RMSE", evaluation }
+    const base = { algorithm: "ebm", target: "y", feature_columns: ["age"], loss_function: "RMSE", evaluation }
     const codes = (config: Record<string, unknown>) =>
       trainingConfigurationIssues({ ...base, ...config }).map((issue) => [issue.code, trainingIssuePane(issue)])
     expect(codes({ params: { max_rounds: 500, interactions: 5 } })).toEqual([])
@@ -85,6 +102,7 @@ describe("trainingConfigurationIssues", () => {
       trainingConfigurationIssues({
         algorithm: "catboost",
         target: "loss",
+        feature_columns: ["age"],
         loss_function: "Tweedie",
         evaluation,
       }).map((issue) => issue.code),
@@ -209,6 +227,7 @@ describe("trainingConfigurationIssues", () => {
       trainingConfigurationIssues({
         algorithm: "catboost",
         target: "loss",
+        feature_columns: ["age"],
         loss_function: "RMSE",
         metrics: ["gini", "rmse"],
         evaluation,
@@ -240,6 +259,7 @@ describe("trainingConfigurationIssues", () => {
       trainingConfigurationIssues({
         algorithm: "catboost",
         target: "loss",
+        feature_columns: ["age"],
         loss_function: "RMSE",
         evaluation: invalidEvaluation,
       }).map((issue) => issue.code),
@@ -254,6 +274,7 @@ describe("trainingConfigurationIssues", () => {
       trainingConfigurationIssues({
         algorithm: "catboost",
         target: "loss",
+        feature_columns: ["age"],
         loss_function: "RMSE",
         evaluation: zeroSizeEvaluation,
       }).map((issue) => issue.code),
@@ -265,6 +286,7 @@ describe("trainingConfigurationIssues", () => {
       trainingConfigurationIssues({
         algorithm: "catboost",
         target: "loss",
+        feature_columns: ["age"],
         loss_function: "RMSE",
         evaluation: {
           schema_version: 1,

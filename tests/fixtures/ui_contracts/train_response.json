@@ -48,6 +48,64 @@
       "mean_abs_shap": 0.4
     }
   ],
+  "shap_beeswarm": [
+    {
+      "feature": "x",
+      "kind": "numeric",
+      "shap_values": [
+        0.42,
+        -0.18,
+        0.05
+      ],
+      "values": [
+        3.5,
+        1.0,
+        null
+      ],
+      "value_ranks": [
+        1.0,
+        0.0,
+        null
+      ]
+    }
+  ],
+  "shap_curves": [
+    {
+      "feature": "x",
+      "kind": "numeric",
+      "points": [
+        {
+          "value": 1.0,
+          "low": 1.0,
+          "high": 1.0,
+          "rows": 1,
+          "mean_shap": -0.18,
+          "p10_shap": -0.18,
+          "p90_shap": -0.18
+        },
+        {
+          "value": 3.5,
+          "low": 3.5,
+          "high": 3.5,
+          "rows": 1,
+          "mean_shap": 0.42,
+          "p10_shap": 0.42,
+          "p90_shap": 0.42
+        },
+        {
+          "value": null,
+          "low": null,
+          "high": null,
+          "rows": 1,
+          "mean_shap": 0.05,
+          "p10_shap": 0.05,
+          "p90_shap": 0.05
+        }
+      ],
+      "levels_omitted": 0
+    }
+  ],
+  "shap_link": "log",
   "feature_importance_loss": [
     {
       "feature": "x",

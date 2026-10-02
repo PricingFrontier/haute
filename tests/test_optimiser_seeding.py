@@ -245,6 +245,16 @@ def _setup(
 # ---------------------------------------------------------------------------
 
 
+_J_FEATURES = [
+    "quote_id",
+    "scenario_index",
+    "scenario_value",
+    "expected_income",
+    "volume",
+    "territory",
+]
+
+
 def test_optimiser_setup_seeds_training_join(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -256,7 +266,9 @@ def test_optimiser_setup_seeds_training_join(
             ("src", "dataInput", _data_input(project, "quotes.parquet")),
             ("attrs", "dataInput", _data_input(project, "attrs.parquet")),
             ("J", "polars", {"code": "df = src.join(attrs, on='quote_id', validate='m:1')"}),
-            ("train", "modelling", _MODELLING),
+            # Features are opt-in. Training on every column of J besides the
+            # target makes its capture of J cover what the setup reads.
+            ("train", "modelling", {**_MODELLING, "feature_columns": _J_FEATURES}),
             ("opt", "optimiser", _online("J")),
         ],
         [("src", "J"), ("attrs", "J"), ("J", "train"), ("J", "opt")],

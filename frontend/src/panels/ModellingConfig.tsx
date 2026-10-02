@@ -90,10 +90,6 @@ const CATBOOST_DEFAULT_PARAMS: Record<string, unknown> = {
   one_hot_max_size: 10,
 }
 
-const CATBOOST_PARAMETERS_NOTE =
-  "one_hot_max_size: categorical columns with up to this many levels are one-hot encoded; "
-  + "above it CatBoost uses target statistics, which are much slower to train."
-
 const XGBOOST_DEFAULT_PARAMS: Record<string, unknown> = {
   num_boost_round: 1000,
   eta: 0.1,
@@ -570,6 +566,9 @@ export default function ModellingConfig({
           validation_loss_history_truncated: false,
           double_lift: [],
           shap_summary: [],
+          shap_beeswarm: [],
+          shap_curves: [],
+          shap_link: null,
           feature_importance_loss: [],
           ave_per_feature: [],
           residuals_histogram: [],
@@ -701,7 +700,6 @@ export default function ModellingConfig({
           onReviewSplit={() => reviewPane("split")}
           algorithmLabel={algorithmCapability(algorithm)?.label ?? algorithm}
           starterSearchSpace={STARTER_SEARCH_SPACES[algorithm]}
-          parametersNote={algorithm === "catboost" ? CATBOOST_PARAMETERS_NOTE : undefined}
           params={params}
           reservedKeys={reservedParams.keys}
           reservedKeysHelp={reservedParams.help}

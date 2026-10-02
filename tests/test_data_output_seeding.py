@@ -77,10 +77,12 @@ def _graph(project: Path, *, with_training: bool = False) -> dict[str, Any]:
     ]
     edges = [("quotes", "J"), ("claims", "J"), ("J", "B"), ("B", "out")]
     if with_training:
+        # Features are opt-in: training names the columns it reads.
+        train_config = {**_MODELLING, "feature_columns": ["a", "b", "e"]}
         nodes.append(
             {
                 "id": "train",
-                "data": {"label": "train", "nodeType": "modelling", "config": _MODELLING},
+                "data": {"label": "train", "nodeType": "modelling", "config": train_config},
             }
         )
         edges.append(("B", "train"))
@@ -272,9 +274,13 @@ def test_second_data_output_run_seeds_producer(
     assert_frame_equal(_result(project), written, check_row_order=False)
 
 
-def test_data_output_seeds_training_capture(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_training_seeds_data_output_capture_it_cannot_serve(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Data Output runs on the batch source, so the same upstream is a batch
-    # training run.
+    # training run. Training captures only the columns it reads, which never
+    # cover a Data Output's demand for all of B: the write builds B and
+    # captures it in full, and the next training run seeds that capture.
     graph = _graph(project, with_training=True)
     training = _train(monkeypatch, graph, source="batch")
     assert training.captures.get("B") == "published", training.job.get("message")
@@ -283,8 +289,11 @@ def test_data_output_seeds_training_capture(project: Path, monkeypatch: pytest.M
     write = _write(monkeypatch, graph)
 
     assert write.status_code == 200, write.body
-    assert write.seeds == {"B"}
-    assert sum(write.calls.values()) == 0
+    assert write.seeds == set()
+    assert write.captures.get("B") == "published"
+    retrained = _train(monkeypatch, graph, source="batch")
+    assert set(retrained.seeds) == {"B"}
+    assert retrained.calls["B"] == 0
 
 
 def test_in_process_write_seeds_and_captures(

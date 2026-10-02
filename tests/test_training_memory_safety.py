@@ -525,6 +525,7 @@ def test_training_background_memory_limit_sets_typed_terminal_status(
             "train",
             {
                 "target": "target",
+                "feature_columns": ["x"],
                 "loss_function": "RMSE",
                 "output_dir": str(tmp_path / "outputs"),
                 "evaluation": {
@@ -585,6 +586,7 @@ def test_launch_background_reconstructs_child_context_from_admitted_budget(
             {
                 "name": "model",
                 "target": "target",
+                "feature_columns": ["x"],
                 "loss_function": "RMSE",
                 "output_dir": str(tmp_path / "outputs"),
                 "evaluation": {
@@ -639,6 +641,7 @@ def test_launch_background_releases_admission_after_thread_completes(
             {
                 "name": "model",
                 "target": "target",
+                "feature_columns": ["x"],
                 "loss_function": "RMSE",
                 "output_dir": str(tmp_path / "outputs"),
                 "evaluation": {
@@ -694,6 +697,7 @@ def test_launch_background_releases_admission_on_thread_start_failure(
             "train",
             {
                 "target": "target",
+                "feature_columns": ["x"],
                 "loss_function": "RMSE",
                 "output_dir": str(tmp_path / "outputs"),
                 "evaluation": {

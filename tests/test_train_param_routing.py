@@ -45,10 +45,7 @@ _TERMINAL_JOB_STATUSES = {
 @pytest.fixture(autouse=True)
 def _fast_optional_training_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
     """These tests assert param routing and job state, not optional charts."""
-    monkeypatch.setattr(
-        "haute.modelling._algorithms.CatBoostAlgorithm.shap_summary",
-        lambda *a, **kw: [],
-    )
+    monkeypatch.delattr("haute.modelling._algorithms.CatBoostAlgorithm.shap_values")
     monkeypatch.setattr(
         "haute.modelling._algorithms.CatBoostAlgorithm.feature_importance_typed",
         lambda *a, **kw: [],
@@ -214,6 +211,7 @@ class TestCatBoostParamRouting:
             "task": "regression",
             "offset": "exposure",
             "loss_function": "Poisson",
+            "feature_columns": ["x1", "x2"],
             "params": {"iterations": 4, "depth": 2},
             "evaluation": {
                 "schema_version": 1,
@@ -248,6 +246,7 @@ class TestCatBoostParamRouting:
             "loss_function": "RMSE",
             "offset": "exposure",
             "weight": "x2",
+            "feature_columns": ["x1"],
             "params": {"iterations": 4, "depth": 2},
             "evaluation": {
                 "schema_version": 1,
@@ -273,8 +272,7 @@ class TestCatBoostParamRouting:
             "name": "train",  # node id (no explicit config name)
             "target": "claim_count",
             "weight": "x2",
-            "exclude": [],
-            "feature_columns": None,
+            "feature_columns": ["x1"],
             "fold_column": None,
             "id_columns": None,
             "algorithm": "catboost",
@@ -461,6 +459,7 @@ class TestRowLimitDownsample:
             "algorithm": "catboost",
             "task": "regression",
             "loss_function": "RMSE",
+            "feature_columns": ["x"],
             "row_limit": row_limit,
             "params": {"iterations": 4, "depth": 2},
             "evaluation": {

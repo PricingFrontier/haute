@@ -51,6 +51,7 @@ from haute.modelling._evaluation import file_sha256 as evaluation_file_sha256
 from haute.modelling._feature_contract import ModelIdentity
 from haute.modelling._metrics import compute_metrics
 from haute.modelling._model_export import MODEL_FILE_SUFFIXES
+from haute.modelling._shap import shap_diagnostics, shap_sample
 from haute.modelling._split import (
     PARTITION_HOLDOUT,
     PARTITION_TRAIN,
@@ -269,6 +270,12 @@ class TrainResult:
     validation_loss_history: list[dict[str, float]] = field(default_factory=list)
     double_lift: list[dict[str, Any]] = field(default_factory=list)
     shap_summary: list[dict[str, Any]] = field(default_factory=list)
+    #: Per-row SHAP values of the leading sampled rows for the top features.
+    shap_beeswarm: list[dict[str, Any]] = field(default_factory=list)
+    #: Each feature's SHAP statistics per value band or level.
+    shap_curves: list[dict[str, Any]] = field(default_factory=list)
+    #: The link scale SHAP values add up on; None when no SHAP views exist.
+    shap_link: str | None = None
     feature_importance_loss: list[dict[str, Any]] = field(default_factory=list)
     ave_per_feature: list[dict[str, Any]] = field(default_factory=list)
     residuals_histogram: list[dict[str, Any]] = field(default_factory=list)
@@ -356,7 +363,10 @@ class _MetricsResult:
     diagnostics_set: str  # "train" | "validation" | "holdout"
     importance: list[dict[str, Any]]
     double_lift: list[dict[str, Any]]
-    shap_summary: list[dict[str, float]]
+    shap_summary: list[dict[str, Any]]
+    shap_beeswarm: list[dict[str, Any]]
+    shap_curves: list[dict[str, Any]]
+    shap_link: str | None
     feature_importance_loss: list[dict[str, Any]]
     ave_per_feature: list[dict[str, Any]]
     residuals_histogram: list[dict[str, Any]]
@@ -754,6 +764,9 @@ class TrainingJob:
                 loss_history=train_result.fit_result.loss_history,
                 double_lift=metrics_result.double_lift,
                 shap_summary=metrics_result.shap_summary,
+                shap_beeswarm=metrics_result.shap_beeswarm,
+                shap_curves=metrics_result.shap_curves,
+                shap_link=metrics_result.shap_link,
                 feature_importance_loss=metrics_result.feature_importance_loss,
                 ave_per_feature=metrics_result.ave_per_feature,
                 residuals_histogram=metrics_result.residuals_histogram,
@@ -1113,6 +1126,10 @@ class TrainingJob:
         task = "classification" if self.task == "classification" else "regression"
         link = algorithm_descriptor(self.algorithm).native_loss(task, str(loss)).link
         return "log" if link == "log" else "identity"
+
+    def _shap_link(self) -> str:
+        """The scale SHAP values add up on: log-odds for classification, else the offset link."""
+        return "logit" if self.task == "classification" else self._offset_link()
 
     def _require_positive_log_link_offset(
         self,
@@ -2589,12 +2606,29 @@ class TrainingJob:
 
         # SHAP + LossFunctionChange importance (OPTIONAL: failures
         # surface in diagnostics_errors so the UI can flag a degraded run.)
-        shap_summary: list[dict[str, float]] = []
+        shap_summary: list[dict[str, Any]] = []
+        shap_beeswarm: list[dict[str, Any]] = []
+        shap_curves: list[dict[str, Any]] = []
+        shap_link: str | None = None
         feature_importance_loss: list[dict[str, Any]] = []
-        if hasattr(algo, "shap_summary"):
+        if hasattr(algo, "shap_values"):
             _report("Computing SHAP values", 0.85)
             try:
-                shap_summary = algo.shap_summary(model, diag_df, features, cat_features)
+                # One bounded sample for every family; every view or none.
+                shap_rows = shap_sample(diag_df)
+                views = shap_diagnostics(
+                    algo.shap_values(model, shap_rows, features, cat_features),
+                    shap_rows,
+                    features,
+                    cat_features,
+                )
+                del shap_rows
+                shap_link = self._shap_link()
+                shap_summary, shap_beeswarm, shap_curves = (
+                    views.summary,
+                    views.beeswarm,
+                    views.curves,
+                )
             except Exception as exc:
                 _record_diag_error(diagnostics_errors, "shap", exc)
         if hasattr(algo, "feature_importance_typed"):
@@ -2672,6 +2706,9 @@ class TrainingJob:
             importance=importance,
             double_lift=double_lift,
             shap_summary=shap_summary,
+            shap_beeswarm=shap_beeswarm,
+            shap_curves=shap_curves,
+            shap_link=shap_link,
             feature_importance_loss=feature_importance_loss,
             ave_per_feature=ave_per_feature,
             residuals_histogram=residuals_histogram,
@@ -2956,10 +2993,11 @@ class TrainingJob:
             {
                 "target": self.target,
                 "weight": self.weight,
-                "exclude": list(self.exclude),
                 # Empty optional lists hash as ``None``, exactly as the
-                # config builder passes them, so a canvas run and a scripted
-                # run of one configuration share one identity.
+                # config builder passes them (it never passes ``exclude``), so a
+                # canvas run and a scripted run of one configuration share one
+                # identity.
+                "exclude": list(self.exclude) or None,
                 "feature_columns": list(self.feature_columns) or None,
                 "fold_column": self.fold_column,
                 "id_columns": list(self.id_columns) or None,

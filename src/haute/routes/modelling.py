@@ -23,7 +23,7 @@ from haute.modelling._model_export import (
     MODEL_FILE_SUFFIXES,
     resolve_model_export_destination,
 )
-from haute.modelling._train_config import TrainingConfigError
+from haute.modelling._train_config import TrainingConfigError, selected_feature_columns
 from haute.routes._export_receipts import (
     export_receipts,
     mlflow_receipt_for_operation,
@@ -301,12 +301,7 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
         xgboost_gpu or str(node_params.get("task_type", "")).upper() == "GPU"
     ):
         effective_rows = ram_est.total_rows or 0
-        # Feature count = total cols - excluded - target - weight
-        n_excluded = len(node.data.config.get("exclude", []))
-        n_non_feature = n_excluded + 1  # +1 for target
-        if node.data.config.get("weight"):
-            n_non_feature += 1
-        n_features = max(ram_est.probe_columns - n_non_feature, 1)
+        n_features = max(len(selected_feature_columns(node.data.config)), 1)
         vram_check = _check_gpu_vram(
             effective_rows,
             n_features,

@@ -154,7 +154,6 @@ export function makeConfig(
     weight: "",
     task: "regression",
     metrics: ["gini", "rmse"],
-    exclude: [],
     evaluation: {
       schema_version: 1,
       strategy: "random",
@@ -207,6 +206,9 @@ export function makeTrainResult(
     validation_loss_history_truncated: false,
     double_lift: [],
     shap_summary: [],
+    shap_beeswarm: [],
+    shap_curves: [],
+    shap_link: null,
     feature_importance_loss: [],
     ave_per_feature: [],
     residuals_histogram: [],

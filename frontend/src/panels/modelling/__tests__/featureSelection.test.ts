@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   finalSelectedFeatureNames,
+  selectedFeatureColumns,
   roleColumnReasons,
   roleColumns,
   type ModellingColumn,
@@ -70,11 +71,18 @@ describe("feature-selection transitions", () => {
     ).toEqual(new Set(["target", "weight", "offset", "fold", "id", "date"]))
   })
 
-  it("derives the final CatBoost selection from exclusions", () => {
+  it("derives the final CatBoost selection from the ticked features", () => {
     const eligible = columns.filter(({ name }) => ["age", "region"].includes(name))
 
-    expect(finalSelectedFeatureNames({ exclude: ["region"] }, eligible)).toEqual(new Set(["age"]))
-    expect(finalSelectedFeatureNames({}, eligible)).toEqual(new Set(["age", "region"]))
+    expect(finalSelectedFeatureNames({ feature_columns: ["age"] }, eligible)).toEqual(new Set(["age"]))
+    // Features are opt-in: nothing ticked selects nothing.
+    expect(finalSelectedFeatureNames({}, eligible)).toEqual(new Set())
+  })
+
+  it("keeps a ticked role column dormant, as the backend's selected_feature_columns does", () => {
+    expect(selectedFeatureColumns({ target: "age", feature_columns: ["age", "region", "region"] }))
+      .toEqual(["region"])
+    expect(selectedFeatureColumns({ feature_columns: ["age", "region"] })).toEqual(["age", "region"])
   })
 
   it("names each column's modelling role", () => {

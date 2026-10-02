@@ -124,6 +124,7 @@ class TestDoubleStartTraining:
                             "nodeType": "modelling",
                             "config": {
                                 "target": "y",
+                                "feature_columns": ["x"],
                                 "algorithm": "catboost",
                                 "loss_function": "RMSE",
                                 "params": {"iterations": 5},
@@ -163,6 +164,7 @@ class TestDoubleStartTraining:
                             "nodeType": "modelling",
                             "config": {
                                 "target": "y",
+                                "feature_columns": ["x"],
                                 "algorithm": "catboost",
                                 "loss_function": "RMSE",
                                 "params": {"iterations": 5},
@@ -313,6 +315,7 @@ class TestExportScript:
                             "nodeType": "modelling",
                             "config": {
                                 "target": "y",
+                                "feature_columns": ["x"],
                                 "algorithm": "catboost",
                                 "loss_function": "RMSE",
                                 "params": {"iterations": 100},

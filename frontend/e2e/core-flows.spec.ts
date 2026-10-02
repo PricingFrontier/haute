@@ -47,6 +47,7 @@ function addModellingNode(name: string, algorithm: string, params: Record<string
     JSON.stringify({
       name,
       target: "value",
+      feature_columns: ["id", "proposer_age", "channel", "vehicle_age", "mileage"],
       algorithm,
       task: "regression",
       loss_function: "RMSE",
