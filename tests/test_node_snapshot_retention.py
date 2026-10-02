@@ -37,8 +37,8 @@ from haute._node_snapshots import (
 )
 from haute._pipeline_settings import (
     AUTOMATIC_CACHE_SIZE_CEILING_BYTES,
+    SETTINGS_PATH,
     PipelineSettingsError,
-    settings_file,
     update_pipeline_settings,
 )
 from haute._source_cache import (
@@ -638,7 +638,7 @@ def test_the_default_budget_is_the_smaller_of_20_gib_and_a_tenth_of_free_disk(
 
     _budget(tmp_path, 12345)
     assert automatic_capture_budget(store) == 12345
-    settings_file(tmp_path).write_text('{"cache_size_gb": 0}', encoding="utf-8")
+    (tmp_path / SETTINGS_PATH).write_text('{"cache_size_gb": 0}', encoding="utf-8")
     with pytest.raises(PipelineSettingsError, match="cache_size_gb"):
         automatic_capture_budget(store)
 
@@ -663,8 +663,8 @@ def test_a_misconfigured_budget_fails_the_capture_and_releases_its_lease(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = NodeSnapshotStore(tmp_path)
-    settings_file(tmp_path).parent.mkdir(parents=True, exist_ok=True)
-    settings_file(tmp_path).write_text('{"cache_size_gb": "lots"}', encoding="utf-8")
+    (tmp_path / SETTINGS_PATH).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / SETTINGS_PATH).write_text('{"cache_size_gb": "lots"}', encoding="utf-8")
     identity = _slot(tmp_path).identity("s1")
 
     with pytest.raises(PipelineSettingsError, match="cache_size_gb"):

@@ -75,13 +75,13 @@ def test_the_settings_route_refuses_an_invalid_value(client, project: Path, valu
 def test_a_hand_edit_reaches_the_server_at_its_next_admission(project: Path) -> None:
     from haute._execution_admission import create_admitted_execution_context
     from haute._execution_context import ExecutionProfile
-    from haute._pipeline_settings import follow_chunk_rows, settings_file, stop_following_chunk_rows
+    from haute._pipeline_settings import SETTINGS_PATH, follow_chunk_rows, stop_following_chunk_rows
 
     set_streaming_chunk_size(500_000)
     follow_chunk_rows(project)
     try:
-        settings_file(project).parent.mkdir(parents=True, exist_ok=True)
-        settings_file(project).write_text('{"chunk_rows": 77000}', encoding="utf-8")
+        (project / SETTINGS_PATH).parent.mkdir(parents=True, exist_ok=True)
+        (project / SETTINGS_PATH).write_text('{"chunk_rows": 77000}', encoding="utf-8")
         assert current_streaming_chunk_size() == 500_000
 
         context = create_admitted_execution_context(
@@ -95,11 +95,11 @@ def test_a_hand_edit_reaches_the_server_at_its_next_admission(project: Path) -> 
 
 
 def test_a_workers_own_settings_read_never_changes_its_chunk_size(project: Path) -> None:
-    from haute._pipeline_settings import settings_file
+    from haute._pipeline_settings import SETTINGS_PATH
     from haute._worker_isolation import run_isolated_worker
 
-    settings_file(project).parent.mkdir(parents=True, exist_ok=True)
-    settings_file(project).write_text('{"chunk_rows": 3000}', encoding="utf-8")
+    (project / SETTINGS_PATH).parent.mkdir(parents=True, exist_ok=True)
+    (project / SETTINGS_PATH).write_text('{"chunk_rows": 3000}', encoding="utf-8")
     set_streaming_chunk_size(234_000)
 
     assert run_isolated_worker(_read_settings_and_report_chunk_size, str(project)) == 234_000

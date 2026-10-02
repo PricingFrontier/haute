@@ -607,11 +607,11 @@ def test_an_invalid_settings_file_fails_the_job_with_its_message(
     client: TestClient,
     project: Path,
 ) -> None:
-    from haute._pipeline_settings import SETTINGS_PATH, settings_file
+    from haute._pipeline_settings import SETTINGS_PATH
     from haute.routes.node_data import _store
 
     graph = _graph(project)
-    settings = settings_file(project)
+    settings = project / SETTINGS_PATH
     settings.parent.mkdir(parents=True, exist_ok=True)
     settings.write_text('{"preview_memory_gb": 0}', encoding="utf-8")
 

@@ -36,7 +36,7 @@ GIB = 1024**3
 
 
 def _write(root: Path, text: str) -> Path:
-    path = settings_file(root)
+    path = root / SETTINGS_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return path
@@ -162,7 +162,7 @@ def test_a_malformed_file_is_refused_with_a_message_naming_it(
 
 
 def test_a_file_saved_with_a_byte_order_mark_reads(tmp_path: Path) -> None:
-    path = settings_file(tmp_path)
+    path = tmp_path / SETTINGS_PATH
     path.parent.mkdir(parents=True)
     path.write_bytes(b'\xef\xbb\xbf{"caching": false}')
 
