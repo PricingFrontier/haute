@@ -574,6 +574,56 @@ def test_live_rounds_pass_each_fits_first_and_last_and_pace_the_rest(
     assert passed == [1, 2, 6]
 
 
+def test_a_fits_held_back_last_round_is_sent_when_it_finishes() -> None:
+    now = [0.0]
+    sent: list[int] = []
+    reports: list[str] = []
+    rounds = _training_job._FitRounds(
+        _training_job._LiveRounds(clock=lambda: now[0]).fit(),
+        lambda iteration, *_: sent.append(iteration),
+        lambda message, _fraction: reports.append(message),
+        span=(0.3, 0.7),
+        check_cancelled=None,
+        execution_context=None,
+    )
+    # Early stopping ends the fit at round 4 of 10, inside one paced second.
+    for iteration in range(1, 5):
+        rounds(iteration, 10, {}, {"iteration": float(iteration)})
+    assert sent == [1]
+    rounds.finish()
+    assert sent == [1, 4]
+    assert reports[-1] == "Iteration 4 of 10"
+    rounds.finish()
+    assert sent == [1, 4]
+
+
+def test_an_early_stopped_fit_ends_its_live_curve_where_it_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HAUTE_MEM_LOG", str(tmp_path / "training_mem.log"))
+    monkeypatch.setenv("HAUTE_TRAINING_THREADS", "1")
+    job = TrainingJob(
+        name="early",
+        # A target the feature cannot predict, so validation loss soon stops improving.
+        data=pl.DataFrame({"y": [(i * 7919) % 101 / 100 for i in range(60)], "feature": range(60)}),
+        target="y",
+        output_dir=str(tmp_path),
+        metrics=["rmse"],
+        params={"iterations": 300, "depth": 2, "learning_rate": 0.5, "early_stopping_rounds": 3},
+        evaluation=evaluation(validation={"method": "single", "size": 0.3}),
+    )
+    rows: list[dict[str, float]] = []
+    result = job.run(on_iteration=lambda _i, _t, _m, row: row is not None and rows.append(row))
+
+    starts = [index for index, row in enumerate(rows) if row["iteration"] == 1]
+    assert len(starts) == 2, "The validation fit and the refit each stream a curve"
+    validation_rows, final_rows = rows[: starts[1]], rows[starts[1] :]
+    validation_last = result.validation_loss_history[-1]["iteration"]
+    assert validation_last < 300, "The validation fit stopped early"
+    assert validation_rows[-1]["iteration"] == validation_last
+    assert final_rows[-1]["iteration"] == result.loss_history[-1]["iteration"]
+
+
 @pytest.mark.parametrize(
     "validation",
     [{"method": "single", "size": 0.2}, {"method": "cross_validation", "fold_count": 2}],

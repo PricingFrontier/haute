@@ -247,6 +247,73 @@ class _LiveRounds:
         return due
 
 
+class _FitRounds:
+    """One fit's per-round callback.
+
+    Every round checks for cancellation; a round its gate passes reports
+    "Iteration i of n" across *span* of the fit's progress and hands the round's
+    loss row to *on_iteration*, so each fit draws its own live curve. `finish`
+    sends the fit's last round when the gate held it back, as when early
+    stopping ends the fit before its round budget.
+    """
+
+    def __init__(
+        self,
+        due: Callable[[int, int], bool],
+        on_iteration: IterationCallback | None,
+        report: Callable[[str, float], None],
+        *,
+        span: tuple[float, float],
+        check_cancelled: Callable[[], None] | None,
+        execution_context: ExecutionContext | None,
+    ) -> None:
+        self._due = due
+        self._on_iteration = on_iteration
+        self._report = report
+        self._span = span
+        self._check_cancelled = check_cancelled
+        self._execution_context = execution_context
+        self._held: tuple[int, int, dict[str, float], dict[str, float] | None] | None = None
+
+    def __call__(
+        self,
+        iteration: int,
+        total: int,
+        metrics: dict[str, float],
+        history_row: dict[str, float] | None,
+    ) -> None:
+        if self._check_cancelled is not None:
+            self._check_cancelled()
+        _training_checkpoint(self._execution_context, label="training_round")
+        if self._due(iteration, total):
+            self._held = None
+            self._send(iteration, total, metrics, history_row)
+        else:
+            self._held = (iteration, total, metrics, history_row)
+
+    def finish(self) -> None:
+        """Send the fit's last round if the gate held it back."""
+        if self._held is not None:
+            held, self._held = self._held, None
+            self._send(*held)
+
+    def _send(
+        self,
+        iteration: int,
+        total: int,
+        metrics: dict[str, float],
+        history_row: dict[str, float] | None,
+    ) -> None:
+        start, end = self._span
+        if total > 0:
+            self._report(
+                f"Iteration {iteration} of {total}",
+                start + (end - start) * min(iteration / total, 1.0),
+            )
+        if self._on_iteration is not None:
+            self._on_iteration(iteration, total, metrics, history_row)
+
+
 def _training_streaming_collect(
     lf: pl.LazyFrame,
     *,
@@ -758,24 +825,27 @@ class TrainingJob:
             _checkpoint()
 
             _report("Training model", 0.2)
+            rounds = (
+                self._round_callback(
+                    on_iteration,
+                    _report,
+                    span=(0.3, 0.7),
+                    check_cancelled=check_cancelled,
+                    execution_context=execution_context,
+                )
+                if on_iteration is not None or progress is not None
+                else None
+            )
             train_result = self._train_model(
                 split_result,
                 prepared.features,
                 prepared.cat_features,
-                (
-                    self._round_callback(
-                        on_iteration,
-                        _report,
-                        span=(0.3, 0.7),
-                        check_cancelled=check_cancelled,
-                        execution_context=execution_context,
-                    )
-                    if on_iteration is not None or progress is not None
-                    else None
-                ),
+                rounds,
                 _report,
                 execution_context=execution_context,
             )
+            if rounds is not None:
+                rounds.finish()
             _checkpoint()
 
             _report("Evaluating model", 0.7)
@@ -988,36 +1058,16 @@ class TrainingJob:
         span: tuple[float, float],
         check_cancelled: Callable[[], None] | None,
         execution_context: ExecutionContext | None,
-    ) -> IterationCallback:
-        """One fit's per-round callback.
-
-        Every round checks for cancellation; the paced ones report the round
-        across *span* of the fit's progress and pass the round's loss row to
-        *on_iteration*, so each fit draws its own live curve.
-        """
-        due = self._live_rounds.fit()
-        start, end = span
-
-        def round_done(
-            iteration: int,
-            total: int,
-            metrics: dict[str, float],
-            history_row: dict[str, float] | None,
-        ) -> None:
-            if check_cancelled is not None:
-                check_cancelled()
-            _training_checkpoint(execution_context, label="training_round")
-            if not due(iteration, total):
-                return
-            if total > 0:
-                report(
-                    f"Iteration {iteration} of {total}",
-                    start + (end - start) * min(iteration / total, 1.0),
-                )
-            if on_iteration is not None:
-                on_iteration(iteration, total, metrics, history_row)
-
-        return round_done
+    ) -> _FitRounds:
+        """One fit's per-round callback, paced by the run's live rounds."""
+        return _FitRounds(
+            self._live_rounds.fit(),
+            on_iteration,
+            report,
+            span=span,
+            check_cancelled=check_cancelled,
+            execution_context=execution_context,
+        )
 
     def _prepare_fit_features(
         self,
@@ -1279,27 +1329,30 @@ class TrainingJob:
             prepared = self._prepare_fit_features(prepared, report)
             split_result = self._split_data(prepared, report, execution_context=execution_context)
 
+            rounds = (
+                self._round_callback(
+                    on_iteration,
+                    report,
+                    span=(0.3, 0.8),
+                    check_cancelled=check_cancelled,
+                    execution_context=execution_context,
+                )
+                if progress is not None
+                or on_iteration is not None
+                or check_cancelled is not None
+                or execution_context is not None
+                else None
+            )
             trained = self._train_model(
                 split_result,
                 prepared.features,
                 prepared.cat_features,
-                (
-                    self._round_callback(
-                        on_iteration,
-                        report,
-                        span=(0.3, 0.8),
-                        check_cancelled=check_cancelled,
-                        execution_context=execution_context,
-                    )
-                    if progress is not None
-                    or on_iteration is not None
-                    or check_cancelled is not None
-                    or execution_context is not None
-                    else None
-                ),
+                rounds,
                 report,
                 execution_context=execution_context,
             )
+            if rounds is not None:
+                rounds.finish()
             report("Evaluating validation predictions", 0.85)
             validation = self._read_partition(
                 split_result.split_path,

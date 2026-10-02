@@ -122,8 +122,10 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   and tuning trial fit, then the final fit), paced by the run's `_LiveRounds`: a fit's
   first and last rounds always pass, the rounds between at most once a second until the
   run has spent 3,000 of them, keeping the run inside the worker's progress-event limit.
-  Each fit's per-round callback checks cancellation every round and, on a paced round,
-  reports "Iteration i of n" across its training span before forwarding the row. The
+  Each fit's per-round callback (`_FitRounds`) checks cancellation every round and, on a
+  paced round, reports "Iteration i of n" across its training span before forwarding the
+  row; when the fit returns, `finish` sends a last round the pacing held back, so a fit
+  that early stopping ends before its budget still ends its live curve there. The
   job's live `train_loss_history` holds the current fit: a row whose iteration does not
   follow the last starts a new history, and `_append_live_loss_row` keeps the first row
   of each of fewer than `HAUTE_TRAIN_LOSS_HISTORY_LIMIT` (default 200) even buckets of

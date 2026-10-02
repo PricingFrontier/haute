@@ -83,6 +83,37 @@ describe("LossChart", () => {
     expect(container.textContent).toContain("500")
   })
 
+  it("keeps a negative loss and zero inside the loss axis", () => {
+    const data: LossEntry[] = [
+      { iteration: 1, train_poisson: -1.0 },
+      { iteration: 5, train_poisson: -1.5 },
+    ]
+    const { container } = render(<LossChart lossHistory={data} totalIterations={10} />)
+    const labels = [...container.querySelectorAll("svg text")].map((text) => text.textContent)
+    expect(labels.slice(0, 2)).toEqual(["0", "-1.65"])
+    const ys = [...container.querySelector("svg path")!.getAttribute("d")!.matchAll(/,([-\d.]+)/g)]
+      .map((m) => Number(m[1]))
+    const [, baseline] = container.querySelectorAll("svg line")
+    const [axis] = container.querySelectorAll("svg line")
+    const plotTop = Number(axis.getAttribute("y1")), plotBottom = Number(axis.getAttribute("y2"))
+    expect(Number(baseline.getAttribute("y1"))).toBe(plotTop)
+    ys.forEach((y) => expect(y >= plotTop && y <= plotBottom).toBe(true))
+  })
+
+  it("keeps the fit's peak on the axis when thinning drops it from the rows", () => {
+    const first = { iteration: 1, train_rmse: 1.0 }
+    const { container, rerender } = render(
+      <LossChart lossHistory={[first, { iteration: 500, train_rmse: 2.0 }]} totalIterations={1000} />,
+    )
+    const top = () => container.querySelector("svg text")!.textContent
+    expect(top()).toBe("2.2")
+    rerender(<LossChart lossHistory={[first, { iteration: 600, train_rmse: 0.8 }]} totalIterations={1000} />)
+    expect(top()).toBe("2.2")
+    // The next fit starts its own axis.
+    rerender(<LossChart lossHistory={[{ iteration: 1, train_rmse: 0.5 }]} totalIterations={1000} />)
+    expect(top()).toBe("0.55")
+  })
+
   it("widens the loss axis when a later value outgrows the start", () => {
     const data: LossEntry[] = [
       { iteration: 1, train_rmse: 1.0, eval_rmse: 1.0 },
