@@ -7,11 +7,11 @@ You have tabular data you want to bring into your pipeline  - historical policie
     - Bringing in reference data to join with your quotes (e.g. postcode lookups, external scores).
     - Use [Quote Input](quote-input.md) instead when building the live API entry point.
 
-A Data Input has no inputs and one output: the data it reads. Its panel has three tabs: **CONFIG**, where you choose the source, **POLARS** and **COLUMNS**.
+A Data Input has no inputs and one output: the data it reads. Its panel has three tabs: **CONFIG**, where you choose the source, **TRANSFORM** and **COLUMNS**.
 
 ## The CONFIG tab
 
-**PROVIDER**, at the top, chooses where the data comes from: **File**, **Database**, **Lakehouse**, **Databricks** or **Inline**. A new node starts on **File** with the **Parquet** format. Choosing another provider starts that provider's settings afresh; the node's steps or code on the **POLARS** tab and its **COLUMNS** selection are kept.
+**PROVIDER**, at the top, chooses where the data comes from: **File**, **Database**, **Lakehouse**, **Databricks** or **Inline**. A new node starts on **File** with the **Parquet** format. Choosing another provider starts that provider's settings afresh; the node's steps or code on the **TRANSFORM** tab and its **COLUMNS** selection are kept.
 
 The fields below **PROVIDER** depend on the provider. A field marked **\*** is required.
 
@@ -66,9 +66,9 @@ Every provider's fields end with **ARGUMENTS**: extra keyword arguments for the 
 
 A **CONFIGURATION ERRORS** box at the top of the fields lists anything in the node's settings that the tab cannot use, such as "Select a valid format for this provider." or "Databricks batch_size must be a positive integer."
 
-## The POLARS tab
+## The TRANSFORM tab
 
-See [Polars](polars.md#building-the-node-from-steps).
+See [Transform](transform.md#building-the-node-from-steps).
 
 ## The COLUMNS tab
 
@@ -107,7 +107,7 @@ A Databricks table:
     A **CREDENTIAL-FREE URI** must not contain a user name, password or secret query parameter. Put a URI with credentials in an environment variable and give that variable's name as the **CONNECTION ENVIRONMENT REFERENCE**.
 
 ??? note "In the pipeline file"
-    The node's settings are stored in a JSON sidecar, `config/data_input/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.data_input(config="config/data_input/<node name>.json")`. Steps on the **POLARS** tab are stored in the sidecar as `steps`, and the code they generate is the body of the node's function, which takes the loaded data as `df`; after **Switch to code**, the body is your code.
+    The node's settings are stored in a JSON sidecar, `config/data_input/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.data_input(config="config/data_input/<node name>.json")`. Steps on the **TRANSFORM** tab are stored in the sidecar as `steps`, and the code they generate is the body of the node's function, which takes the loaded data as `df`; after **Switch to code**, the body is your code.
 
     | Setting in the editor | Stored as |
     |---|---|
@@ -122,7 +122,7 @@ A Databricks table:
     | **SELECT CLAUSE** | `query` (absent when empty) |
     | **RECORDS** | `records`: a list of row objects |
     | **ARGUMENTS** | `arguments`: an object of argument names and values |
-    | **POLARS** tab | `steps`, or the function body after **Switch to code** |
+    | **TRANSFORM** tab | `steps`, or the function body after **Switch to code** |
     | **COLUMNS** tab | `selected_columns` |
 
     The formats each provider accepts:
@@ -136,4 +136,4 @@ A Databricks table:
 
     With no editor control: `mode`, for file, lakehouse and inline sources, is `"scan"` (lazy) or `"read"` (eager). Choosing a format sets it to the format's usual mode, and a format offers only the modes Polars supports for it. A parquet file with `mode` `"read"` is copied into a snapshot like the other sources. Database and Databricks inputs have no `mode`.
 
-**See also:** [Polars](polars.md) for steps and code. Sharing pipelines across operating systems, WSL, or network mounts? See [Filesystem Portability](../filesystem-portability.md).
+**See also:** [Transform](transform.md) for steps and code. Sharing pipelines across operating systems, WSL, or network mounts? See [Filesystem Portability](../filesystem-portability.md).

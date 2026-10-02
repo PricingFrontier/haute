@@ -5,7 +5,7 @@ Haute wrote this block from the saved project after the changes above were saved
 - Base revision: `<revision-3>`
 
 ### Changed nodes
-- `add_features` (Polars) "Add features", stepped
+- `add_features` (Transform) "Add features", stepped
   - step "start" source reads ["policies"]
   - step "logic" free_code "Flag drivers under 25"
   - input `policies` from `policies`: ["policy_id", "driver_age", "vehicle_group", "region", "exposure"]

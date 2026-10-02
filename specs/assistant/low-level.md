@@ -972,7 +972,7 @@ the turn that follows.
    types), so a model editing structured steps reads them on demand; nested
    expression shapes are not enumerated there. The mutation paragraph states one
    authoring rule for new Polars logic, derived from `STEPPED_NODE_TYPES` and the
-   palette names: steps with a free-code card, the Polars (Transform) form
+   palette names: steps with a free-code card, the Transform form
    `[source, free_code]` and the `[free_code]` form for every other stepped
    surface, each spelled as `new_logic_steps` renders it with the example code
    and `<edge name>` standing for the name of the input that becomes `df`,

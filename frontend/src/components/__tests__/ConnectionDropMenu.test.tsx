@@ -28,7 +28,7 @@ describe("ConnectionDropMenu", () => {
       "Edge Join",
       "Source Switch",
       "Data Output",
-      "Polars",
+      "Transform",
       "Expander",
       "Banding",
       "Rating Step",
@@ -83,7 +83,7 @@ describe("ConnectionDropMenu", () => {
   it("closes on Escape and on a mousedown outside the menu, but not inside it", () => {
     const { onClose } = renderMenu()
 
-    fireEvent.mouseDown(screen.getByRole("menuitem", { name: "Polars" }))
+    fireEvent.mouseDown(screen.getByRole("menuitem", { name: "Transform" }))
     expect(onClose).not.toHaveBeenCalled()
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" })
     expect(onClose).toHaveBeenCalledTimes(1)

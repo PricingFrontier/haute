@@ -18,7 +18,7 @@ Column value profiles are not permitted. When your code compares a column to a l
 
 ### Graph brief
 Each node: id, palette name, label and authoring state; then each step's id and kind; then each input's name, source and columns, and its output columns. Change an existing step list with `edit_steps`, by step id.
-- `add_features` (Polars) "Add features", stepped
+- `add_features` (Transform) "Add features", stepped
   - step "start" source reads ["policies"]
   - step "logic" free_code "Flag drivers under 25"
   - input `policies` from `policies`: ["policy_id", "driver_age", "vehicle_group", "region", "exposure"]

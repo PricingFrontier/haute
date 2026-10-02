@@ -1454,7 +1454,7 @@ class TestFriendlyError:
         exc = type("CatBoostError", (Exception,), {})("NaN values in features")
         result = _friendly_error(exc)
         assert "NaN" in result or "nan" in result.lower()
-        assert "polars" in result.lower()
+        assert "transform node" in result.lower()
 
     def test_catboost_feature_mismatch(self):
         exc = type("CatBoostError", (Exception,), {})("feature number mismatch: expected 10 got 8")
@@ -1529,7 +1529,7 @@ class TestFriendlyError:
         exc = type("CatBoostError", (Exception,), {})("Found inf in column 3")
         result = _friendly_error(exc)
         assert "infinite" in result.lower() or "inf" in result.lower()
-        assert "polars" in result.lower()
+        assert "transform node" in result.lower()
 
     def test_empty_exception_message(self):
         exc = RuntimeError("")

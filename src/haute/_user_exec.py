@@ -63,7 +63,7 @@ def _exec_user_code(
                 local_ns[orig] = local_ns[inst]
     if not alias_first_input_as_df and "df" in local_ns:
         raise ExecutionError(
-            "The input name 'df' conflicts with the reserved output name for polars node "
+            "The input name 'df' conflicts with the reserved output name in a Transform's "
             "code. Rename the upstream node or frame so the transform can assign its result "
             "to 'df'."
         )

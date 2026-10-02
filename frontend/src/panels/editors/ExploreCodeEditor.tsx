@@ -2,7 +2,7 @@ import SteppedCodePane from "./shared/SteppedCodePane"
 import type { InputSource, OnReplaceConfig, OnUpdateConfig } from "./_shared"
 
 /**
- * Explore's "Polars Code" pane: the shared stepped-code pane in `frame` mode.
+ * Explore's "Transform" pane: the shared stepped-code pane in `frame` mode.
  * Codegen binds the single input as `df`, so the steps see only that frame
  * and may not reference inputs; their list travels in the decorator beside
  * the node's pivots and charts.

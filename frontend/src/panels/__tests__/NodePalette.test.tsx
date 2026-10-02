@@ -15,7 +15,7 @@ describe("NodePalette", () => {
     render(<NodePalette />)
     expect(screen.getByText("Quote Input")).toBeInTheDocument()
     expect(screen.getByText("Data Input")).toBeInTheDocument()
-    expect(screen.getByText("Polars")).toBeInTheDocument()
+    expect(screen.getByText("Transform")).toBeInTheDocument()
     expect(screen.getByText("Quote Response")).toBeInTheDocument()
     expect(screen.getByText("Model Scoring")).toBeInTheDocument()
     expect(screen.getByText("Banding")).toBeInTheDocument()
@@ -52,7 +52,7 @@ describe("NodePalette", () => {
 
   it("sets drag data on drag start for non-disabled items", () => {
     render(<NodePalette />)
-    const transformItem = screen.getByText("Polars").closest("[draggable]")!
+    const transformItem = screen.getByText("Transform").closest("[draggable]")!
     const setData = vi.fn()
     fireEvent.dragStart(transformItem, {
       dataTransfer: { setData, effectAllowed: "" },
@@ -71,7 +71,7 @@ describe("NodePalette", () => {
     const expectedNames = [
       "Quote Input", "Source Switch", "Quote Response",
       "Data Input", "Data Output", "Load File", "Constant",
-      "Polars", "Expander", "Banding", "Rating Step", "Explore",
+      "Transform", "Expander", "Banding", "Rating Step", "Explore",
       "Model Training", "Model Scoring",
       "Optimisation", "Apply Optimisation",
     ]
@@ -106,7 +106,7 @@ describe("NodePalette", () => {
 
   it("sets effectAllowed to move on drag start", () => {
     render(<NodePalette />)
-    const transformItem = screen.getByText("Polars").closest("[draggable]")!
+    const transformItem = screen.getByText("Transform").closest("[draggable]")!
     const dataTransfer = { setData: vi.fn(), effectAllowed: "" }
     fireEvent.dragStart(transformItem, { dataTransfer })
     expect(dataTransfer.effectAllowed).toBe("move")

@@ -42,7 +42,7 @@ const NO_READ_ONLY_EDITOR = new Set<string>([
 ])
 
 const EXPLORE_PANES = [
-  { key: "code", label: "Polars Code" },
+  { key: "code", label: "Transform" },
   { key: "overview", label: "Overview" },
   { key: "pivots", label: "Pivots" },
   { key: "charts", label: "Charts" },

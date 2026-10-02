@@ -83,7 +83,7 @@ test.describe("Explore cached field pivot journey", () => {
 
     await namedExploreNode.click()
     await expect(page.getByTestId("node-panel")).toBeVisible()
-    await page.getByRole("tab", { name: "Polars Code", exact: true }).click()
+    await page.getByRole("tab", { name: "Transform", exact: true }).click()
     // A new Explore node starts in step mode, so its Polars code is authored
     // as a Free code step: the step builder is the default authoring surface
     // on every Polars surface, and the switch to code is one way.
@@ -233,7 +233,7 @@ test.describe("Explore cached field pivot journey", () => {
 
     await namedExploreNode.click()
     await expect(page.getByTestId("node-panel")).toBeVisible()
-    await page.getByRole("tab", { name: "Polars Code", exact: true }).click()
+    await page.getByRole("tab", { name: "Transform", exact: true }).click()
     // A new Explore node starts in step mode, so its Polars code is authored
     // as a Free code step: the step builder is the default authoring surface
     // on every Polars surface, and the switch to code is one way.
@@ -349,7 +349,7 @@ test.describe("Explore cached field pivot journey", () => {
 
     await namedExploreNode.click()
     await expect(page.getByTestId("node-panel")).toBeVisible()
-    await page.getByRole("tab", { name: "Polars Code", exact: true }).click()
+    await page.getByRole("tab", { name: "Transform", exact: true }).click()
     // A new Explore node starts in step mode, so its Polars code is authored
     // as a Free code step: the step builder is the default authoring surface
     // on every Polars surface, and the switch to code is one way.
@@ -374,7 +374,7 @@ test.describe("Explore cached field pivot journey", () => {
     await expect(exploreData(page)).toHaveAttribute("data-availability", "current", { timeout: 60_000 })
 
     // Edit Explore Polars code to raise
-    await page.getByTestId("node-panel").getByRole("tab", { name: "Polars Code", exact: true }).click()
+    await page.getByTestId("node-panel").getByRole("tab", { name: "Transform", exact: true }).click()
     // The reloaded step list opens with its cards collapsed, so the Free code
     // card is expanded before its editor can be typed into.
     const freeCodeCard = page.getByRole("button", { name: "Step 1: Free code", exact: true })

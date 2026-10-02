@@ -192,7 +192,7 @@ EXPRESSION_GRAMMAR = (
     "Supported forms: 'x ** n', 'x + y', 'x - y', 'x * y', 'x / y' (y a column or a "
     "number), or a bare column 'x'. Columns must be named with letters, digits, and "
     "underscores, starting with a letter or underscore. Compute log and other "
-    "transforms in an upstream Polars node."
+    "transforms in an upstream Transform node."
 )
 _EXPRESSION_RE = re.compile(r"^\s*(\w+)\s*(?:(\*\*|[+\-*/])\s*([0-9]+\.[0-9]+|\w+))?\s*$")
 _NUMBER_RE = re.compile(r"[0-9]+(?:\.[0-9]+)?")

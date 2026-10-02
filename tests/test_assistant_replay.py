@@ -537,7 +537,7 @@ async def test_the_first_request_carries_the_columns_the_first_dry_run_reads(
     assert provider.first_messages is not None
     user, context = provider.first_messages
     assert (user["role"], context["role"]) == ("user", "context")
-    assert "- `quotes` (Polars)" in context["content"]
+    assert "- `quotes` (Transform)" in context["content"]
     assert '"driver_age"' in context["content"]
 
 

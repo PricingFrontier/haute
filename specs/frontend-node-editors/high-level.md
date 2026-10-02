@@ -231,7 +231,7 @@ backend API modules own validation and persistence.
   opening either pane later does the same for stale or missing source results. Pivot and Chart
   name/appearance edits reuse retained data and rerender immediately without calculation. There
   is no separate `Update preview` or routine manual refresh step.
-- The Explore node pane strip is ordered Polars Code, Overview, Pivots, Charts, Export.
+- The Explore node pane strip is ordered Transform, Overview, Pivots, Charts, Export.
   Relationships is not exposed as an Explore pane. Pivots hosts its card workflow in that
   position, and its selection is remembered independently per Explore node like the other panes.
 - The Edge Join editor presents the canvas-bound dominant/base and joining roles as fixed
@@ -283,7 +283,7 @@ backend API modules own validation and persistence.
   Input uses `tables`. Editors do not detect, upgrade, or mirror historical
   working-copy formats.
 
-**Transform step builder.** A Transform node's config tab is labelled "Polars" (its config is
+**Transform step builder.** A Transform node's config tab is labelled "Transform" (its config is
 its steps or code). A new Transform node starts in step mode: its default config
 carries an empty `steps` list, and the editor renders the step builder instead of the code
 box whenever `config.steps` is a list. The builder shows a fixed start-from input selector,
@@ -551,9 +551,9 @@ executor would refuse: while that list is empty the `Add step` chooser withholds
 and concat and keeps group by, pivot and unpivot. A frame-mode step list starts its
 column suggestions from the pane's code columns (below). An empty frame-mode list renders to empty code, so
 the confirmed switch to code on an empty list writes empty code, and the node behaves
-exactly as with an empty code box until a step is added. Every Polars tab (Data Input,
-External File, Scenario Expander, Rating Step, Model Score) and Explore's own "Polars
-Code" pane mount this pane in `frame` mode, with the surface's eligible input names from the shared table: every connected
+exactly as with an empty code box until a step is added. Every Transform tab (Data Input,
+External File, Scenario Expander, Rating Step, Model Score) and Explore's own "Transform"
+pane mount this pane in `frame` mode, with the surface's eligible input names from the shared table: every connected
 input for an External File (whose free code still reaches `obj`, as the tab's code hint
 says), none for the others. A new node of each of these types starts in step mode with
 an empty list, and changing a Data Input's provider or format keeps its steps as it

@@ -145,7 +145,7 @@ test.describe("Transform step builder journey", () => {
     await page.getByTestId("node-palette-item-polars").dragTo(canvas, {
       targetPosition: { x: 250, y: 150 },
     })
-    const newNode = page.getByLabel(/Polars node: Polars/i)
+    const newNode = page.getByLabel(/Transform node: Transform/i)
     await expect(newNode).toBeVisible()
     await newNode.click()
     const panel = page.getByTestId("node-panel")
@@ -158,7 +158,7 @@ test.describe("Transform step builder journey", () => {
     await page.getByTestId("node-panel-close").click()
 
     // Connecting the only input seeds the start step and renders `df = raw_rows`.
-    const stepsNode = page.getByLabel(/Polars node: browser_steps/i)
+    const stepsNode = page.getByLabel(/Transform node: browser_steps/i)
     await expect(stepsNode).toBeVisible()
     await connect(
       page,
@@ -230,7 +230,7 @@ test.describe("Transform step builder journey", () => {
     // Reopening parses the sidecar back into the same step cards.
     await page.reload()
     await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
-    await page.getByLabel(/Polars node: browser_steps/i).click()
+    await page.getByLabel(/Transform node: browser_steps/i).click()
     await expect(panel).toBeVisible()
     await expect(panel.getByRole("button", { name: "Step 1: Limit rows", exact: true })).toBeVisible()
     await expect(panel.getByTestId("polars-generated-code")).toContainText("df = df.head(3)")
@@ -268,7 +268,7 @@ test.describe("Transform step builder journey", () => {
     await page.getByRole("button", { name: /Data Input node: stepped_in/i }).click()
     const panel = page.getByTestId("node-panel")
     await expect(panel).toBeVisible()
-    await panel.getByRole("button", { name: /^polars$/i }).click()
+    await panel.getByRole("button", { name: /^transform$/i }).click()
     const editor = panel.getByTestId("polars-steps-editor")
     await expect(editor).toBeVisible()
     await expect(editor.getByText("Start from")).toHaveCount(0)
@@ -310,7 +310,7 @@ test.describe("Transform step builder journey", () => {
     await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
     await page.getByRole("button", { name: /Data Input node: stepped_in/i }).click()
     await expect(panel).toBeVisible()
-    await panel.getByRole("button", { name: /^polars$/i }).click()
+    await panel.getByRole("button", { name: /^transform$/i }).click()
     await expect(panel.getByRole("button", { name: "Step 1: Limit rows", exact: true })).toBeVisible()
     await expect(panel.getByTestId("polars-generated-code")).toContainText("df = df.head(2)")
   })
@@ -350,7 +350,7 @@ test.describe("Transform step builder journey", () => {
     await page.getByRole("button", { name: /Rating Step node: browser_rating/i }).click()
     const panel = page.getByTestId("node-panel")
     await expect(panel).toBeVisible()
-    await panel.getByRole("button", { name: /^polars$/i }).click()
+    await panel.getByRole("button", { name: /^transform$/i }).click()
     const editor = await addLimitStep(panel, 2)
     await editor.getByRole("button", { name: "Add step" }).click()
     await expect(
@@ -379,7 +379,7 @@ test.describe("Transform step builder journey", () => {
     await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
     await page.getByRole("button", { name: /Rating Step node: browser_rating/i }).click()
     await expect(panel).toBeVisible()
-    await panel.getByRole("button", { name: /^polars$/i }).click()
+    await panel.getByRole("button", { name: /^transform$/i }).click()
     await expect(panel.getByRole("button", { name: "Step 1: Limit rows", exact: true })).toBeVisible()
     await expect(panel.getByTestId("polars-generated-code")).toContainText("df = df.head(2)")
   })
@@ -407,7 +407,7 @@ test.describe("Transform step builder journey", () => {
     const panel = page.getByTestId("node-panel")
     await expect(panel).toBeVisible()
     await recorded
-    await panel.getByRole("button", { name: /^polars$/i }).click()
+    await panel.getByRole("button", { name: /^transform$/i }).click()
 
     // Pausing past the editor's commit debounce on every key commits each
     // half-typed edit, which clears the node's recorded columns until the
@@ -457,7 +457,7 @@ test.describe("Transform step builder journey", () => {
     await gridNode.click()
     const panel = page.getByTestId("node-panel")
     await expect(panel).toBeVisible()
-    await panel.getByRole("button", { name: /^polars$/i }).click()
+    await panel.getByRole("button", { name: /^transform$/i }).click()
     await addLimitStep(panel, 4)
 
     await page.getByRole("button", { name: "Refresh" }).click()
@@ -480,7 +480,7 @@ test.describe("Transform step builder journey", () => {
     await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
     await page.getByLabel(/Expander node: browser_grid/i).click()
     await expect(panel).toBeVisible()
-    await panel.getByRole("button", { name: /^polars$/i }).click()
+    await panel.getByRole("button", { name: /^transform$/i }).click()
     await expect(panel.getByRole("button", { name: "Step 1: Limit rows", exact: true })).toBeVisible()
   })
 
@@ -514,7 +514,7 @@ test.describe("Transform step builder journey", () => {
     await externalNode.click()
     const panel = page.getByTestId("node-panel")
     await expect(panel).toBeVisible()
-    await panel.getByRole("button", { name: /^polars$/i }).click()
+    await panel.getByRole("button", { name: /^transform$/i }).click()
     const editor = panel.getByTestId("polars-steps-editor")
     await expect(editor).toBeVisible()
     await editor.getByRole("button", { name: "Add step" }).click()
@@ -542,7 +542,7 @@ test.describe("Transform step builder journey", () => {
     await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
     await page.getByLabel(/Load File node: browser_external/i).click()
     await expect(panel).toBeVisible()
-    await panel.getByRole("button", { name: /^polars$/i }).click()
+    await panel.getByRole("button", { name: /^transform$/i }).click()
     await expect(panel.getByRole("button", { name: "Step 1: Limit rows", exact: true })).toBeVisible()
   })
 })

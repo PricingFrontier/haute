@@ -72,9 +72,9 @@ a missing offset column the model was trained with, features in a different orde
 training, or a numeric column where the model expects a categorical one fails with an error
 listing what is wrong, rather than predicting from mismatched data.
 
-## The POLARS tab
+## The TRANSFORM tab
 
-See [Polars](polars.md#building-the-node-from-steps).
+See [Transform](transform.md#building-the-node-from-steps).
 
 ## The COLUMNS tab
 
@@ -96,7 +96,7 @@ The preview shows your input rows with a new `predicted_frequency` column.
 Instances let you reuse the same scoring configuration with different inputs  - for example, scoring the same model against both training and validation data. See [Instances](instances.md) for full details.
 
 ??? note "In the pipeline file"
-    The node's settings are stored in a JSON sidecar, `config/model_scoring/<node name>.json`, which the pipeline's `.py` file names in the node's decorator: `@pipeline.model_score(config="config/model_scoring/<node name>.json")`. When the node has **POLARS** steps, their generated code is the body of the node's function, which receives the scored frame as `df`.
+    The node's settings are stored in a JSON sidecar, `config/model_scoring/<node name>.json`, which the pipeline's `.py` file names in the node's decorator: `@pipeline.model_score(config="config/model_scoring/<node name>.json")`. When the node has **TRANSFORM** steps, their generated code is the body of the node's function, which receives the scored frame as `df`.
 
     | Setting in the editor | Stored as |
     |---|---|
@@ -109,7 +109,7 @@ Instances let you reuse the same scoring configuration with different inputs  - 
     | **ARTIFACT PATH** | `artifact_path` |
     | **TASK** | `task`: `"regression"` or `"classification"` |
     | **OUTPUT COLUMN** | `output_column` (defaults to `"prediction"`) |
-    | **POLARS** tab | `steps` in the sidecar; their generated code in the function body |
+    | **TRANSFORM** tab | `steps` in the sidecar; their generated code in the function body |
     | **COLUMNS** tab | `selected_columns` |
 
     These keys have no editor control:

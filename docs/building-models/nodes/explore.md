@@ -9,11 +9,11 @@ You want to understand a dataset before you model or rate it  - how many rows, w
 
 This node takes a single input and has no output: it is a terminal, analysis-only branch. Connect it to the step you want to inspect.
 
-The node's panel splits its settings into panes, **POLARS CODE**, **OVERVIEW**, **PIVOTS** and **CHARTS**, described below in that order. The results appear in the node's own preview under the canvas (see [The preview](#the-preview)). The node has no **COLUMNS** tab.
+The node's panel splits its settings into panes, **TRANSFORM**, **OVERVIEW**, **PIVOTS** and **CHARTS**, described below in that order. The results appear in the node's own preview under the canvas (see [The preview](#the-preview)). The node has no **COLUMNS** tab.
 
-## The POLARS CODE pane
+## The TRANSFORM pane
 
-See [Polars](polars.md#building-the-node-from-steps).
+See [Transform](transform.md#building-the-node-from-steps).
 
 ## The OVERVIEW pane
 
@@ -104,11 +104,11 @@ Checking claim frequency by area:
 4. Click **Refresh** on the preview. The preview's **OVERVIEW** shows the two cards, and its **PIVOTS** shows the table with a frequency for each area.
 
 ??? note "In the pipeline file"
-    The node's settings are stored as arguments of its decorator in the pipeline's `.py` file, `@pipeline.explore(...)`; it has no JSON sidecar. When the node has **POLARS CODE** steps, their generated code is the body of the node's function, which receives the input as `df`.
+    The node's settings are stored as arguments of its decorator in the pipeline's `.py` file, `@pipeline.explore(...)`; it has no JSON sidecar. When the node has **TRANSFORM** steps, their generated code is the body of the node's function, which receives the input as `df`.
 
     | Setting in the editor | Stored as |
     |---|---|
-    | **POLARS CODE** steps | `steps`, a decorator argument; their generated code in the function body |
+    | **TRANSFORM** steps | `steps`, a decorator argument; their generated code in the function body |
     | **OVERVIEW** cards | `overview`: `dataset_snapshot`, `data_quality`, `numeric_summary`, `categorical_summary` and `schema`, each `true` when switched on (an off card is left out) |
     | **PIVOTS** | `pivots`: each pivot with its filter, column, row and value placements, sorting, formatting and totals |
     | **FORMULAS** | `pivot_formulas`: the node's shared library of calculated fields |
@@ -122,4 +122,4 @@ Checking claim frequency by area:
 
 **See also:**
 
-- [Polars](polars.md)  - shaping the data you explore
+- [Transform](transform.md)  - shaping the data you explore

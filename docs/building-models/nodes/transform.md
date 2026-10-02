@@ -1,4 +1,4 @@
-# Polars
+# Transform
 
 This is the general-purpose node for shaping your data. Joining two datasets, calculating a new column, filtering rows - if there isn't a specialised node for it, you do it here, as a list of steps or as Polars code. This is the node you'll use most often.
 
@@ -7,11 +7,11 @@ This is the general-purpose node for shaping your data. Joining two datasets, ca
     - Creating derived columns (age from date of birth, vehicle age from year of manufacture).
     - Filtering or reshaping data in ways the specialised nodes don't cover.
 
-A Polars node takes any number of inputs and has one output. Each connection brings in the upstream node's data under the upstream node's name (a [Quote Input](quote-input.md) table arrives under its label, and a [submodel](submodel.md) output under its port's name). The panel has two tabs: **POLARS**, where you build the node, and **COLUMNS**.
+A Transform node takes any number of inputs and has one output. Each connection brings in the upstream node's data under the upstream node's name (a [Quote Input](quote-input.md) table arrives under its label, and a [submodel](submodel.md) output under its port's name). The panel has two tabs: **TRANSFORM**, where you build the node, and **COLUMNS**.
 
 ## Building the node from steps
 
-The **POLARS** tab is the step builder. You build the node as a list of steps named in plain English, and Haute turns them into Polars code. The same builder is on the **POLARS** tab of the [Data Input](data-input.md), [Load File](external-file.md), [Rating Step](rating-step.md), [Expander](scenario-expander.md) and [Model Scoring](model-score.md) nodes, and in the **POLARS CODE** pane of an [Explore](explore.md) node; [Steps on other nodes](#steps-on-other-nodes) says what differs there.
+The **TRANSFORM** tab is the step builder. You build the node as a list of steps named in plain English, and Haute turns them into Polars code. The same builder is on the **TRANSFORM** tab of the [Data Input](data-input.md), [Load File](external-file.md), [Rating Step](rating-step.md), [Expander](scenario-expander.md) and [Model Scoring](model-score.md) nodes, and in the **TRANSFORM** pane of an [Explore](explore.md) node; [Steps on other nodes](#steps-on-other-nodes) says what differs there.
 
 From top to bottom, the tab shows the node's inputs, the **STEPS** (a **Start from** card, then one card per step), the **Add step** button and the **Generated code** panel.
 
@@ -124,7 +124,7 @@ The button is disabled while the steps are being turned into code, and while a s
 
 ### Steps on other nodes
 
-On the **POLARS** tab of a Data Input, Load File, Rating Step, Expander or Model Scoring node (and in Explore's **POLARS CODE** pane), the steps start from a table the node already holds in `df` - the loaded data, the rated data, and so on:
+On the **TRANSFORM** tab of a Data Input, Load File, Rating Step, Expander or Model Scoring node (and in Explore's **TRANSFORM** pane), the steps start from a table the node already holds in `df` - the loaded data, the rated data, and so on:
 
 - There is no **Start from** card, and the cards are numbered from 1.
 - **Join another input** and **Append inputs** are offered only on a Load File node, whose other inputs the steps can name. On the other nodes the steps see only `df`.
@@ -140,17 +140,17 @@ What `df` holds on each node, and the hint its tab shows:
 | [Rating Step](rating-step.md) | The rated data | "use df for rated data" |
 | [Expander](scenario-expander.md) | The expanded data | "use df for expanded data" |
 | [Model Scoring](model-score.md) | The scored data, with the prediction in the node's output column | "Post-processing Code (optional)" |
-| [Explore](explore.md) (**POLARS CODE** pane) | The node's input | "assign to df" |
+| [Explore](explore.md) (**TRANSFORM** pane) | The node's input | "assign to df" |
 
-Steps on these nodes do what a Polars node straight after them would do. Use them to shape the data where the node produces it, such as filtering a Data Input's rows as they load or deriving `expected_claims` from a prediction; use a Polars node when the work combines several inputs.
+Steps on these nodes do what a Transform node straight after them would do. Use them to shape the data where the node produces it, such as filtering a Data Input's rows as they load or deriving `expected_claims` from a prediction; use a Transform node when the work combines several inputs.
 
 ## Writing the node as code
 
-After **Switch to code**, the **POLARS** tab holds a code box, **POLARS CODE**, instead of the steps. The hint beside the label reads "use input names, assign to df" ("assign to df" when nothing is connected):
+After **Switch to code**, the **TRANSFORM** tab holds a code box, **POLARS CODE**, instead of the steps. The hint beside the label reads "use input names, assign to df" ("assign to df" when nothing is connected):
 
 - Each input is available by the name of the node it came from. For example, if you connect a node called `policies`, you reference it as `policies` in your code.
 - `df` is not an input - it's the variable your code must assign its result to (reading `df` before assigning it is an error). Haute passes whatever `df` holds to the next node, so do not end your code with `return df`: Haute adds that line itself, and shows it dimmed under the code box.
-- The code box suggests column names inside quotes: the inputs' columns, then the columns the node produced in its last preview, including the ones your code creates. On the **POLARS** tab of another node these include what the node adds, such as a Model Scoring node's prediction column. A column your code renames or drops is suggested under the name the preview showed.
+- The code box suggests column names inside quotes: the inputs' columns, then the columns the node produced in its last preview, including the ones your code creates. On the **TRANSFORM** tab of another node these include what the node adds, such as a Model Scoring node's prediction column. A column your code renames or drops is suggested under the name the preview showed.
 - After a failed run, the code box highlights the line that failed.
 
 ```python
@@ -221,7 +221,7 @@ If you have the same logic applied to different inputs, you don't need to duplic
 
 A node that adds each policy's loss ratio, from two inputs called `policies` and `claims`:
 
-1. Connect `policies` and `claims` to a new Polars node. Its **POLARS** tab lists both under **INPUTS**.
+1. Connect `policies` and `claims` to a new Transform node. Its **TRANSFORM** tab lists both under **INPUTS**.
 2. In **Start from**, choose `policies`.
 3. Click **Add step**, type `join` and press **Enter** to add **Join another input**. Choose **left: every row here, with matches added**, join `claims`, and under **Match on** pick `policy_id` = `policy_id`.
 4. Click **Add step** and choose **Add column**. Type `loss_ratio` as the **Column name**, leave **Computed as** on **Formula**, and type `claim_amount / premium`.
@@ -246,14 +246,14 @@ df = df.with_columns(
     You can save a node whose steps are not finished; saving warns which step is incomplete. Running the pipeline then stops at that node with "This node's steps are incomplete. Complete or remove them before running." A node with no starting input and no code stops with "This transform has no code yet. Add code that defines what it returns."
 
 !!! note "Hand edits to the pipeline file"
-    The steps and the code in the `.py` file must agree. If the node's function body is edited by hand so that it no longer matches its steps, Haute keeps the code and drops the steps when it loads the pipeline, and the **POLARS** tab says "Steps were discarded because the function body no longer matches the rendered steps."
+    The steps and the code in the `.py` file must agree. If the node's function body is edited by hand so that it no longer matches its steps, Haute keeps the code and drops the steps when it loads the pipeline, and the **TRANSFORM** tab says "Steps were discarded because the function body no longer matches the rendered steps."
 
 ??? note "In the pipeline file"
-    A Polars node is a function in the pipeline's `.py` file, decorated with `@pipeline.polars`. Its parameters are the node's inputs, and its body is the node's code followed by the `return df` Haute adds. While the node is built from steps, the steps are stored in a JSON sidecar, `config/polars/<node name>.json`, which the decorator names with `config=`, and the body is the code they generate. After **Switch to code** the node has no sidecar and the body is your code.
+    A Transform node is a function in the pipeline's `.py` file, decorated with `@pipeline.polars`. Its parameters are the node's inputs, and its body is the node's code followed by the `return df` Haute adds. While the node is built from steps, the steps are stored in a JSON sidecar, `config/polars/<node name>.json`, which the decorator names with `config=`, and the body is the code they generate. After **Switch to code** the node has no sidecar and the body is your code.
 
     | Setting in the editor | Stored as |
     |---|---|
-    | The steps on the **POLARS** tab | `steps` in the sidecar: a list with one object per card, each with an `id` and a `kind` (`"source"` for **Start from**, then `"filter"`, `"with_column"`, `"join"`, `"free_code"` and so on) and the card's fields |
+    | The steps on the **TRANSFORM** tab | `steps` in the sidecar: a list with one object per card, each with an `id` and a `kind` (`"source"` for **Start from**, then `"filter"`, `"with_column"`, `"join"`, `"free_code"` and so on) and the card's fields |
     | The code, after **Switch to code** | the function body (`code` in the node's configuration) |
     | **COLUMNS** tab | `selected_columns`, a decorator argument: the columns passed on (absent passes every column) |
 

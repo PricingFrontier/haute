@@ -817,10 +817,10 @@ class TestChangeCard:
             (node.id, node.type, node.change, node.steps, node.fields)
             for node in change.changes.nodes
         ] == [
-            ("features", "Polars", "added", ["source", "free_code"], []),
+            ("features", "Transform", "added", ["source", "free_code"], []),
             ("bands", "Banding", "added", None, []),
             ("rated", "Rating Step", "added", [], []),
-            ("priced", "Polars", "added", ["source", "free_code"], []),
+            ("priced", "Transform", "added", ["source", "free_code"], []),
         ]
         assert [(edge.source, edge.target) for edge in change.changes.edges_added] == [
             ("bands", "rated"),

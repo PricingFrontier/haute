@@ -176,7 +176,7 @@ _DISPLAY_NAMES: dict[NodeType, str] = {
     NodeType.API_INPUT: "Quote Input",
     NodeType.DATA_INPUT: "Data Input",
     NodeType.DATA_OUTPUT: "Data Output",
-    NodeType.POLARS: "Polars",
+    NodeType.POLARS: "Transform",
     NodeType.EDGE_JOIN: "Edge Join",
     NodeType.MODEL_SCORE: "Model Scoring",
     NodeType.BANDING: "Banding",

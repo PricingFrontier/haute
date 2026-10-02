@@ -611,7 +611,7 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> NodeSource:
             code = ""
     if code and ("df" in source_names or "df" in logical_source_names):
         raise ConfigError(
-            "Polars input name 'df' conflicts with the reserved output name; rename the "
+            "Transform input name 'df' conflicts with the reserved output name; rename the "
             "upstream node or frame.",
             node_id=node.id,
             node_label=node.data.label,

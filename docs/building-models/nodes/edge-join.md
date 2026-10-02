@@ -1,6 +1,6 @@
 # Edge Join
 
-An Edge Join is a compact node for joining another dataframe into an existing flow. It is useful when you want to enrich the table already travelling along a connection without adding a Polars node.
+An Edge Join is a compact node for joining another dataframe into an existing flow. It is useful when you want to enrich the table already travelling along a connection without adding a Transform node.
 
 !!! info "When to use"
     - Adding external scores, lookup columns, or reference data to an existing dataframe.
@@ -55,7 +55,7 @@ Supported join types are `inner`, `left`, `right`, `full`, `semi`, `anti`, and `
 
 A key box lists columns once the inputs have been previewed, and is a text box before that. A key that is empty, or no longer among the input's columns ("Missing column (…)"), is outlined in red.
 
-For bespoke joins, expression-based keys, or custom post-processing, use a normal [Polars](polars.md) node before or after the Edge Join.
+For bespoke joins, expression-based keys, or custom post-processing, use a normal [Transform](transform.md) node before or after the Edge Join.
 
 ## The COLUMNS tab
 
@@ -126,5 +126,5 @@ If the scores table calls the key `id` instead, choose **Paired base/join keys**
 
     Input roles live only on the connections. A `baseInput`, `joinInput`, `base_input` or `join_input` setting or decorator argument is rejected: those removed role fields have no compatibility path.
 
-**See also:** [Polars](polars.md) for custom dataframe logic and
+**See also:** [Transform](transform.md) for custom dataframe logic and
 [Execution Strategy](../execution-strategy.md) for planning diagnostics.

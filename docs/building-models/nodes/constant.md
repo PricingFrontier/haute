@@ -30,13 +30,13 @@ The **COLUMNS** tab chooses which of the constants the node passes on (see [Work
 The Constant node produces a single-row table. To give every row of your main data access to every constant, cross-join the two:
 
 - **With an [Edge Join](edge-join.md)**: drag the Constant's output onto the connection that carries your data, then set **JOIN TYPE** to **Cross**.
-- **In a [Polars](polars.md) node**: connect both, start from your data and add a **Join another input** step that joins the Constant's input with **cross: every combination of rows**. Then add steps that use the constants, such as an **Add column** step that multiplies `base_premium` by `expense_loading`.
+- **In a [Transform](transform.md) node**: connect both, start from your data and add a **Join another input** step that joins the Constant's input with **cross: every combination of rows**. Then add steps that use the constants, such as an **Add column** step that multiplies `base_premium` by `expense_loading`.
 
 ## Example
 
 1. Add a Constant node called `params`. Change the first row to `expense_loading` = `1.15`.
 2. Click **Add value** twice and fill in `tax_rate` = `0.12` and `min_premium` = `250`.
-3. Connect `params` and your data, `quotes`, to a Polars node. **Start from** `quotes`, add **Join another input** with **cross: every combination of rows** and `params`, then add **Add column** with **Column name** `loaded_premium` and the formula `base_premium * expense_loading`.
+3. Connect `params` and your data, `quotes`, to a Transform node. **Start from** `quotes`, add **Join another input** with **cross: every combination of rows** and `params`, then add **Add column** with **Column name** `loaded_premium` and the formula `base_premium * expense_loading`.
 
 The Constant's preview is one row:
 
@@ -46,7 +46,7 @@ The Constant's preview is one row:
 | 1.15            | 0.12     | 250.0       |
 ```
 
-and the Polars node's **Generated code** panel shows:
+and the Transform node's **Generated code** panel shows:
 
 ```python
 df = quotes
@@ -57,7 +57,7 @@ df = df.with_columns(
 ```
 
 !!! note "Dates"
-    Values are stored as text and turned into numbers where possible. For dates, type them as text (e.g. `2025-01-01`) and convert them in a downstream Polars node if needed, for example with a **Change types** step to **Date (date)**.
+    Values are stored as text and turned into numbers where possible. For dates, type them as text (e.g. `2025-01-01`) and convert them in a downstream Transform node if needed, for example with a **Change types** step to **Date (date)**.
 
 ??? note "In the pipeline file"
     The node's settings are stored in a JSON sidecar, `config/constant/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.constant(config="config/constant/<node name>.json")`.
@@ -79,5 +79,5 @@ df = df.with_columns(
 
 **See also:**
 
-- [Edge Join](edge-join.md)  - to join the constants onto your data without a Polars node
-- [Polars](polars.md)  - for calculations that use the constants
+- [Edge Join](edge-join.md)  - to join the constants onto your data without a Transform node
+- [Transform](transform.md)  - for calculations that use the constants

@@ -110,7 +110,7 @@ nav:
         - Data Input: building-models/nodes/data-input.md
         - Constant: building-models/nodes/constant.md
       - Transforms:
-        - Polars: building-models/nodes/polars.md
+        - Transform: building-models/nodes/transform.md
         - Edge Join: building-models/nodes/edge-join.md
         - Banding: building-models/nodes/banding.md
         - Rating Step: building-models/nodes/rating-step.md

@@ -25,7 +25,7 @@ Haute matches the original's inputs to the instance's inputs by exact name first
 
 ## Example
 
-Suppose you have a Polars node called `clean_policies` that normalises column names. It starts from its input `policies` and has one **Rename columns** step (`Date_Of_Birth` to `date_of_birth`, `Post_Code` to `postcode`).
+Suppose you have a Transform node called `clean_policies` that normalises column names. It starts from its input `policies` and has one **Rename columns** step (`Date_Of_Birth` to `date_of_birth`, `Post_Code` to `postcode`).
 
 You want to apply the same cleaning to a different dataset called `claims_data`. Instead of duplicating the node:
 
@@ -56,5 +56,5 @@ Every node type can have instances except Quote Input, Quote Response and Source
 
 **See also:**
 
-- [Polars](polars.md)  - the most common node type to create instances of
+- [Transform](transform.md)  - the most common node type to create instances of
 - [Model Scoring](model-score.md)  - reuse scoring configuration with different data

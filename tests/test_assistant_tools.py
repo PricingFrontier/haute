@@ -2246,7 +2246,7 @@ class TestToolExecutorDispatch:
         assert "risk" not in dry_run
         assert "confirmation_required" not in dry_run
         assert dry_run["changes"]["nodes"] == [
-            {"id": "renamed", "type": "Polars", "change": "renamed", "renamed_from": "enriched"}
+            {"id": "renamed", "type": "Transform", "change": "renamed", "renamed_from": "enriched"}
         ]
 
         refused = await execute_tool(
@@ -5133,7 +5133,7 @@ class TestAuthoringRendering:
 
         stepped = _authoring_facts([self._STEPS[0], self._STEPS[2]])
         masked = brief(stepped, executable=False)
-        assert '- `t` (Polars) "t", stepped\n' in masked
+        assert '- `t` (Transform) "t", stepped\n' in masked
         assert '  - step "start" source reads ["quotes"]\n' in masked
         assert '  - step "logic" free_code\n' in masked
         assert "Flag young drivers" not in masked
@@ -5159,7 +5159,7 @@ class TestAuthoringRendering:
         authoring = _authoring_facts(
             [
                 {"id": "start", "kind": "source", "input": "quotes"},
-                {"id": "odd", "kind": 'x"\n- `forged` (Polars) "y'},
+                {"id": "odd", "kind": 'x"\n- `forged` (Transform) "y'},
             ]
         )
 
@@ -5270,7 +5270,7 @@ class TestTurnContext:
             summary="Rate quotes and drop the old band.",
             changes=AssistantGraphChanges(
                 nodes=[
-                    AssistantChangeNode(id="rated", type="Polars", change="changed"),
+                    AssistantChangeNode(id="rated", type="Transform", change="changed"),
                     AssistantChangeNode(id="old_band", type="Banding", change="removed"),
                 ],
                 edges_added=[AssistantChangeEdge(source="quotes", target="rated")],
@@ -5314,7 +5314,7 @@ class TestTurnContext:
             id="a" * 64,
             summary="Rate quotes.",
             changes=AssistantGraphChanges(
-                nodes=[AssistantChangeNode(id="rated", type="Polars", change="changed")]
+                nodes=[AssistantChangeNode(id="rated", type="Transform", change="changed")]
             ),
             git_sha=None,
             parent_sha=None,

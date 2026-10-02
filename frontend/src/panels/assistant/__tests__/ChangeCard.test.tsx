@@ -38,7 +38,7 @@ beforeEach(() => {
 
 function chip(node: Partial<AssistantChangeNode> & Pick<AssistantChangeNode, "id">): AssistantChangeNode {
   return {
-    type: "Polars",
+    type: "Transform",
     change: "added",
     renamed_from: null,
     fields: [],
@@ -96,11 +96,11 @@ describe("change card", () => {
       "changed",
       "removed",
     ])
-    expect(chips[0]).toHaveTextContent("Added features Polars")
+    expect(chips[0]).toHaveTextContent("Added features Transform")
     expect(chips[0]).toHaveTextContent("Steps: source, free code")
     expect(chips[1]).toHaveTextContent("Changed bands Banding")
     expect(chips[1]).toHaveTextContent("Changed: factors, selected columns")
-    expect(chips[2]).toHaveTextContent("Renamed premium Polars from priced")
+    expect(chips[2]).toHaveTextContent("Renamed premium Transform from priced")
     expect(chips[3]).toHaveTextContent("Steps: source, free code, free code (1 step changed)")
     expect(chips[4]).toHaveTextContent("Removed old_rates Constant")
 

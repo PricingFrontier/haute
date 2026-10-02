@@ -416,7 +416,7 @@ record from what was saved: the actual semantic diff, the graph before the plan 
 graph reparsed after the save. It holds its id, the hash of the plan it saved (a plan
 applies once, so the id names one change); the plan's summary and assumptions (below); one
 chip per node the plan added, changed, removed or renamed, naming the node, its palette
-type name (for example "Polars" or "Banding"), what happened to it, the earlier name of
+type name (for example "Transform" or "Banding"), what happened to it, the earlier name of
 a renamed node, the configuration fields it changed in plain words derived from their keys
 (`outputColumn` reads "output column"), and for a stepped node the kinds of its steps after
 the save and how many steps the plan changed; the edges added and removed; whether the

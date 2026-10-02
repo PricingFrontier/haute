@@ -178,7 +178,7 @@ export function columnIssue(column: string, context: ColumnContext): string | nu
 export const EXPRESSION_GRAMMAR =
   "Supported forms: x ** n, x + y, x - y, x * y, x / y (y a column or a number), or a bare column x. " +
   "Columns must be named with letters, digits, and underscores, starting with a letter or underscore. " +
-  "Compute log and other transforms in an upstream Polars node."
+  "Compute log and other transforms in an upstream Transform node."
 
 const EXPRESSION_RE = /^\s*([\p{L}\p{N}_]+)\s*(?:(\*\*|[+\-*/])\s*([0-9]+\.[0-9]+|[\p{L}\p{N}_]+))?\s*$/u
 const IDENTIFIER_RE = /^[\p{L}_][\p{L}\p{N}_]*$/u

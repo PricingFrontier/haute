@@ -43,7 +43,7 @@ Each submodel's definition lives in its own `modules/<name>.py` file. To use the
 
 Grouping the scoring steps:
 
-1. Select the Model Scoring nodes and the Polars node that combines their predictions.
+1. Select the Model Scoring nodes and the Transform node that combines their predictions.
 2. Click **Submodel** in the toolbar, type `model_scoring` as the **Submodel name**, and click **Create**.
 3. The nodes collapse into one `model_scoring` block, wired to the rest of the pipeline through its ports. Its panel shows **FILE** `modules/model_scoring.py` and its **INPUTS** and **OUTPUTS**.
 
