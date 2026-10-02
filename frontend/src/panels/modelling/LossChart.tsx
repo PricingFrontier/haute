@@ -7,8 +7,6 @@
  * trains. A loss can be negative (CatBoost's Poisson), so the loss axis spans
  * zero and every value the fit has reached.
  */
-import { useState } from "react"
-
 import { CHART_COLORS } from "../../theme/colors"
 import { formatChartNumber } from "../../utils/chartHelpers"
 import { ChartLegend, ChartSvg } from "./ChartScaffold"
@@ -37,25 +35,19 @@ function lossDomain(low: number, high: number): [number, number] {
 export function LossChart({ lossHistory, totalIterations = 0, bestIteration }: LossChartProps) {
   // With a known round budget one row already fixes the axes.
   const curveKeys = lossCurveKeys(lossHistory, totalIterations > 1 ? 1 : 2)
-  const keys = curveKeys ? [curveKeys.trainKey, ...(curveKeys.evalKey ? [curveKeys.evalKey] : [])] : []
-  const values = lossHistory.flatMap((entry) =>
-    keys.map((key) => entry[key]).filter((value) => value != null && Number.isFinite(value)),
-  )
-  // The fit's extremes so far: thinning can drop an earlier peak from the rows,
-  // but the axis keeps it until the next fit, which starts with a new first row.
-  const fit = `${totalIterations}:${JSON.stringify(lossHistory[0] ?? null)}`
-  const [reached, setReached] = useState({ fit, low: 0, high: 0 })
-  const sameFit = reached.fit === fit
-  const low = Math.min(0, ...values, sameFit ? reached.low : 0)
-  const high = Math.max(0, ...values, sameFit ? reached.high : 0)
-  if (!sameFit || low !== reached.low || high !== reached.high) setReached({ fit, low, high })
   if (!curveKeys) return null
   const { trainKey, evalKey } = curveKeys
+  const keys = evalKey ? [trainKey, evalKey] : [trainKey]
 
   const w = 280, h = 96, left = 28, right = 6, top = 4, bottom = 14
   const chartW = w - left - right, chartH = h - top - bottom
 
-  const [yMin, yMax] = lossDomain(low, high)
+  // The live history keeps each value's extremes through thinning, so a loss
+  // axis drawn from its rows never shrinks during a fit.
+  const values = lossHistory.flatMap((entry) =>
+    keys.map((key) => entry[key]).filter((value) => value != null && Number.isFinite(value)),
+  )
+  const [yMin, yMax] = lossDomain(Math.min(0, ...values), Math.max(0, ...values))
   const yRange = yMax - yMin
   const lastIteration = lossHistory[lossHistory.length - 1].iteration
   const xMax = Math.max(totalIterations, lastIteration) || 1

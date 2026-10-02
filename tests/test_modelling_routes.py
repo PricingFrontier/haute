@@ -935,10 +935,18 @@ def test_live_loss_history_spans_its_fit_and_restarts_with_the_next() -> None:
     limit = _training_worker._max_train_loss_history()
     history: list[dict[str, float]] = []
     truncated = False
+    peak, trough = -float("inf"), float("inf")
     for n in range(1, 1001):
-        row = {"iteration": float(n), "train_rmse": 1.0 / n}
+        # A falling curve with a training spike at 500 and a validation dip at 700.
+        train = 5.0 if n == 500 else 1.0 / n
+        evaluation = 0.0001 if n == 700 else 1.0 / n + 0.1
+        row = {"iteration": float(n), "train_rmse": train, "eval_rmse": evaluation}
         history, truncated = _training_worker._append_live_loss_row(history, truncated, row, 1000)
         assert len(history) <= limit
+        # Every extreme so far survives thinning, so an axis drawn from the rows never shrinks.
+        peak, trough = max(peak, train), min(trough, evaluation)
+        assert max(entry["train_rmse"] for entry in history) == peak
+        assert min(entry["eval_rmse"] for entry in history) == trough
     iterations = [row["iteration"] for row in history]
     assert truncated is True
     assert iterations[0] == 1.0 and iterations[-1] == 1000.0
@@ -946,19 +954,21 @@ def test_live_loss_history_spans_its_fit_and_restarts_with_the_next() -> None:
     # Even coverage of the rounds so far: no gap is wider than two buckets.
     assert max(b - a for a, b in zip(iterations, iterations[1:])) <= 2 * 1000 / (limit - 2)
 
-    # The next fit's first row starts its own history.
-    first = {"iteration": 1.0, "train_rmse": 2.0}
-    history, truncated = _training_worker._append_live_loss_row(history, truncated, first, 300)
+    # The next fit's first row starts its own history, even with the same values.
+    first = {"iteration": 1.0, "train_rmse": 1.0, "eval_rmse": 1.1}
+    history, truncated = _training_worker._append_live_loss_row(history, truncated, first, 1000)
     assert history == [first]
     assert truncated is False
 
-    # A fit that outruns its stated budget still stays within the limit, keeping
-    # its first row and its latest rows.
+    # A fit that outruns its stated budget still stays within the limit and spans
+    # every round from its first.
     for n in range(2, 501):
         row = {"iteration": float(n), "train_rmse": 1.0 / n}
         history, truncated = _training_worker._append_live_loss_row(history, truncated, row, 10)
-    assert len(history) == limit
+        assert len(history) <= limit
     assert history[0] == first and history[-1]["iteration"] == 500.0
+    gaps = [b["iteration"] - a["iteration"] for a, b in zip(history, history[1:])]
+    assert max(gaps) <= 2 * 500 / (limit - 6)
     assert truncated is True
 
 

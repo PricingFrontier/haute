@@ -127,9 +127,11 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   row; when the fit returns, `finish` sends a last round the pacing held back, so a fit
   that early stopping ends before its budget still ends its live curve there. The
   job's live `train_loss_history` holds the current fit: a row whose iteration does not
-  follow the last starts a new history, and `_append_live_loss_row` keeps the first row
-  of each of fewer than `HAUTE_TRAIN_LOSS_HISTORY_LIMIT` (default 200) even buckets of
-  the fit's round budget plus the newest row, so the rows span every round so far
+  follow the last starts a new history, and past `HAUTE_TRAIN_LOSS_HISTORY_LIMIT`
+  (default 200) rows `_append_live_loss_row` compacts it to its first and newest rows,
+  the rows holding each value's lowest and highest so far, and the first row to reach
+  each of the even buckets the rest of the limit splits the fit's rounds into, so the
+  rows span every round so far and keep the fit's extremes
   (`train_loss_history_truncated` records a dropped row). Iteration events update only
   the round readout and the history; the job's progress fraction and message come from
   its progress events. The live chart finds its `train_` and `eval_` keys as the Loss

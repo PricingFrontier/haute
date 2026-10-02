@@ -234,28 +234,36 @@ def _append_live_loss_row(
     row: dict[str, float],
     total: int,
 ) -> tuple[list[dict[str, float]], bool]:
-    """Add a fit's newest loss row to the live history, keeping its whole span.
+    """Add a fit's newest loss row to the live history, keeping its span and extremes.
 
-    A row that does not follow the last one starts a new fit's history. The
-    fit's *total* rounds are split into fewer buckets than the limit, and the
-    history keeps the first row to reach each bucket plus the newest row, so
-    its rows span every round so far. Returns the history and whether it has
-    dropped any row it was given.
+    A row that does not follow the last one starts a new fit's history. Past
+    the limit the history is compacted to its first and newest rows, the rows
+    holding each value's lowest and highest so far, and the first row to reach
+    each of the even buckets the rest of the limit splits the fit's rounds
+    into. Its rows therefore span every round so far, and axes drawn from them
+    never shrink during a fit. Returns the history and whether it has dropped
+    any row it was given.
     """
     if history and row["iteration"] <= history[-1]["iteration"]:
         history, truncated = [], False
-    limit = _max_train_loss_history()
-    stride = max(1, math.ceil(total / max(limit - 2, 1)))
-
-    def bucket(entry: dict[str, float]) -> int:
-        return int(entry["iteration"]) // stride
-
-    if len(history) > 1 and bucket(history[-1]) == bucket(history[-2]):
-        history, truncated = history[:-1], True
     history = [*history, row]
-    if len(history) > limit:
-        history, truncated = [history[0], *history[-(limit - 1) :]], True
-    return history, truncated
+    limit = _max_train_loss_history()
+    if len(history) <= limit:
+        return history, truncated
+    kept = {0, len(history) - 1}
+    for key in {key for entry in history for key in entry if key != "iteration"}:
+        values = {index: entry[key] for index, entry in enumerate(history) if key in entry}
+        kept.add(min(values, key=values.__getitem__))
+        kept.add(max(values, key=values.__getitem__))
+    rounds = max(total, int(row["iteration"]))
+    stride = max(1, math.ceil(rounds / max(limit - len(kept) - 1, 1)))
+    buckets: set[int] = set()
+    for index, entry in enumerate(history):
+        bucket = int(entry["iteration"]) // stride
+        if bucket not in buckets:
+            buckets.add(bucket)
+            kept.add(index)
+    return [history[index] for index in sorted(kept)], True
 
 
 def _worker_request_payload(request: WorkerRequest, *, expected_kind: str) -> dict[str, Any]:

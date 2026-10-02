@@ -100,18 +100,15 @@ describe("LossChart", () => {
     ys.forEach((y) => expect(y >= plotTop && y <= plotBottom).toBe(true))
   })
 
-  it("keeps the fit's peak on the axis when thinning drops it from the rows", () => {
-    const first = { iteration: 1, train_rmse: 1.0 }
+  it("starts a new fit's axis from its own rows, even when it starts like the last fit", () => {
+    const first = { iteration: 1, train_poisson: -1.0 }
     const { container, rerender } = render(
-      <LossChart lossHistory={[first, { iteration: 500, train_rmse: 2.0 }]} totalIterations={1000} />,
+      <LossChart lossHistory={[first, { iteration: 500, train_poisson: -8.0 }]} totalIterations={1000} />,
     )
-    const top = () => container.querySelector("svg text")!.textContent
-    expect(top()).toBe("2.2")
-    rerender(<LossChart lossHistory={[first, { iteration: 600, train_rmse: 0.8 }]} totalIterations={1000} />)
-    expect(top()).toBe("2.2")
-    // The next fit starts its own axis.
-    rerender(<LossChart lossHistory={[{ iteration: 1, train_rmse: 0.5 }]} totalIterations={1000} />)
-    expect(top()).toBe("0.55")
+    const bottom = () => container.querySelectorAll("svg text")[1].textContent
+    expect(bottom()).toBe("-8.8")
+    rerender(<LossChart lossHistory={[first]} totalIterations={1000} />)
+    expect(bottom()).toBe("-1.1")
   })
 
   it("widens the loss axis when a later value outgrows the start", () => {
