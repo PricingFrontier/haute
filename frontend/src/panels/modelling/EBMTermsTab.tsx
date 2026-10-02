@@ -187,9 +187,7 @@ function ContinuousShape({ term }: { term: EbmTerm }) {
         }}
       </ResponsiveChart>
       <div className="validation-bin-detail" role="status" aria-live="polite">
-        {active === null ? (
-          <span>Hover a bin to inspect its score.</span>
-        ) : (
+        {active !== null && (
           <>
             <strong>
               {term.term}: {labels[active]}

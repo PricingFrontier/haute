@@ -123,7 +123,7 @@ function ShapCurve({ curve, scale }: { curve: TrainShapCurveFeature; scale: Curv
         <CategoricalCurve curve={curve} scale={scale} activeIndex={activeIndex} onActivate={setActiveIndex} />
       )}
       <div className="validation-bin-detail" role="status" aria-live="polite">
-        {active ? (
+        {active && (
           <>
             <strong>
               {curve.feature}: {pointLabel(curve, active)}
@@ -136,8 +136,6 @@ function ShapCurve({ curve, scale }: { curve: TrainShapCurveFeature; scale: Curv
               {formatChartNumber(scale.show(active.p90_shap))}
             </span>
           </>
-        ) : (
-          <span>Hover or focus a {curve.kind === "numeric" ? "band" : "level"} to inspect its SHAP values.</span>
         )}
       </div>
       <ChartValuesTable

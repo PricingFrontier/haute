@@ -174,7 +174,7 @@ export default function ShapBeeswarm({ features, width }: ShapBeeswarmProps) {
       )}
 
       <div className="validation-bin-detail" role="status" aria-live="polite">
-        {active && detailFeature && detailSummary ? (
+        {active && detailFeature && detailSummary && (
           active.kind === "dot" ? (
             <>
               <strong>{detailFeature.feature}</strong>
@@ -191,8 +191,6 @@ export default function ShapBeeswarm({ features, width }: ShapBeeswarmProps) {
               </span>
             </>
           )
-        ) : (
-          <span>Point at a dot to inspect its row, or focus a feature for its range.</span>
         )}
       </div>
 

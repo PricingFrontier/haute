@@ -205,7 +205,7 @@ function AveChart({ data }: { data: TrainAvePerFeatureRow }) {
           )
         }}
       </ResponsiveChart>
-      <ChartFocusDetail placeholder="Hover or focus a bin to inspect its values.">
+      <ChartFocusDetail>
         {selected && (
           <>
             <strong>{selected.label}</strong>

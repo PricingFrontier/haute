@@ -67,8 +67,9 @@ results are supplied by API and result-store layers.
 - CatBoost and RustyStats/GLM results use Explore's full-width, equal-width preview
   buttons, with keyboard navigation and an explicitly labelled active pane. Narrow
   panels scroll the button strip horizontally rather than clipping view names.
-  Diagnostic views introduce their chart or table with a plain-language title and
-  short explanation; AvE and PDP are expanded in those introductions.
+  Diagnostic views introduce their chart or table with a plain-language title; what
+  each view shows, and how to read a chart's values, is explained in the docs rather
+  than in the pane.
 - The completed summary uses responsive, themed cards with final-test performance
   first (without a test set, when a validation fit ran and the reported diagnostics are
   in-sample, the validation fit's selection metrics lead instead, labelled with their row

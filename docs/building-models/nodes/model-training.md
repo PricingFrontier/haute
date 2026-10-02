@@ -567,6 +567,11 @@ appears only when the result has something to show in it:
   shows the average SHAP value around 0. Unlike PDP, which sets every row to the same
   value, it only uses the values the rows really have.
 
+In the **AvE**, **PDP**, **SHAP curves** and **SHAP beeswarm** charts, point at a bin, point,
+band, level or dot, or move to it with the Tab key, and the line under the chart shows its
+exact values; a closed table under each chart lists every value. In **Terms**, point at a
+bin to see its score.
+
 The Summary keeps model-selection evidence distinct from final performance:
 
 - **Test metrics** are the performance on the untouched test set, when one was reserved.
