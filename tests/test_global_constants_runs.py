@@ -636,6 +636,36 @@ class TestCodexFindings:
         assert result.substituted_text == "2024-07-01 >= 2024-06-01"
         assert result.result_value is True
 
+    def test_a_trace_evaluates_a_rendered_date_constant_operand(self) -> None:
+        import datetime as dt
+
+        from haute._expression_parser import evaluate_expression
+        from haute._polars_steps import render_polars_steps
+
+        effective = GlobalConstant(name="effective", type="date", value="2024-06-01")
+        rendered = render_polars_steps(
+            [
+                {"id": "s", "kind": "source", "input": "quotes"},
+                {
+                    "id": "w",
+                    "kind": "with_column",
+                    "name": "effective",
+                    "expr": {
+                        "type": "operand",
+                        "operand": {"kind": "constant", "name": "effective"},
+                    },
+                },
+            ],
+            start="input",
+        )
+        code = rendered.code.splitlines()[1]
+        namespace = {"global_constants": GlobalConstantsNamespace([effective], source="live")}
+
+        result = evaluate_expression(code, "effective", {}, namespace)
+
+        assert "pl.lit(global_constants.effective)" in code
+        assert result.result_value == dt.date(2024, 6, 1)
+
     @pytest.mark.parametrize("name", ["restricted_to", "for_graph", "constants"])
     def test_every_valid_name_reads_its_constant(self, name: str) -> None:
         namespace = GlobalConstantsNamespace(

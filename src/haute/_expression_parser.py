@@ -1454,19 +1454,48 @@ class _InlineGlobalConstants(ast.NodeTransformer):
     def __init__(self, values: Mapping[str, Any]) -> None:
         self._values = values
 
+    def _date_read(self, node: ast.AST) -> _dt.date | None:
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "global_constants"
+            and isinstance(self._values.get(node.attr), _dt.date)
+        ):
+            return cast(_dt.date, self._values[node.attr])
+        return None
+
+    @staticmethod
+    def _date_expression(value: _dt.date, node: ast.AST) -> ast.AST:
+        # A date is a literal of the run: Polars builds it per row.
+        built = f"pl.date({value.year}, {value.month}, {value.day})"
+        return ast.copy_location(ast.parse(built, mode="eval").body, node)
+
+    def visit_Call(self, node: ast.Call) -> ast.AST:
+        # The step renderer writes a constant in expression position as
+        # ``pl.lit(global_constants.<name>)``; a date is already an expression.
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "lit"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "pl"
+            and len(node.args) == 1
+            and not node.keywords
+        ):
+            value = self._date_read(node.args[0])
+            if value is not None:
+                return self._date_expression(value, node)
+        return self.generic_visit(node)
+
     def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
+        date = self._date_read(node)
+        if date is not None:
+            return self._date_expression(date, node)
         if (
             isinstance(node.value, ast.Name)
             and node.value.id == "global_constants"
             and node.attr in self._values
         ):
-            value = self._values[node.attr]
-            if isinstance(value, _dt.date):
-                # A date is a literal of the run: Polars builds it per row.
-                built = f"pl.date({value.year}, {value.month}, {value.day})"
-                literal = ast.parse(built, mode="eval")
-                return ast.copy_location(literal.body, node)
-            return ast.copy_location(ast.Constant(value), node)
+            return ast.copy_location(ast.Constant(self._values[node.attr]), node)
         return self.generic_visit(node)
 
 
