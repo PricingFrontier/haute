@@ -790,7 +790,6 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
                 "cv_seed",
                 "cv_selection",
                 "device",
-                "exclude",
                 "family",
                 "feature_columns",
                 "feature_weights",

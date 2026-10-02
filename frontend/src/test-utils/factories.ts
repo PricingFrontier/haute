@@ -154,7 +154,6 @@ export function makeConfig(
     weight: "",
     task: "regression",
     metrics: ["gini", "rmse"],
-    exclude: [],
     evaluation: {
       schema_version: 1,
       strategy: "random",

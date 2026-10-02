@@ -37,7 +37,7 @@ def generate_training_script(config: dict[str, Any], data_path: str) -> str:
     ----------
     config : dict
         Modelling node configuration containing algorithm, target, weight,
-        exclude, params, evaluation, tuning, metrics, mlflow_experiment,
+        feature_columns, params, evaluation, tuning, metrics, mlflow_experiment,
         loss_function, variance_power, offset, monotone_constraints,
         feature_weights, etc.
     data_path : str
@@ -67,8 +67,6 @@ def generate_training_script(config: dict[str, Any], data_path: str) -> str:
     # so skipping them keeps the script readable without changing the model.
     if kwargs["weight"]:
         parts.append(f"    weight={kwargs['weight']!r},")
-    if kwargs["exclude"]:
-        parts.append(f"    exclude={kwargs['exclude']!r},")
     if kwargs["feature_columns"]:
         parts.append(f"    feature_columns={kwargs['feature_columns']!r},")
     if kwargs["fold_column"]:

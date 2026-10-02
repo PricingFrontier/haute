@@ -48,7 +48,8 @@ export function CommonFeatureConfig({ config, onUpdate, columns }: Props) {
   const [membership, setMembership] = useState<"all" | "included" | "excluded">(
     "all",
   )
-  const exclude = configField<string[]>(config, "exclude", [])
+  // Features are opt-in: a column is a feature only once it is ticked.
+  const featureColumns = configField<string[]>(config, "feature_columns", [])
   const monotone = configField<Record<string, number>>(
     config,
     "monotone_constraints",
@@ -63,22 +64,22 @@ export function CommonFeatureConfig({ config, onUpdate, columns }: Props) {
     () => new Set(eligible.map((column) => column.name)),
     [eligible],
   )
-  // Exclusions are only flagged once the upstream columns have arrived.
-  const staleExclusions = columns.length === 0 ? [] : exclude.filter(
-    (name) => !columns.some((column) => column.name === name),
+  const upstreamNames = useMemo(
+    () => new Set(columns.map((column) => column.name)),
+    [columns],
+  )
+  const selectedNames = finalSelectedFeatureNames(config, eligible)
+  // Missing features are only flagged once the upstream columns have arrived.
+  const staleFeatures = columns.length === 0 ? [] : featureColumns.filter(
+    (name) => !upstreamNames.has(name),
   )
   const visible = eligible.filter(
     (column) =>
       column.name.toLowerCase().includes(filter.trim().toLowerCase()) &&
       (membership === "all" ||
-        (membership === "included"
-          ? !exclude.includes(column.name)
-          : exclude.includes(column.name))),
+        (membership === "included") === selectedNames.has(column.name)),
   )
-  const selectedNames = finalSelectedFeatureNames(config, eligible)
-  const includedCount = eligible.filter(
-    (column) => !exclude.includes(column.name),
-  ).length
+  const includedCount = selectedNames.size
 
   const updateMonotonicity = (
     name: string,
@@ -103,8 +104,14 @@ export function CommonFeatureConfig({ config, onUpdate, columns }: Props) {
     return "Monotonicity is unavailable for this feature."
   }
 
-  const requestExclusionUpdate = (nextExclude: string[]) => {
-    onUpdate({ exclude: [...nextExclude] })
+  // Upstream column order, then any stored name upstream no longer has.
+  const writeSelection = (next: ReadonlySet<string>) => {
+    onUpdate({
+      feature_columns: [
+        ...columns.map((column) => column.name).filter((name) => next.has(name)),
+        ...featureColumns.filter((name) => next.has(name) && !upstreamNames.has(name)),
+      ],
+    })
   }
   const roleText = [...roleColumnReasons(config).entries()]
     .map(([name, role]) => `${name} (${role})`)
@@ -201,9 +208,7 @@ export function CommonFeatureConfig({ config, onUpdate, columns }: Props) {
               color: "var(--model-accent)",
             }}
             onClick={() =>
-              requestExclusionUpdate(
-                exclude.filter((name) => !eligibleNames.has(name)),
-              )
+              writeSelection(new Set([...featureColumns, ...eligibleNames]))
             }
           >
             Include all
@@ -218,12 +223,9 @@ export function CommonFeatureConfig({ config, onUpdate, columns }: Props) {
               color: "var(--text-secondary)",
             }}
             onClick={() =>
-              requestExclusionUpdate([
-                ...new Set([
-                  ...exclude,
-                  ...eligible.map((column) => column.name),
-                ]),
-              ])
+              writeSelection(
+                new Set(featureColumns.filter((name) => !eligibleNames.has(name))),
+              )
             }
           >
             Exclude all
@@ -244,7 +246,7 @@ export function CommonFeatureConfig({ config, onUpdate, columns }: Props) {
         style={{ borderColor: "var(--border)" }}
       >
         {visible.map((column) => {
-          const excluded = exclude.includes(column.name)
+          const excluded = !selectedNames.has(column.name)
           const canSetMonotonicity =
             selectedNames.has(column.name) && isNumericDtype(column.dtype)
           const monotonicity = monotone[column.name] ?? 0
@@ -268,13 +270,12 @@ export function CommonFeatureConfig({ config, onUpdate, columns }: Props) {
                 aria-label={`Include ${column.name}`}
                 checked={!excluded}
                 className="accent-purple-500"
-                onChange={() =>
-                  requestExclusionUpdate(
-                    excluded
-                      ? exclude.filter((name) => name !== column.name)
-                      : [...exclude, column.name],
-                  )
-                }
+                onChange={() => {
+                  const next = new Set(featureColumns)
+                  if (excluded) next.add(column.name)
+                  else next.delete(column.name)
+                  writeSelection(next)
+                }}
               />
               <span
                 className="min-w-0 truncate font-mono text-[13px] font-semibold"
@@ -340,12 +341,12 @@ export function CommonFeatureConfig({ config, onUpdate, columns }: Props) {
             style={{ color: "var(--text-muted)", borderColor: "var(--border)" }}
           >
             {columns.length === 0
-              ? `The upstream columns are not known yet${exclude.length > 0 ? `; ${exclude.length} saved ${exclude.length === 1 ? "exclusion" : "exclusions"} will apply` : ""}.`
+              ? `The upstream columns are not known yet${featureColumns.length > 0 ? `; ${featureColumns.length} saved ${featureColumns.length === 1 ? "feature" : "features"} will apply` : ""}.`
               : "No matching feature columns."}
           </p>
         )}
 
-        {staleExclusions.map((name) => (
+        {staleFeatures.map((name) => (
           <div
             className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-[11px]"
             key={name}
@@ -358,12 +359,12 @@ export function CommonFeatureConfig({ config, onUpdate, columns }: Props) {
             <span className="min-w-0 flex-1 truncate">{name} - not found</span>
             <button
               type="button"
-              aria-label={`Remove ${name} exclusion`}
+              aria-label={`Remove ${name} feature`}
               className="rounded p-1 hover:bg-[var(--danger-soft)]"
               onClick={() =>
                 onUpdate(
-                  "exclude",
-                  exclude.filter((entry) => entry !== name),
+                  "feature_columns",
+                  featureColumns.filter((entry) => entry !== name),
                 )
               }
             >

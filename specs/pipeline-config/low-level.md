@@ -242,7 +242,7 @@ nothing written.
 | Scenario Expander | `stepCount` | no: a new node carries an explicit count | refused when missing or invalid |
 | Model Score | `run_id` / `registered_model` for the chosen `sourceType` | yes: a source mode picked before its model | saved; the builder reports it when run |
 | Optimiser Apply | `sourceType` when `artifact_path` is set | no | reported when the node runs; save-time refusal waits for the typed config models (`PCFG-R07`) |
-| Modelling | a trainable value for each configured `algorithm`, GLM `family`/`link`/solver setting, `loss_function`, and a `target` that is not also in `feature_columns` | yes: a new node is `{}`, and an unset target, objective or feature set is completeness, reported when training starts | saved when incomplete; refused when a configured value is malformed |
+| Modelling | a trainable value for each configured `algorithm`, GLM `family`/`link`/solver setting, and `loss_function` | yes: a new node is `{}`, and an unset target, objective or feature set is completeness, reported when training starts | saved when incomplete; refused when a configured value is malformed |
 
 Modelling's malformed-value check is
 `src/haute/modelling/_train_config.py::validate_modelling_config_values`, the pure check

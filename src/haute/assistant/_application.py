@@ -77,6 +77,7 @@ from haute.graph_utils import flatten_graph
 from haute.modelling._train_config import (
     MISSING_TARGET_MESSAGE,
     TrainingConfigError,
+    feature_selection_issue,
     parse_evaluation_config,
     training_objective_issue,
 )
@@ -999,7 +1000,7 @@ def _prove_nodes_ready(
         issue = (
             MISSING_TARGET_MESSAGE
             if not isinstance(target, str) or not target
-            else training_objective_issue(config)
+            else training_objective_issue(config) or feature_selection_issue(config)
         )
         if issue is None:
             # Training refuses a config without a valid evaluation object, so a

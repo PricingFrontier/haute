@@ -310,6 +310,7 @@ def test_config_rejects_feature_weights_and_accepts_gamma() -> None:
         "loss_function": "Gamma",
         "params": {"num_boost_round": 5},
         "evaluation": EVALUATION,
+        "feature_columns": ["x"],
     }
     assert build_training_job_kwargs(config, data="d.parquet")["algorithm"] == "xgboost"
     with pytest.raises(TrainingConfigError, match="does not support feature weights"):
@@ -480,6 +481,7 @@ def test_gamma_deviance_can_drive_an_xgboost_study() -> None:
         "algorithm": "xgboost",
         "loss_function": "Gamma",
         "params": {"num_boost_round": 20},
+        "feature_columns": ["x"],
         "metrics": ["gamma_deviance"],
         "evaluation": {**EVALUATION, "validation": {"method": "cross_validation", "fold_count": 2}},
         "tuning": {

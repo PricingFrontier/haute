@@ -155,7 +155,7 @@ class TestExtractColumnRefsEdgeCases:
             "offset": None,
             "factors": None,
             "tables": None,
-            "exclude": None,
+            "feature_columns": None,
         }
         assert _extract_column_refs(config) == set()
 

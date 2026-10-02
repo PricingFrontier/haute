@@ -42,7 +42,11 @@ from haute._seed_plans import (
     open_seed_plan,
 )
 from haute._types import GraphNode, PipelineGraph
-from haute.errors import BoundedMemoryUnsupportedError, HauteValidationError
+from haute.errors import (
+    BoundedMemoryUnsupportedError,
+    HauteValidationError,
+    SchemaMismatchError,
+)
 from haute.execution import (
     AllExceptColumns,
     execute_lazy_graph,
@@ -54,8 +58,12 @@ from haute.modelling._glm_terms import (
     validate_glm_model_columns,
 )
 from haute.modelling._train_config import (
+    NO_FEATURES_MESSAGE,
     build_train_params,
     is_glm_config,
+    role_column_reasons,
+    selected_feature_columns,
+    string_list_config,
 )
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
@@ -189,36 +197,6 @@ def _glm_training_term_columns(config: Mapping[str, Any]) -> frozenset[str] | No
     return frozenset(columns) or None
 
 
-def _training_sink_exclusions(config: Mapping[str, Any]) -> list[str] | None:
-    """Columns the training sink may drop.
-
-    GLM membership is decided by terms and interaction factors, so a GLM never
-    drops anything by ``exclude``; CatBoost keeps its configured exclusions.
-    """
-    if is_glm_config(config):
-        return None
-    excluded = _string_list_config(config, "exclude")
-    return excluded or None
-
-
-def _string_list_config(config: Mapping[str, Any], key: str) -> list[str]:
-    raw = config.get(key)
-    if raw is None:
-        return []
-    if not isinstance(raw, list):
-        raise HauteValidationError(f"{key} must be a list of column names")
-    columns: list[str] = []
-    seen: set[str] = set()
-    for value in raw:
-        if not isinstance(value, str) or not value:
-            raise HauteValidationError(f"{key} must contain non-empty string column names")
-        if value in seen:
-            continue
-        columns.append(value)
-        seen.add(value)
-    return columns
-
-
 def _training_required_metadata_columns(config: Mapping[str, Any]) -> set[str]:
     target = config.get("target")
     columns = {target} if isinstance(target, str) and target else set()
@@ -238,44 +216,18 @@ def _training_required_metadata_columns(config: Mapping[str, Any]) -> set[str]:
         if isinstance(evaluation_col, str) and evaluation_col:
             columns.add(evaluation_col)
 
-    columns.update(_string_list_config(config, "id_columns"))
+    columns.update(string_list_config(config, "id_columns"))
     return columns
 
 
 def _training_projection_keep_columns(config: Mapping[str, Any]) -> list[str]:
-    """Return every configured column that exclusion projection must retain.
+    """Return every configured column the training sink must retain.
 
     ``feature_columns`` is a CatBoost lever; a GLM reads its terms and
     interaction factors instead.
     """
-    explicit = (
-        set() if is_glm_config(config) else set(_string_list_config(config, "feature_columns"))
-    )
-    return sorted(_training_required_metadata_columns(config) | explicit)
-
-
-def _training_metadata_reasons(config: Mapping[str, Any]) -> dict[str, str]:
-    """Return configured non-feature columns in deterministic role precedence."""
-    reasons: dict[str, str] = {}
-
-    def add(raw_column: object, reason: str) -> None:
-        if isinstance(raw_column, str) and raw_column:
-            reasons.setdefault(raw_column, reason)
-
-    add(config.get("target"), "target")
-    add(config.get("weight"), "weight")
-    add(config.get("offset"), "offset")
-    add(config.get("fold_column"), "fold")
-    for column in _string_list_config(config, "id_columns"):
-        add(column, "identifier")
-    evaluation = config.get("evaluation")
-    if isinstance(evaluation, dict):
-        strategy = evaluation.get("strategy")
-        if strategy == "temporal":
-            add(evaluation.get("date_column"), "evaluation")
-        elif strategy == "group":
-            add(evaluation.get("group_column"), "evaluation")
-    return reasons
+    selected = set() if is_glm_config(config) else set(selected_feature_columns(config))
+    return sorted(_training_required_metadata_columns(config) | selected)
 
 
 def _bounded_training_detail(items: list[Any], *, cap: int = 128) -> dict[str, Any]:
@@ -303,7 +255,7 @@ def build_training_feature_selection(
     if len(schema) != len(set(schema)):
         raise HauteValidationError("training schema contains duplicate column names")
     schema_set = set(schema)
-    metadata_reasons = _training_metadata_reasons(config)
+    metadata_reasons = role_column_reasons(config)
     missing_metadata = [column for column in metadata_reasons if column not in schema_set]
     if missing_metadata:
         raise HauteValidationError(
@@ -312,8 +264,6 @@ def build_training_feature_selection(
         )
 
     glm = is_glm_config(config)
-    explicit_features = [] if glm else _string_list_config(config, "feature_columns")
-    configured_exclusions = set() if glm else set(_string_list_config(config, "exclude"))
     if glm:
         mode = "glm_terms"
         params = build_train_params(config)
@@ -326,23 +276,21 @@ def build_training_feature_selection(
             )
         )
         features = [column for column in schema if column in term_columns]
-    elif explicit_features:
+    else:
         mode = "explicit"
-        missing_features = [column for column in explicit_features if column not in schema_set]
+        features = selected_feature_columns(config)
+        if not features:
+            raise HauteValidationError(NO_FEATURES_MESSAGE)
+        missing_features = [column for column in features if column not in schema_set]
         if missing_features:
             raise HauteValidationError(
                 "Configured feature column(s) not found in training data: "
                 f"{missing_features}. Available columns: {bounded_names(schema)}"
             )
-        features = explicit_features
-    else:
-        mode = "all_except"
-        non_features = set(metadata_reasons) | configured_exclusions
-        features = [column for column in schema if column not in non_features]
 
     if not features:
         raise HauteValidationError(
-            "No feature columns remaining after applying target, metadata, and exclusion settings."
+            "No feature columns remaining after applying target, metadata, and term settings."
         )
 
     retained_metadata = [
@@ -357,8 +305,6 @@ def build_training_feature_selection(
             continue
         if column in metadata_reasons:
             reason = metadata_reasons[column]
-        elif column in configured_exclusions:
-            reason = "configured_exclusion"
         elif mode == "glm_terms":
             reason = "not_in_formula"
         else:
@@ -394,13 +340,11 @@ def build_training_feature_selection(
 def _training_required_columns_by_node(
     node_id: str,
     config: dict[str, Any],
-) -> dict[str, frozenset[str] | AllExceptColumns] | None:
+) -> dict[str, frozenset[str]] | None:
     """Return modelling-node output demand needed by training.
 
-    GLM with explicit terms has an exact feature contract before the target
-    schema is materialised. CatBoost derives features from the target schema as
-    all columns except configured non-feature columns, so it advertises an
-    all-except demand rather than pretending the feature set is unknown.
+    Both families have an exact feature contract before the target schema is
+    materialised: GLM's terms, and CatBoost's selected features.
     """
     term_columns = _glm_training_term_columns(config)
     target = config.get("target")
@@ -411,22 +355,7 @@ def _training_required_columns_by_node(
         algorithm = str(config.get("algorithm", "catboost")).lower()
         if algorithm == "glm":
             return None
-        keep_columns = _training_required_metadata_columns(config)
-        feature_columns = _string_list_config(config, "feature_columns")
-        if feature_columns:
-            return {node_id: frozenset([*feature_columns, *sorted(keep_columns)])}
-        raw_exclude = _string_list_config(config, "exclude")
-        exclude = {
-            column
-            for column in raw_exclude
-            if isinstance(column, str) and column and column not in keep_columns
-        }
-        return {
-            node_id: AllExceptColumns(
-                required_columns=frozenset(keep_columns),
-                excluded_columns=frozenset(keep_columns | exclude),
-            )
-        }
+        return {node_id: frozenset(_training_projection_keep_columns(config))}
 
     columns = set(term_columns)
     columns.update(_training_required_metadata_columns(config))
@@ -564,7 +493,7 @@ class TrainingPreparationRequest:
     config: dict[str, Any]
     project_root: str
     row_limit: int | None = None
-    exclude: list[str] | None = None
+    project_to_keep_columns: bool = False
     keep_columns: list[str] | None = None
     required_columns_by_node: dict[str, frozenset[str] | AllExceptColumns] | None = None
     preamble_supplied: bool = False
@@ -875,22 +804,19 @@ def _execute_and_sink_training_frame(
         # Project down to only the columns needed for training.
         # This reduces peak memory during sink and all subsequent
         # phases (evaluation partitions, pool construction, diagnostics).
-        if request.exclude and request.keep_columns:
-            drop_cols = [
-                column
-                for column in schema_cols
-                if column in request.exclude and column not in request.keep_columns
-            ]
+        if request.project_to_keep_columns:
+            keep = set(request.keep_columns or [])
+            drop_cols = [column for column in schema_cols if column not in keep]
             if drop_cols:
                 target_lf = target_lf.drop(drop_cols)
                 if recipe is not None:
                     cols_to_drop = list(drop_cols)
 
-                    def _drop_excluded_columns(lf: pl.LazyFrame) -> pl.LazyFrame:
+                    def _drop_unselected_columns(lf: pl.LazyFrame) -> pl.LazyFrame:
                         return lf.drop(cols_to_drop)
 
-                    recipe = recipe.then(_drop_excluded_columns)
-                _mem_checkpoint(f"projected: dropped {len(drop_cols)} excluded columns")
+                    recipe = recipe.then(_drop_unselected_columns)
+                _mem_checkpoint(f"projected: dropped {len(drop_cols)} unselected columns")
 
         _mem_checkpoint("before sink_parquet")
         execution_context.checkpoint(label="before_training_sink_write", node_id=node_id)
@@ -984,6 +910,23 @@ def preparation_failure_outcome(
             http_status_code=http_exc.status_code,
             http_detail=http_exc.detail,
             fields=contract_error_job_fields(exc),
+        )
+    elif isinstance(exc, SchemaMismatchError):
+        # Training demands an exact column set, so a target or selected feature
+        # the data lacks surfaces while its source is read, before the frame's
+        # own schema check. It is the user's to fix: name the columns.
+        missing = exc.context.get("missing")
+        available = exc.context.get("available")
+        detail = (
+            "Training input is missing required column(s): "
+            f"{missing}. Available columns: {bounded_names(list(available or []))}"
+            if missing
+            else f"Training input schema does not match: {exc.message}"
+        )
+        failure = _preparation_failure_from_http(
+            HTTPException(status_code=422, detail=detail),
+            job_id=job_id,
+            terminal_reason="contract_error",
         )
     elif isinstance(exc, BoundedMemoryUnsupportedError):
         logger.warning(

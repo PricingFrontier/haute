@@ -7,6 +7,7 @@ import {
   type Terms,
 } from "../panels/modelling/glmTerms"
 import { glmCrossValidates } from "../panels/modelling/glmFamilies"
+import { selectedFeatureColumns } from "../panels/modelling/featureSelection"
 
 /**
  * Frontend mirror of the backend's target/objective validation.
@@ -29,6 +30,7 @@ export type TrainingConfigurationIssueCode =
   | "catboost-params"
   | "catboost-loss-function"
   | "catboost-tweedie-variance-power"
+  | "feature-selection"
   | "monotone-loss"
   | "ebm-max-rounds"
   | "ebm-interactions"
@@ -395,6 +397,13 @@ export function trainingConfigurationIssues(
         "Set the Tweedie variance power greater than 1 and less than 2.",
     })
   }
+  // Mirrors the backend's feature_selection_issue: features are opt-in.
+  if (selectedFeatureColumns(config).length === 0) {
+    issues.push({
+      code: "feature-selection",
+      message: "Tick at least one feature on the Features pane.",
+    })
+  }
   if (algorithm === "ebm") issues.push(...ebmParameterIssues(config))
   const capability = algorithmCapability(algorithm)
   if (
@@ -492,16 +501,10 @@ function hasMonotoneConstraints(config: Record<string, unknown>): boolean {
   if (constraints === null || typeof constraints !== "object" || Array.isArray(constraints)) {
     return false
   }
-  // Mirrors the backend's _excluded_feature_names: explicit feature_columns win
-  // over a stale exclusion, so a constraint on such a feature stays active.
-  const explicit = new Set(
-    Array.isArray(config.feature_columns) ? config.feature_columns.map(String) : [],
-  )
-  const excluded = new Set(
-    (Array.isArray(config.exclude) ? config.exclude.map(String) : [])
-      .filter((name) => !explicit.has(name)),
-  )
-  return Object.keys(constraints).some((name) => !excluded.has(name))
+  // Mirrors the backend's _effective_monotone_constraints: a constraint on an
+  // unselected feature is dormant.
+  const selected = new Set(selectedFeatureColumns(config))
+  return Object.keys(constraints).some((name) => selected.has(name))
 }
 
 /** Destination of a readiness issue, shared by tabs and the Train summary. */
@@ -516,6 +519,7 @@ export function trainingIssuePane(issue: TrainingConfigurationIssue): "target" |
     case "glm-smooth-regularization":
     case "glm-robust-standard-errors": return "params"
     case "glm-terms":
+    case "feature-selection":
     case "ebm-interactions":
     case "monotone-loss": return "features"
     case "ebm-max-rounds": return "params"

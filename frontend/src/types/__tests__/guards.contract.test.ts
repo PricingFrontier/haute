@@ -598,7 +598,7 @@ describe("parseExecutionStrategyDiagnostic", () => {
 })
 
 describe("parseTrainFeatureSelection", () => {
-  it.each(["explicit", "all_except"] as const)("accepts %s selections and preserves server order", (mode) => {
+  it.each(["explicit", "glm_terms"] as const)("accepts %s selections and preserves server order", (mode) => {
     const parsed = parseTrainFeatureSelection(featureSelectionFixture({
       mode,
       features: { state: "available", total_count: 2, items: ["premium", "age"] },
@@ -639,6 +639,9 @@ describe("parseTrainFeatureSelection", () => {
     expect(() => parseTrainFeatureSelection(featureSelectionFixture({ schema_version: 2 }))).toThrow(/schema_version/i)
     expect(() => parseTrainFeatureSelection(featureSelectionFixture({ features: { state: "available", total_count: 3, items: ["age"] } }))).toThrow(/count/i)
     expect(() => parseTrainFeatureSelection(featureSelectionFixture({ excluded_columns: { state: "available", total_count: 1, items: [{ column: "claim", reason: "unknown" }] } }))).toThrow(/reason/i)
+    // Features are opt-in: the retired all-except mode and its exclusion reason are refused.
+    expect(() => parseTrainFeatureSelection(featureSelectionFixture({ mode: "all_except" }))).toThrow(/mode/i)
+    expect(() => parseTrainFeatureSelection(featureSelectionFixture({ excluded_columns: { state: "available", total_count: 1, items: [{ column: "claim", reason: "configured_exclusion" }] } }))).toThrow(/reason/i)
   })
 
   it("attaches the nullable selection to train and train-status responses", () => {

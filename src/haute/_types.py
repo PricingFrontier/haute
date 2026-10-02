@@ -596,7 +596,6 @@ class ModellingConfig(TypedDict, total=False):
     target: str
     weight: str
     feature_columns: list[str]
-    exclude: list[str]
     algorithm: str  # a registered model family: "catboost" | "glm" | "xgboost" | "lightgbm" | "ebm"
     task: str  # "regression" | "classification"
     params: dict[str, Any]

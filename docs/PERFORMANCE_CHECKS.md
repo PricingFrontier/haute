@@ -95,7 +95,7 @@ claim. It retains structured evidence for all of these cases:
 - an uncached 20,000-row wide JSONL input projected to two fields, including
   the minimum cooperative-checkpoint count and proof that no cache was created;
 - the generated join-to-modelling scenario, whose demand is derived from the
-  real target/weight/id/exclude menu configuration before planning;
+  real target/weight/id/feature-selection configuration before planning;
 - an extreme many-to-many join whose proven `10^18`-row upper bound is rejected
   by admission without attempting to materialise the join;
 - JSON-array and XML persistent cache builds at 10,000 and 120,000 rows, proving

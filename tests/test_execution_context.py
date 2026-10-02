@@ -4825,6 +4825,7 @@ def test_train_prepare_training_data_forwards_execution_context(tmp_path) -> Non
         prepare_training_data,
     )
 
+    config = {"target": "target", "feature_columns": ["feature"]}
     graph = make_graph(
         {
             "nodes": [
@@ -4833,7 +4834,7 @@ def test_train_prepare_training_data_forwards_execution_context(tmp_path) -> Non
                     "data": {
                         "label": "model",
                         "nodeType": NodeType.MODELLING.value,
-                        "config": {},
+                        "config": dict(config),
                     },
                 },
             ],
@@ -4851,7 +4852,8 @@ def test_train_prepare_training_data_forwards_execution_context(tmp_path) -> Non
 
     def fake_execute_lazy(*_args, **kwargs):
         captured.update(kwargs)
-        return {"model": pl.DataFrame({"target": [1.0]}).lazy()}, ["model"], {}, {}
+        frame = pl.DataFrame({"target": [1.0], "feature": [2.0]}).lazy()
+        return {"model": frame}, ["model"], {}, {}
 
     tmp_parquet = str(tmp_path / "prepared.parquet")
     request = TrainingPreparationRequest(
@@ -4860,7 +4862,7 @@ def test_train_prepare_training_data_forwards_execution_context(tmp_path) -> Non
         job_id=job_id,
         source="live",
         parquet_path=tmp_parquet,
-        config={},
+        config=config,
         project_root=str(tmp_path),
     )
     with patch(
@@ -5826,6 +5828,7 @@ def test_training_start_creates_admitted_training_context(
                             "target": "target",
                             "algorithm": "catboost",
                             "loss_function": "RMSE",
+                            "feature_columns": ["feature"],
                             "evaluation": {
                                 "schema_version": 1,
                                 "strategy": "random",
@@ -5894,6 +5897,7 @@ def test_training_start_maps_admission_failure_to_http_507(
                             "target": "target",
                             "algorithm": "catboost",
                             "loss_function": "RMSE",
+                            "feature_columns": ["feature"],
                             "evaluation": {
                                 "schema_version": 1,
                                 "strategy": "random",
@@ -5958,6 +5962,7 @@ def test_training_start_maps_runtime_memory_failure_to_http_507(
                             "target": "target",
                             "algorithm": "catboost",
                             "loss_function": "RMSE",
+                            "feature_columns": ["feature"],
                             "evaluation": {
                                 "schema_version": 1,
                                 "strategy": "random",

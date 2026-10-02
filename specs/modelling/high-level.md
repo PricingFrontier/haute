@@ -119,14 +119,23 @@ compatibility facade and route own no duplicate state or worker implementation.
 ## Behaviour
 
 - A user configures a "modelling" node: target column, optional weight/offset columns,
-  columns to exclude (or an explicit feature list), algorithm (`catboost` or `glm`),
+  the feature columns to train on (`feature_columns`), algorithm (`catboost` or `glm`),
   task, evaluation configuration, requested metrics, and algorithm-specific parameters
   (CatBoost hyperparameters, or GLM terms/family/link/regularization/solver/interactions).
   CatBoost hyperparameters live in the node's `params` object and its Tweedie power is
   `variance_power`; GLM settings live at the node's top level and its Tweedie power is
-  `var_power`. `exclude`, `feature_columns`, `monotone_constraints`, and `feature_weights`
-  apply only to CatBoost: a GLM's features are its terms and interaction factors, and GLM
+  `var_power`. `feature_columns`, `monotone_constraints`, and `feature_weights` apply only
+  to CatBoost: a GLM's features are its terms and interaction factors, and GLM
   monotonicity lives on each term.
+- CatBoost's features are opt-in: a column is a feature only when it is listed in
+  `feature_columns`, so a new node selects no features and a column that appears upstream
+  later is not selected until the user ticks it. A listed column that holds a role
+  (target, weight, offset, fold, identifier, or active evaluation key) is dormant: it
+  stays stored, is never a feature while it holds the role, and is selected again once it
+  leaves the role. A node with no selected features is incomplete, not malformed. The
+  node config has no `exclude` field: like the removed `model_name`, a config carrying
+  one is refused wherever it is loaded, saved or run, naming `feature_columns` as its
+  replacement.
 - Starting training (`POST /api/modelling/train`) performs the cheap graph/config
   validation synchronously, creates and registers the cancellable job, starts an owned
   preparation thread, and returns `status="started"` plus the job ID before RAM
@@ -227,10 +236,9 @@ compatibility facade and route own no duplicate state or worker implementation.
 - CatBoost monotonicity is the one additional capability lever exposed in
   modelling-node configuration. `monotone_constraints` maps configured numeric feature
   names to exactly `-1` (decreasing) or `1` (increasing); zero means absence and is
-  omitted by the editor. Entries for features made dormant by `exclude` remain stored:
-  the shared config builder omits them from live training and script export, so re-including
-  the feature restores its prior direction. The established explicit `feature_columns` contract
-  still wins over a stale exclusion. After the final CatBoost feature selection is known,
+  omitted by the editor. Entries for features that are not selected remain stored:
+  the shared config builder omits them from live training and script export, so re-selecting
+  the feature restores its prior direction. After the final CatBoost feature selection is known,
   training rejects a non-object mapping, malformed names or
   directions, active constraints on absent/non-selected features, and constraints on
   features whose dtype is not `Int64` or `Float64` before splitting
@@ -293,8 +301,8 @@ Invariants that always hold:
 - Optional diagnostics (SHAP, partial dependence, GLM inference statistics) can fail
   independently without aborting the run; failures are recorded and surfaced, not
   swallowed.
-- Training never silently proceeds with an empty feature set. Explicit features,
-  all-except selection, and GLM terms produce the same version-1 feature-selection
+- Training never silently proceeds with an empty feature set. CatBoost's selected
+  features and GLM terms produce the same version-1 feature-selection
   diagnostic shape in start/status results, including deterministic capped lists of
   selected features, retained metadata, and exclusions.
 - Numeric-only CatBoost input keeps Polars' native Fortran-contiguous `Float32`
@@ -537,7 +545,8 @@ case, readable field/help text and the modelling accent consistently. Target, we
 and offset selectors are searchable and show column types. Feature selection uses
 compact table rows with inclusion checkboxes, coloured dtype labels using the shared
 type palette, All/Included/Excluded filters, and numeric-only ↓ / − / ↑ monotonicity
-buttons. The buttons retain their decreasing/neutral/increasing colours and selected
+buttons. Every checkbox starts unticked on a new node; ticking writes the column to
+`feature_columns`. The buttons retain their decreasing/neutral/increasing colours and selected
 states; target/weight/offset roles remain excluded from predictors.
 
 The row-limit control appears first in Split for both algorithms, above allocation.
@@ -646,10 +655,12 @@ browser without a server or JS bundle.
   setting.
 - A configured value that can never train is malformed and is refused when the pipeline
   is saved, from the editor and the assistant alike: an unknown algorithm or GLM family
-  (names are case-sensitive: `glm`, `poisson`), a link, solver setting or loss the chosen
-  family rejects, or a target also listed in `feature_columns`. An unfinished node is
+  (names are case-sensitive: `glm`, `poisson`), or a link, solver setting or loss the chosen
+  family rejects. An unfinished node is
   incomplete, not malformed, and still saves: a new modelling node is `{}`, and an unset
-  target, objective or feature set is reported when training starts.
+  target, objective or feature set is reported when training starts. A CatBoost node with
+  no selected feature is refused before any pipeline execution, as HTTP 400 asking the
+  user to tick at least one feature on the Features pane.
 - An admission failure discovered before a job handle can be returned surfaces as HTTP
   507. RAM or GPU-VRAM failure discovered during background preparation transitions the
   pollable job to `memory_limited` and preserves the equivalent structured 507 detail

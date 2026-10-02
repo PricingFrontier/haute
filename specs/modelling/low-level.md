@@ -191,10 +191,21 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   projects those fields into the `TrainingJob.params` mapping consumed by RustyStats.
   An interaction entry is
   `{"factors": [...], "specs": {factor: override}, "include_main": bool}`;
-  `specs` holds only `linear`, `categorical`, `bs`, or `ns` overrides. `exclude` never
-  narrows a GLM: a GLM feature is in the model exactly when it has a term or is a filled
-  interaction factor, and `build_training_job_kwargs` passes `exclude=[]` for GLM. Explicit
-  `feature_columns` retains its established precedence over a stale exclusion.
+  `specs` holds only `linear`, `categorical`, `bs`, or `ns` overrides. A GLM feature is in
+  the model exactly when it has a term or is a filled interaction factor, and
+  `build_training_job_kwargs` passes `feature_columns=None` for GLM.
+- **`feature_columns`** — the CatBoost feature selection, opt-in. `_train_config.py` owns
+  `string_list_config` (a validated, de-duplicated column-name list),
+  `role_column_reasons` (each role column mapped to its role in the precedence target,
+  weight, offset, fold, identifier, evaluation; the frontend's `roleColumnReasons` mirrors
+  it) and `selected_feature_columns` (the stored list minus role columns, in stored order).
+  `build_training_job_kwargs` passes the selected list, so a dormant role entry never
+  reaches `TrainingJob` or the exported script, and never passes `exclude`.
+  `training_objective_issue` reports an empty selection ("Modelling config has no
+  features. Tick at least one feature on the Features pane."), so the train route refuses
+  it with HTTP 400 before any pipeline execution. `reject_removed_config_keys` refuses a
+  modelling config carrying the removed `exclude`, naming `feature_columns`. `TrainingJob` keeps its `exclude` argument as a scripting lever: with no
+  `feature_columns`, a script's features are every column except the roles and `exclude`.
 - **`offset`** — maps to RustyStats `exposure=` when the effective link (explicit
   `link`, else `rustystats.formula.get_default_link(family)`) is `log`, and to `offset=`
   otherwise, so the column stays a multiplier under a log link and additive elsewhere;
@@ -203,9 +214,9 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   configured feature name to the exact integer `-1` or `1` (Boolean and zero are invalid).
   CatBoost only. `build_training_job_kwargs` passes `None` for GLM, and `TrainingJob`
   rejects a GLM job constructed with the argument; GLM monotonicity lives on each term's
-  `monotonicity` key. For CatBoost, `build_training_job_kwargs` removes entries named by
-  `exclude` from the effective job mapping without mutating stored config; an empty
-  effective mapping becomes `None`. `_validate_monotone_constraints` runs before
+  `monotonicity` key. For CatBoost, `build_training_job_kwargs` keeps only entries named by
+  `selected_feature_columns` in the effective job mapping without mutating stored config; an
+  empty effective mapping becomes `None`. `_validate_monotone_constraints` runs before
   `_split_data`; it requires a mapping with non-empty string keys, rejects names not in
   the final feature list, and accepts only canonical numeric contract dtypes
   (`Int64`/`Float64`). The resulting validated mapping is passed unchanged to
@@ -276,8 +287,9 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   import so no route/modelling cycle is introduced.
 
 - **`TrainingFeatureSelectionDiagnosticPayload`** (`schemas.py`) — the version-1
-  explanation of the pre-training feature choice. `mode` is `explicit`, `all_except`,
-  or `glm_terms`; `feature_count` must equal the selected-feature collection's total;
+  explanation of the pre-training feature choice. `mode` is `explicit` (CatBoost's
+  selected features) or `glm_terms`; an excluded column's reason is its role,
+  `not_selected`, or `not_in_formula`; `feature_count` must equal the selected-feature collection's total;
   selected features, retained metadata, and excluded columns are deterministically
   ordered and capped at 128 entries with `available|truncated` state. `TrainResponse`
   and `TrainStatusResponse` carry the payload additively as `feature_selection`, or
@@ -300,8 +312,8 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    solver validity (`validate_glm_params`) or, for every other family, loss validity against
    the selected family's own descriptor (`algorithm_descriptor(algorithm).native_loss(task,
    loss)`), so a loss that family supports and CatBoost does not (Gamma for LightGBM, XGBoost
-   and EBM) is not refused in CatBoost's name, and a target that is not also in
-   `feature_columns`. Save validation and the training builder run the same function; then
+   and EBM) is not refused in CatBoost's name. Save validation and the training builder run
+   the same function; then
    `training_objective_issue` for completeness); under
    `_start_lock`, reject if another job is already `"running"`
    (`_check_no_concurrent_jobs`), create the job record, and register its cancellation
@@ -357,7 +369,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
      `materialisation_estimate_unavailable` rejection an uncapped surface must raise;
    - the request is plain picklable data (`graph`, `node_id`, `job_id`, `source`,
      `parquet_path`, modelling `config`, `project_root`, `row_limit`,
-     `exclude`, `keep_columns`, `required_columns_by_node`, `preamble_supplied`, and the
+     `keep_columns`, `project_to_keep_columns`, `required_columns_by_node`, `preamble_supplied`, and the
      plan's `seed_plan` handoff); the child never touches the `JobStore`.
    - the job's `execution_metrics` are the reporting process's metrics carrying the whole
      job's evidence (`ExecutionContext.metrics_with_worker_evidence`): the parent adopts the
@@ -371,9 +383,9 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    `prepare_inputs=False` — seeds read, the modelling node's producer and every join, fan-out,
    and materialisation captured into shared snapshots, no checkpoint directory — holding the plan until the sink completes, derives the version-1
    feature-selection diagnostic from the materialised schema, rejects HTTP
-   422/`contract_error` if target/metadata/exclusion rules leave no feature columns, validates
-   the required columns actually arrived, projects away excluded columns while retaining
-   explicit `feature_columns` even when a stale `exclude` entry also names them (composing
+   422/`contract_error` if target/metadata rules leave no feature columns, validates
+   the required columns actually arrived, and for CatBoost (`project_to_keep_columns`)
+   projects away every column outside the role columns and selected features (composing
    column drops into an admitted recipe), writes the prepared frame to the parent's temp parquet
    with a single `write_file` call under the context's `training_sink_write` stage — which
    slices the frame directly when sliceable (`strategy="sliced"`), or slices the recipe's input
@@ -635,8 +647,7 @@ experiment logs nothing.
    record (`job_type="dispersion_estimate"`).
 4. `_estimate_ram` and `_execute_and_sink` reuse the exact same helpers `start()` uses
    to materialise the node's training frame — same pipeline execution, projection, and
-   seeded row sampling, including preservation of explicit features that also appear
-   in `exclude` — so the profiled data matches what a real training run would
+   seeded row sampling — so the profiled data matches what a real training run would
    see. The row limit is additionally clamped to `_DISPERSION_ESTIMATE_ROW_CAP`
    (200,000): the profile search runs ~10-30 IRLS fits, so it samples rather than
    paying full-data cost per candidate — 200k rows pins a single dispersion scalar far
@@ -1286,9 +1297,9 @@ potentially large copy on its threadpool.
 - Feature contracts are written only to each model's canonical companion path.
 - Column-projection pushdown (`_glm_select_columns` / `_catboost_select_columns` /
   `_training_required_columns_by_node`) bounds parquet-read memory: GLM reads only its
-  term + target + weight + offset columns; CatBoost's required-columns demand is an
-  "all except" projection (everything but excluded/target/weight/offset) rather than
-  an unbounded "unknown" demand.
+  term + target + weight + offset columns; CatBoost's required-columns demand is the
+  exact set of selected features and role columns rather than an unbounded "unknown"
+  demand.
 - Every run-owned temp parquet is tracked with an `owns_tmp` flag at each stage; the
   happy path frees each file as soon as the next stage no longer needs it, and a
   `finally`-block abort-safety net (`_cleanup_owned_temp_parquets`) removes anything
@@ -1478,7 +1489,7 @@ rows/features) and retry.
   directly off a data input writes `sliced` with rows, order and schema equal to the native
   result; a modelling node over a chunk-local filter parent writes its prepared parquet
   `input_sliced` across several slices, reporting `training_write_strategy` and
-  `training_write_input_slices` through the worker path; column exclusions compose into the
+  `training_write_input_slices` through the worker path; dropping unselected columns composes into the
   write recipe; a row-limit sample takes the native path with
   `training_write_native_reason="row_limit_sample"` while a sliceable sample records no native
   reason; a mismatched recipe degrades to native with
@@ -1764,9 +1775,12 @@ suites prove the same canonical vocabulary and bounded lifecycle end to end.
   and `final_test` displays as Test. Internal keys and split calculations are unchanged.
 - `CommonFeatureConfig` keeps aligned inclusion, feature, type and monotonicity
   columns. Type labels use `getDtypeColor`; monotonicity uses the existing coloured
-  ↓ / − / ↑ buttons with accessible names and pressed states. Excluded and nonnumeric
-  features keep those controls disabled, and excluding a feature preserves its saved
-  constraint for re-inclusion.
+  ↓ / − / ↑ buttons with accessible names and pressed states. Every checkbox starts
+  unticked: the pane writes only `feature_columns`, and Include all / Exclude all add or
+  remove every eligible column. Unselected and nonnumeric features keep the monotonicity
+  controls disabled, and unticking a feature preserves its saved constraint for
+  re-selection. A stored feature that is not an upstream column is listed as not found
+  with a remove action once the columns are known.
 - `trainingObjective.ts` shares evaluation issue detection between Split, tab readiness
   and Train. Fraction sums at or above one are invalid for non-temporal single
   validation. CatBoost Tweedie power is a finite number in the open interval (1, 2),

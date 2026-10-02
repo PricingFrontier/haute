@@ -12516,7 +12516,6 @@
             "fold",
             "identifier",
             "evaluation",
-            "configured_exclusion",
             "not_selected",
             "not_in_formula"
           ],
@@ -12587,7 +12586,6 @@
         "mode": {
           "enum": [
             "explicit",
-            "all_except",
             "glm_terms"
           ],
           "title": "Mode",

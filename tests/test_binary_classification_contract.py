@@ -137,6 +137,7 @@ def test_external_catboost_classifier_uses_its_own_class_order(tmp_path: Path) -
 def test_config_builder_passes_and_validates_positive_class() -> None:
     config = {
         "target": "y",
+        "feature_columns": ["x"],
         "task": "classification",
         "loss_function": "Logloss",
         "params": {"iterations": 5},

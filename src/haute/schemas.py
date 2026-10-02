@@ -2496,7 +2496,7 @@ class TrainRequest(BaseModel):
     source: str = "live"
 
 
-TrainingFeatureSelectionMode = Literal["explicit", "all_except", "glm_terms"]
+TrainingFeatureSelectionMode = Literal["explicit", "glm_terms"]
 TrainingFeatureExclusionReason = Literal[
     "target",
     "weight",
@@ -2504,7 +2504,6 @@ TrainingFeatureExclusionReason = Literal[
     "fold",
     "identifier",
     "evaluation",
-    "configured_exclusion",
     "not_selected",
     "not_in_formula",
 ]

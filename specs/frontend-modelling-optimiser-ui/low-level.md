@@ -130,9 +130,9 @@ Only a current, accepted save response may acknowledge this revision transition.
    including `config.var_power`. CatBoost's `CommonFeatureConfig` uses the shared Polars
    numeric-dtype classifier and final selection, so only selected numeric feature cards enable
    their inline downward/dash/upward selector and can write
-   `monotone_constraints[name] = -1|1`; choosing the dash removes the key. Exclusion changes only
-   `exclude`: a stored direction remains selected in the disabled control and becomes active again
-   after re-inclusion. GLM's Features pane is `GLMTermsConfig`. `glmDtypeClass` classifies columns as continuous,
+   `monotone_constraints[name] = -1|1`; choosing the dash removes the key. Inclusion changes only
+   `feature_columns`, which starts absent so every feature starts excluded: a stored direction
+   remains selected in the disabled control and becomes active again after re-inclusion. GLM's Features pane is `GLMTermsConfig`. `glmDtypeClass` classifies columns as continuous,
    integer, boolean, categorical, or unsupported, pinned to the backend by
    `__tests__/fixtures/glmDtypeClasses.json`; role columns and unsupported dtypes are not offered,
    and the pane states how many unsupported columns it hides. A feature is in the model exactly
@@ -179,7 +179,7 @@ Only a current, accepted save response may acknowledge this revision transition.
    Target encoding / Frequency encoding modes are offered by dtype class (joint encodings need
    integer, boolean, or categorical factors) and factor-set usage; a mode change keeps only the
    factors and Include main effects, and duplicates are checked per mode. The GLM pane never
-   writes `exclude`, `feature_columns`, `monotone_constraints`, or `feature_weights`.
+   writes `feature_columns`, `monotone_constraints`, or `feature_weights`.
    New algorithms receive a canonical
    random/single-validation evaluation.
    Later strategy changes replace incompatible keys atomically instead of retaining stale
@@ -698,12 +698,13 @@ The behavioural contract is defined in
   and supported nodes expose no algorithm mutation action.
 - `frontend/src/panels/modelling/featureSelection.ts` owns role exclusion and final algorithm
   selection. The configured target, weight, offset, fold, identifiers, and active evaluation
-  group/date key are never offered as features. Final selection applies CatBoost's `exclude` filter;
+  group/date key are never offered as features. Final selection is CatBoost's `feature_columns`
+  restricted to eligible columns, mirroring the backend's `selected_feature_columns`;
   GLM membership is `modelMembership` in `glmTerms.ts`, and `roleColumnReasons` names each role
   for the GLM panes' unresolved reasons. The module performs no dependency cleanup.
 - `TargetAndTaskConfig.tsx` and `GLMTargetConfig.tsx` show read-only algorithm context.
   `CommonFeatureConfig.tsx` is CatBoost-only: case-insensitive search, dtype labels, stale
-  exclusion repair, compact single-row per-feature cards, the green/red include/exclude button,
+  feature repair, compact single-row per-feature cards, the green/red include/exclude button,
   and the monotonicity selector. `glmTerms.ts` owns every GLM editor transition as a pure
   config-to-config function (add term, native type switch, field edit, expression rename/edit
   with grammar and column checks, remove, fit all, remove all, membership, interaction slot rules

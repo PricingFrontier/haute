@@ -61,6 +61,11 @@ def test_a_removed_edge_join_decorator_argument_is_rejected_with_its_replacement
         (NodeType.EDGE_JOIN, {"baseInput": "quotes"}, "use incoming target ports"),
         (NodeType.OPTIMISER, {"scored_input": "quotes"}, "use data_input and banding_source"),
         (NodeType.MODELLING, {"model_name": "m"}, "register or promote runs outside haute"),
+        (
+            NodeType.MODELLING,
+            {"exclude": ["quote_id"]},
+            "list the columns to train on in feature_columns",
+        ),
     ],
 )
 def test_a_removed_config_key_is_rejected_with_its_replacement(

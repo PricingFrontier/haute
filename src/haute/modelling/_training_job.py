@@ -2956,10 +2956,11 @@ class TrainingJob:
             {
                 "target": self.target,
                 "weight": self.weight,
-                "exclude": list(self.exclude),
                 # Empty optional lists hash as ``None``, exactly as the
-                # config builder passes them, so a canvas run and a scripted
-                # run of one configuration share one identity.
+                # config builder passes them (it never passes ``exclude``), so a
+                # canvas run and a scripted run of one configuration share one
+                # identity.
+                "exclude": list(self.exclude) or None,
                 "feature_columns": list(self.feature_columns) or None,
                 "fold_column": self.fold_column,
                 "id_columns": list(self.id_columns) or None,

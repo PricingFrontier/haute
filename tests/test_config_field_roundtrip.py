@@ -7,20 +7,26 @@ Dynamic user dictionary keys are covered by the adjacent property tests.
 
 from __future__ import annotations
 
+import json
 import types
 from copy import deepcopy
 from typing import Any, Required, Union, get_args, get_origin, get_type_hints, is_typeddict
 
 import pytest
 
+from haute._config_io import config_path_for_node
 from haute._config_validation import _TYPED_DICT_BY_NODE_TYPE
 from haute._graph_utils import _sanitize_func_name
 from haute._types import DATA_INPUT_CONFIG_TYPES, DATA_OUTPUT_CONFIG_TYPES, GraphEdge, NodeType
+from haute.codegen import graph_to_code_multi
+from haute.errors import ConfigError
+from haute.parser import parse_pipeline_file
 from tests.test_codegen_roundtrip_property import (
     _SHARED_COLUMN_CONFIG,
     _assert_semantically_equal,
     _corpus_graphs,
     _roundtrip,
+    _write_configs_recursive,
 )
 from tests.test_explore_charts import _chart
 from tests.test_explore_pivots import _formula, _pivot
@@ -48,7 +54,6 @@ def _examples():
         {
             "mlflow_destination": "server",
             "weight": "_exposure",
-            "exclude": ["_identifier"],
             "params": {"iterations": 17, "depth": 3},
             "evaluation": {"method": "holdout", "test_size": 0.25},
             "tuning": {"enabled": True, "n_trials": 3},
@@ -511,6 +516,45 @@ def test_theta_and_glm_controls_survive_a_sidecar_write():
 
     restored = parsed.node_map[_sanitize_func_name(node.data.label)].data.config
     assert {key: restored.get(key) for key in controls} == controls
+
+
+def _modelling_node(graph):
+    return next(node for node in graph.nodes if node.data.nodeType == NodeType.MODELLING)
+
+
+def test_removed_exclude_field_is_refused_on_save_not_round_tripped():
+    """Features are opt-in: a modelling config still carrying ``exclude`` is
+    refused by name rather than saved and silently carried forward."""
+    graph = next(_examples())[1]
+    _modelling_node(graph).data.config["exclude"] = ["_identifier"]
+
+    with pytest.raises(ConfigError, match="removed exclude field") as raised:
+        _roundtrip(graph)
+
+    assert raised.value.context["removed_config_keys"] == ["exclude"]
+
+
+def test_removed_exclude_field_is_refused_when_a_saved_sidecar_carries_it(tmp_path):
+    """A hand-edited sidecar that still names ``exclude`` fails to load by name."""
+    graph = next(_examples())[1]
+    for rel_path, content in graph_to_code_multi(
+        graph, pipeline_name="capstone_roundtrip", source_file="main.py"
+    ).items():
+        path = tmp_path / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    _write_configs_recursive(graph, tmp_path)
+    sidecar = config_path_for_node(
+        NodeType.MODELLING, _sanitize_func_name(_modelling_node(graph).data.label), tmp_path
+    )
+    stored = json.loads(sidecar.read_text(encoding="utf-8"))
+    stored["exclude"] = ["_identifier"]
+    sidecar.write_text(json.dumps(stored), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="removed exclude field") as raised:
+        parse_pipeline_file(tmp_path / "main.py")
+
+    assert raised.value.context["removed_config_keys"] == ["exclude"]
 
 
 @pytest.mark.parametrize("field", ["selected_columns", "column_renames", "categorical_levels"])

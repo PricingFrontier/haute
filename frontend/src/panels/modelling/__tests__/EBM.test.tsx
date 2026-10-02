@@ -41,7 +41,7 @@ describe("EBMInteractionsConfig (MOD-F04)", () => {
     const onUpdate = renderInteractions({
       params: { max_rounds: 500, interactions: [["age", "region"]] },
       monotone_constraints: { income: 1 },
-      exclude: [],
+      feature_columns: ["age", "region", "income"],
     })
     const pair = screen.getByRole("group", { name: "Interaction 1" })
     const second = within(pair).getByLabelText("Interaction 1 feature 2")

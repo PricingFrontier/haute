@@ -2,7 +2,11 @@ import type { EvaluationPreview } from "../../api/types"
 import { configField } from "../../utils/configField"
 import { isStringOrCategoricalDtype } from "../../utils/polarsDtypes"
 import { algorithmCapability, trainsOnGpu } from "./algorithmCapabilities"
-import { roleColumnReasons, type ModellingColumn } from "./featureSelection"
+import {
+  finalSelectedFeatureNames,
+  roleColumnReasons,
+  type ModellingColumn,
+} from "./featureSelection"
 import {
   columnContext,
   interactionEntryIssue,
@@ -49,7 +53,7 @@ export function TrainingRunSummary({
   const glm = config.algorithm === "glm"
   const roles = roleColumnReasons(config)
   const eligible = columns.filter((column) => !roles.has(column.name))
-  const excluded = configField<string[]>(config, "exclude", [])
+  const selected = finalSelectedFeatureNames(config, eligible)
   const interactions = configField<unknown[]>(
     config,
     "interactions",
@@ -63,7 +67,7 @@ export function TrainingRunSummary({
         interactions,
         columnContext(columns, roles),
       ).inModel.size
-    : eligible.filter((column) => !excluded.includes(column.name)).length
+    : selected.size
   const evaluation = configField<Record<string, unknown>>(
     config,
     "evaluation",
@@ -97,7 +101,7 @@ export function TrainingRunSummary({
   const hasCategoricalFeatures =
     config.algorithm === "catboost"
     && eligible.some(
-      (column) => !excluded.includes(column.name) && isStringOrCategoricalDtype(column.dtype),
+      (column) => selected.has(column.name) && isStringOrCategoricalDtype(column.dtype),
     )
   const method =
     validation.method === "cross_validation"

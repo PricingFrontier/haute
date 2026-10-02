@@ -187,9 +187,11 @@ strip; it never falls through to CatBoost. Pane ownership:
   pane nor any other supported-node editor action changes it. To configure the other algorithm,
   the user creates a separate modelling node, preserving the original node and all of its settings.
 - **Features** — CatBoost gets an always-expanded feature-card browser with a
-  case-insensitive name-substring search, upstream dtype labels, and the existing explicit
-  not-found treatment/removal for stale exclusions, applied only once the upstream columns are
-  known (before then the saved exclusion count is shown instead). Each eligible feature has one compact,
+  case-insensitive name-substring search, upstream dtype labels, and the explicit
+  not-found treatment/removal for stored features that are no longer upstream columns, applied
+  only once the upstream columns are known (before then the saved feature count is shown
+  instead). Features are opt-in: every feature starts excluded on a new node, including a column
+  that appears upstream later, and including one writes it to `feature_columns`. Each eligible feature has one compact,
   single-row bordered card: the name and dtype sit on the left, followed by the current-state
   inclusion button and monotonicity selector on the right. The green **Include** or red
   **Exclude** button reports its current state and toggles that state. These are compact,
@@ -213,7 +215,7 @@ strip; it never falls through to CatBoost. Pane ownership:
   lives on each term, and terms that cannot be fitted (role, missing, or unsupported columns, and
   malformed entries) are listed with their reason and removal. Interaction cards show which main
   effects Include main effects adds, which fits each slot may use, and any conflict the backend
-  would refuse, on every card involved. The GLM pane never writes CatBoost's `exclude`,
+  would refuse, on every card involved. The GLM pane never writes CatBoost's
   `feature_columns`, `monotone_constraints`, or `feature_weights`.
 - **Params** — immediately below the Hyperparameters heading, CatBoost shows a
   Target-style **Parameter strategy** radio group with **Fixed parameters** and

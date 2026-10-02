@@ -117,7 +117,8 @@ If an estimate fails, the pane shows **Estimation failed:** and the reason.
 ## The FEATURES pane
 
 For CatBoost, XGBoost, LightGBM and EBM the pane lists every column that could be a
-feature, with a count of how many are included and excluded. Columns that already have a
+feature, with a count of how many are included and excluded. Every feature starts
+unticked on a new node: tick the ones the model should learn from. Columns that already have a
 role (target, weight, offset, and the group or date column the split uses) are listed
 under **Excluded from predictors** and are never features.
 
@@ -129,22 +130,21 @@ under **Excluded from predictors** and are never features.
   no constraint (the default) and **↑** increasing. The buttons are disabled for a
   non-numeric feature (**Monotonicity is only available for numeric features.**) and for an
   excluded one (**Include this feature to set monotonicity.**).
-- An excluded column that is no longer upstream shows as **<name> - not found** with a
-  button to remove the exclusion.
+- A ticked column that is no longer upstream shows as **<name> - not found** with a
+  button to remove it.
 
-Feature selection is explicit. Haute uses every available column except the target,
-weight, offset, any fold or identifier columns, the group or date column the split uses,
-and the columns you exclude here. If your data contains ID columns, dates, or columns
-derived from the target, exclude them to prevent data leakage. The target and weight are
-kept out because they have training roles; exclusions are for identifiers, dates,
-leakage-prone fields, and any other columns you deliberately do not want the model to learn
-from. The training result records the final ordered feature set, the retained metadata, and
-every excluded column with its reason.
+Feature selection is explicit: Haute trains on exactly the columns you tick, and a column
+that appears upstream later stays unticked until you tick it. Until at least one feature is
+ticked, the pane shows **Tick at least one feature on the Features pane.** and training is
+blocked. If you later give a ticked column a role (for example make it the target), it stops
+being a feature while it has that role and is ticked again once it no longer does. Leave ID
+columns, dates and columns derived from the target unticked to prevent data leakage. The
+training result records the final ordered feature set, the retained metadata, and every
+excluded column with its reason.
 
 Haute validates feature selection before collecting training data, so a missing, invalid,
 or unsuitable feature fails clearly before a large collection begins. See
-[Execution Strategy](../execution-strategy.md) for the all-except strategy and for reading
-execution diagnostics.
+[Execution Strategy](../execution-strategy.md) for reading execution diagnostics.
 
 XGBoost and LightGBM refuse monotone constraints with the MAE loss: training is blocked
 with a message asking you to remove them here or choose another loss. XGBoost's
@@ -165,8 +165,8 @@ monotone-constrained feature cannot take part in an interaction.
 
 ### GLM terms and interactions { #glm-features }
 
-A GLM's features are its terms and interaction cards; the exclusions and monotonicity
-buttons above do not apply to it.
+A GLM's features are its terms and interaction cards; the feature tick boxes and
+monotonicity buttons above do not apply to it.
 
 The **FEATURES** list shows how many columns are in the model. Above it:
 
@@ -621,7 +621,7 @@ A Poisson claim-frequency GLM with an exposure offset:
     | **Weight column (optional)** | `weight` |
     | **Offset column (optional)** | `offset` |
     | **Metrics** | `metrics`: `"gini"`, `"rmse"`, `"mae"`, `"mse"`, `"r2"`, `"auc"`, `"logloss"`, `"poisson_deviance"`, `"tweedie_deviance"`, `"gamma_deviance"` |
-    | Feature tick boxes | `exclude` (the columns left out; tree and EBM families) |
+    | Feature tick boxes | `feature_columns` (the ticked columns; tree and EBM families) |
     | **Monotonicity** | `monotone_constraints`, a map of column to `-1` or `1` (tree and EBM families) |
     | **Pairwise interactions** | `params.interactions` (EBM) |
     | **Parameters JSON** | `params` |
@@ -653,7 +653,6 @@ A Poisson claim-frequency GLM with an exposure offset:
     | Key | What it does |
     |---|---|
     | `name` | Names the training artifacts; training uses the node's id when it is absent. |
-    | `feature_columns` | An explicit feature list (tree and EBM families): Haute uses exactly those columns instead of the all-except set. |
     | `feature_weights` | CatBoost feature weights. |
     | `fold_column`, `id_columns` | Columns kept as training metadata rather than features. |
     | `output_dir` | Where training writes its working files (`outputs` by default). |
@@ -662,9 +661,10 @@ A Poisson claim-frequency GLM with an exposure offset:
     | `evaluation.validation.window` | `"expanding"` for time-based cross-validation; the editor sets it. |
     | `categorical_levels` | Declared category levels for categorical feature columns. |
 
-    `exclude`, `feature_columns` and `monotone_constraints` apply to the tree and EBM
+    `feature_columns` and `monotone_constraints` apply to the tree and EBM
     families (`feature_weights` to CatBoost only) and are ignored for a GLM, whose features
-    are its terms and interaction factors.
+    are its terms and interaction factors. A node file with the removed `exclude` key is
+    refused when the pipeline loads; list the features in `feature_columns` instead.
 
     **Evaluation.** Every node has one versioned `evaluation` object. The retired top-level
     `split` and `cross_validation` fields are not accepted. A random split reserving 20% of

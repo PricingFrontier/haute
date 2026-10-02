@@ -107,7 +107,13 @@ def _make_avg_top_5_competitor_join_graph(
                             "algorithm": "catboost",
                             "loss_function": "RMSE",
                             "target": "target",
-                            "exclude": ["quote_id", "policy_id"],
+                            "feature_columns": [
+                                "driver_age",
+                                "vehicle_age",
+                                "premium",
+                                "market_rank",
+                                "market_premium",
+                            ],
                             "params": {"iterations": 1, "depth": 1},
                             "evaluation": {
                                 "schema_version": 1,

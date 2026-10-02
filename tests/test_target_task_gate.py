@@ -683,6 +683,7 @@ class TestPreDispatchServiceGate:
                         "nodeType": "modelling",
                         "config": {
                             "target": "sev",
+                            "feature_columns": ["x1"],
                             "task": "classification",
                             "algorithm": "catboost",
                             "loss_function": "Logloss",

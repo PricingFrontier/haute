@@ -2074,7 +2074,7 @@ export interface TrainingFeatureSelectionDiagnosticPayload {
   excluded_columns: TrainingFeatureColumnReasonCollectionPayload;
   feature_count: number;
   features: TrainingFeatureNameCollectionPayload;
-  mode: 'explicit' | 'all_except' | 'glm_terms';
+  mode: 'explicit' | 'glm_terms';
   retained_metadata: TrainingFeatureColumnReasonCollectionPayload;
   schema_version: 1;
 }
@@ -2088,16 +2088,7 @@ export interface TrainingFeatureColumnReasonCollectionPayload {
 }
 export interface TrainingFeatureColumnReasonPayload {
   column: string;
-  reason:
-    | 'target'
-    | 'weight'
-    | 'offset'
-    | 'fold'
-    | 'identifier'
-    | 'evaluation'
-    | 'configured_exclusion'
-    | 'not_selected'
-    | 'not_in_formula';
+  reason: 'target' | 'weight' | 'offset' | 'fold' | 'identifier' | 'evaluation' | 'not_selected' | 'not_in_formula';
 }
 export interface TrainingFeatureNameCollectionPayload {
   /**

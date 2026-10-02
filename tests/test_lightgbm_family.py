@@ -321,6 +321,7 @@ def test_config_rejects_feature_weights_and_accepts_gamma() -> None:
         "loss_function": "Gamma",
         "params": {"num_iterations": 5},
         "evaluation": EVALUATION,
+        "feature_columns": ["x"],
     }
     assert build_training_job_kwargs(config, data="d.parquet")["algorithm"] == "lightgbm"
     with pytest.raises(TrainingConfigError, match="does not support feature weights"):
@@ -577,12 +578,13 @@ def test_mae_refuses_monotone_constraints_before_fitting() -> None:
         "loss_function": "MAE",
         "params": {"num_iterations": 5},
         "evaluation": EVALUATION,
+        "feature_columns": ["age", "region"],
         "monotone_constraints": {"age": 1},
     }
     with pytest.raises(TrainingConfigError, match="monotonicity constraints with the MAE loss"):
         build_training_job_kwargs(config, data="d.parquet")
-    # A constraint on an excluded feature is dormant, and other losses keep them.
-    dormant = {**config, "exclude": ["age"]}
+    # A constraint on an unselected feature is dormant, and other losses keep them.
+    dormant = {**config, "feature_columns": ["region"]}
     assert build_training_job_kwargs(dormant, data="d.parquet")["monotone_constraints"] is None
     rmse = {**config, "loss_function": "RMSE"}
     assert build_training_job_kwargs(rmse, data="d.parquet")["monotone_constraints"] == {"age": 1}

@@ -1421,10 +1421,11 @@ present a structural or schema result as execution evidence.
   that exact output is available as
   `(exact output - excluded_columns) ∪ required_columns`; the resolved seed is
   unioned with any independent downstream demand and propagated through ordinary
-  edge/port algebra. This makes CatBoost's include/exclude feature menu a physical
-  source projection rather than a post-load dataframe drop. Without an exact output
-  schema the seed remains schema-dependent and conservative; the planner must not
-  guess that `required_columns` alone is the complete training input.
+  edge/port algebra, so a schema-relative demand becomes a physical source projection
+  rather than a post-load dataframe drop. Without an exact output schema the seed
+  remains schema-dependent and conservative; the planner must not guess that
+  `required_columns` alone is the complete input. CatBoost training seeds an exact
+  set (its selected features and role columns), not an all-except demand.
   Declared annotations are not used as forward-schema evidence for arbitrary user
   code; missing input schemas, opaque registered contracts, and multi-input nodes
   remain unproven.

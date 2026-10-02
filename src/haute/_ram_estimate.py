@@ -1742,10 +1742,17 @@ def _edge_join_key_columns_on_path(
     return frozenset(join_keys)
 
 
-def _normalised_string_sequence(value: object) -> frozenset[str]:
-    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
-        return frozenset()
-    return frozenset(item for item in value if isinstance(item, str))
+def _tree_model_training_columns(config: Mapping[str, Any]) -> frozenset[str] | None:
+    """Columns a tree model trains on (selected features and roles); ``None`` for a GLM."""
+    from haute.modelling._train_config import (
+        is_glm_config,
+        role_column_reasons,
+        selected_feature_columns,
+    )
+
+    if is_glm_config(config):
+        return None
+    return frozenset(selected_feature_columns(config)) | frozenset(role_column_reasons(config))
 
 
 def _is_variable_width_arrow_type(arrow_type: str) -> bool:
@@ -1860,13 +1867,19 @@ def estimate_safe_training_rows(
         )
         return RamEstimate.schema_unresolvable(total_rows, available)
 
-    # Subtract excluded features — the pipeline now projects before
-    # sinking, so excluded columns never enter the split or pools.
+    # A tree model trains only its selected features and role columns; the
+    # pipeline projects before sinking, so no other column enters the split
+    # or pools. A GLM keeps every column.
     target_node = estimate_index.node_map.get(target_node_id)
+    trained = (
+        _tree_model_training_columns(target_node.data.config)
+        if target_node is not None and target_node.data.nodeType == NodeType.MODELLING
+        else None
+    )
     excluded = (
-        _normalised_string_sequence(target_node.data.config.get("exclude", []))
-        if target_node
-        else frozenset()
+        frozenset()
+        if trained is None
+        else frozenset(column for column in target_columns.columns if column not in trained)
     )
     join_keys_on_path = _edge_join_key_columns_on_path(
         graph,
