@@ -437,7 +437,8 @@ code reads as `global_constants.<name>`. A name starts with a letter, continues 
 digits and underscores, is not a Python keyword, and is unique (case-sensitively). The type is
 `integer`, `float`, `text`, `boolean` or `date`, and a constant is either uniform (one `value`)
 or split by source (`by_source`, at most one value per source; a source it lacks is incomplete,
-not invalid). Values are JSON scalars of their type: a `float` is stored as a float however it
+not invalid). Values are JSON scalars of their type: an `integer` lies within ±(2⁵³ − 1), the
+whole numbers the editor holds exactly; a `float` is stored as a float however it
 is written, and a `date` is `YYYY-MM-DD` text naming a real date. The constants live in
 `config/global_constants.json` beside the node configs: one object whose only key, `constants`,
 lists them in order, each with `name`, `type` and exactly one of `value` and `by_source`. The

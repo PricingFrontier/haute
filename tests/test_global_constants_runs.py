@@ -14,7 +14,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from haute._global_constants import GlobalConstantsNamespace, bind_function_view
+from haute._global_constants import GlobalConstantsNamespace, bind_function_view, restricted_view
 from haute._types import GlobalConstant, PipelineGraph
 from haute.deploy._validators import _global_constant_errors
 from haute.errors import GlobalConstantError
@@ -450,8 +450,8 @@ class TestDeployValidation:
 
 class TestNamespace:
     def test_a_view_survives_pickling(self) -> None:
-        view = GlobalConstantsNamespace([RATE], source="nb_batch").restricted_to(
-            frozenset({"rate"})
+        view = restricted_view(
+            GlobalConstantsNamespace([RATE], source="nb_batch"), frozenset({"rate"})
         )
 
         assert pickle.loads(pickle.dumps(view)).rate == 2.5
@@ -619,3 +619,35 @@ class TestTraceFormulas:
 
         assert result.substituted_text == "2.0 * 2.5"
         assert result.result_value == pytest.approx(5.0)
+
+
+class TestCodexFindings:
+    def test_a_trace_formula_compares_against_a_date_constant(self) -> None:
+        import datetime as dt
+
+        from haute._expression_parser import evaluate_expression
+
+        effective = GlobalConstant(name="effective", type="date", value="2024-06-01")
+        code = 'df = df.with_columns((pl.col("start") >= global_constants.effective).alias("on"))'
+        namespace = {"global_constants": GlobalConstantsNamespace([effective], source="live")}
+
+        result = evaluate_expression(code, "on", {"start": dt.date(2024, 7, 1)}, namespace)
+
+        assert result.substituted_text == "2024-07-01 >= 2024-06-01"
+        assert result.result_value is True
+
+    @pytest.mark.parametrize("name", ["restricted_to", "for_graph", "constants"])
+    def test_every_valid_name_reads_its_constant(self, name: str) -> None:
+        namespace = GlobalConstantsNamespace(
+            [GlobalConstant(name=name, type="integer", value=7)], source="live"
+        )
+
+        assert getattr(namespace, name) == 7
+        assert getattr(restricted_view(namespace, frozenset({name})), name) == 7
+
+    def test_an_integer_beyond_the_editors_exact_range_is_refused(self) -> None:
+        from pydantic import ValidationError
+
+        GlobalConstant(name="big", type="integer", value=2**53 - 1)
+        with pytest.raises(ValidationError, match="between -9007199254740991 and 9007199254740991"):
+            GlobalConstant(name="big", type="integer", value=2**53 + 1)

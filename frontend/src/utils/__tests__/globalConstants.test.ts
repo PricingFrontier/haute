@@ -48,6 +48,26 @@ describe("global constant drafts", () => {
     ])
   })
 
+  it("keep an empty split text value, which is a value, apart from a missing one", () => {
+    const drafts = constantDrafts([{ name: "suffix", type: "text", by_source: { live: "", nb_batch: "_batch" } }])
+
+    expect(constantsPayload(drafts)).toEqual([
+      { name: "suffix", type: "text", by_source: { live: "", nb_batch: "_batch" } },
+    ])
+    expect(constantIssues(drafts, ["live", "nb_batch", "other"])[0].bySource).toEqual({ other: MISSING_VALUE })
+    expect(constantsWithSourceValue(drafts, "live")).toEqual(["suffix"])
+    expect(constantsPayload([split("rate", { live: "", nb_batch: "2" })])).toEqual([
+      { name: "rate", type: "float", by_source: { nb_batch: 2 } },
+    ])
+  })
+
+  it("refuse an integer a JavaScript number cannot hold exactly", () => {
+    expect(constantIssues([uniform("big", "9007199254740993", "integer")], [])[0].value).toBe(
+      "Enter a whole number between -9007199254740991 and 9007199254740991.",
+    )
+    expect(constantIssues([uniform("max", "9007199254740991", "integer")], [])[0].value).toBeUndefined()
+  })
+
   it("leave invalid drafts out of the payload", () => {
     expect(constantsPayload([uniform("rate", "abc"), uniform("1bad", "1"), uniform("ok", "2")])).toEqual([
       { name: "ok", type: "float", value: 2 },
@@ -90,6 +110,8 @@ describe("global constant drafts", () => {
       live: "2",
       nb_batch: "",
     })
+    // A missing number stays missing as text, rather than becoming empty text.
+    expect(withType(split("x", { live: "2", nb_batch: "" }), "text").bySource).toEqual({ live: "2" })
   })
 
   it("split from the uniform value and join on the live value, naming what joining discards", () => {

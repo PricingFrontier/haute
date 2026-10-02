@@ -4,7 +4,8 @@
  *
  * The graph store holds them as drafts — each value as the text the analyst
  * typed — so the Constants pane can show an invalid or missing value without
- * losing it. `constantsPayload` turns the valid drafts into the shape the
+ * losing it. A split value is missing when its source has no key, or, for a
+ * type other than text, when it is empty; an empty text value is a value. `constantsPayload` turns the valid drafts into the shape the
  * backend's `GlobalConstant` model accepts; save refuses drafts that do not
  * all validate.
  */
@@ -68,7 +69,11 @@ function isRealDate(text: string): boolean {
 export function valueProblem(type: GlobalConstantType, text: string): string | null {
   switch (type) {
     case "integer":
-      return INTEGER_PATTERN.test(text.trim()) ? null : "Enter a whole number."
+      if (!INTEGER_PATTERN.test(text.trim())) return "Enter a whole number."
+      // The backend refuses what a JavaScript number cannot hold exactly.
+      return Number.isSafeInteger(Number(text.trim()))
+        ? null
+        : `Enter a whole number between -${Number.MAX_SAFE_INTEGER} and ${Number.MAX_SAFE_INTEGER}.`
     case "float":
       return FLOAT_PATTERN.test(text.trim()) && Number.isFinite(Number(text)) ? null : "Enter a number."
     case "boolean":
@@ -126,6 +131,12 @@ export function constantDrafts(constants: readonly GlobalConstant[]): GlobalCons
   })
 }
 
+/** Whether *draft* holds a value for *source*: its key, and for a type other than text, text. */
+export function holdsSourceValue(draft: GlobalConstantDraft, source: string): boolean {
+  const text = draft.bySource[source]
+  return text !== undefined && (text !== "" || draft.type === "text")
+}
+
 /** Each draft's problems, by index, keyed on the pipeline's *sources* for split values. */
 export function constantIssues(
   drafts: readonly GlobalConstantDraft[],
@@ -148,12 +159,11 @@ export function constantIssues(
     }
     const keys = new Set([...sources, ...Object.keys(draft.bySource)])
     for (const source of keys) {
-      const text = draft.bySource[source]
-      if (text === undefined || text === "") {
+      if (!holdsSourceValue(draft, source)) {
         if (sources.includes(source)) issues.bySource[source] = MISSING_VALUE
         continue
       }
-      const problem = valueProblem(draft.type, text)
+      const problem = valueProblem(draft.type, draft.bySource[source])
       if (problem) issues.bySource[source] = problem
     }
     return issues
@@ -209,7 +219,7 @@ export function constantsPayload(drafts: readonly GlobalConstantDraft[]): Global
       type: draft.type,
       by_source: Object.fromEntries(
         Object.entries(draft.bySource)
-          .filter(([, text]) => text !== "")
+          .filter(([source]) => holdsSourceValue(draft, source))
           .map(([source, text]) => [source, parsedValue(draft.type, text)]),
       ),
     })
@@ -231,14 +241,16 @@ export function convertValue(text: string, from: GlobalConstantType, to: GlobalC
   return valueProblem(to, text) === null ? text : ""
 }
 
-/** *draft* with its type changed, keeping each value that converts exactly. */
+/** *draft* with its type changed, keeping each value that converts exactly; a missing value stays missing. */
 export function withType(draft: GlobalConstantDraft, type: GlobalConstantType): GlobalConstantDraft {
   return {
     ...draft,
     type,
     value: convertValue(draft.value, draft.type, type),
     bySource: Object.fromEntries(
-      Object.entries(draft.bySource).map(([source, text]) => [source, convertValue(text, draft.type, type)]),
+      Object.entries(draft.bySource)
+        .filter(([source]) => holdsSourceValue(draft, source))
+        .map(([source, text]) => [source, convertValue(text, draft.type, type)]),
     ),
   }
 }
@@ -254,9 +266,11 @@ export function splitBySource(draft: GlobalConstantDraft, sources: readonly stri
 
 /** The values joining *draft* would discard: each non-live value that differs from live's. */
 export function valuesDiscardedByJoining(draft: GlobalConstantDraft): Record<string, string> {
-  const live = draft.bySource.live ?? ""
+  const live = holdsSourceValue(draft, "live") ? draft.bySource.live : undefined
   return Object.fromEntries(
-    Object.entries(draft.bySource).filter(([source, text]) => source !== "live" && text !== "" && text !== live),
+    Object.entries(draft.bySource).filter(
+      ([source, text]) => source !== "live" && holdsSourceValue(draft, source) && text !== live,
+    ),
   )
 }
 
@@ -284,7 +298,7 @@ export function constantsWithSourceValue(
   source: string,
 ): string[] {
   return drafts
-    .filter((draft) => draft.split && (draft.bySource[source] ?? "") !== "")
+    .filter((draft) => draft.split && holdsSourceValue(draft, source))
     .map((draft) => draft.name)
 }
 

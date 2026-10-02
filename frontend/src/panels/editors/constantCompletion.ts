@@ -1,5 +1,5 @@
 import type { CompletionContext, CompletionResult } from "@codemirror/autocomplete"
-import { nameProblem, type GlobalConstantDraft } from "../../utils/globalConstants"
+import { holdsSourceValue, nameProblem, type GlobalConstantDraft } from "../../utils/globalConstants"
 
 /** One constant as completion offers it: its name, type and value for the active source. */
 export interface ConstantCompletion {
@@ -13,8 +13,12 @@ export function constantCompletions(drafts: readonly GlobalConstantDraft[], sour
   return drafts
     .filter((draft) => nameProblem(draft.name) === null)
     .map((draft) => {
-      const value = draft.split ? (draft.bySource[source] ?? "") : draft.value
-      return { name: draft.name, type: draft.type, value: value === "" ? "missing" : value }
+      if (draft.split && !holdsSourceValue(draft, source)) {
+        return { name: draft.name, type: draft.type, value: "missing" }
+      }
+      const value = draft.split ? draft.bySource[source] : draft.value
+      if (value === "") return { name: draft.name, type: draft.type, value: draft.type === "text" ? '""' : "missing" }
+      return { name: draft.name, type: draft.type, value }
     })
 }
 

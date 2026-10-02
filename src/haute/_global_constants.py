@@ -327,9 +327,10 @@ class GlobalConstantsNamespace:
 
     It holds the pipeline's constants resolved for one source as concrete
     values, so a lazy callback reads the run's value on whatever thread runs
-    it. ``restricted_to`` returns the view one piece of code may read: a read
-    outside the names that code mentions is refused, which keeps the reads
-    the cache identities sign complete.
+    it. :func:`restricted_view` returns the view one piece of code may read: a
+    read outside the names that code mentions is refused, which keeps the
+    reads the cache identities sign complete. The class has no public
+    attribute, so every valid constant name reads its constant.
     """
 
     __slots__ = ("_allowed", "_defined", "_error", "_source", "_values")
@@ -355,19 +356,6 @@ class GlobalConstantsNamespace:
         object.__setattr__(self, "_source", source)
         object.__setattr__(self, "_error", error)
         object.__setattr__(self, "_allowed", allowed)
-
-    @classmethod
-    def for_graph(cls, graph: PipelineGraph, source: str) -> GlobalConstantsNamespace:
-        return cls(graph.global_constants, source=source, error=graph.global_constants_error)
-
-    def restricted_to(self, reads: ConstantReads) -> GlobalConstantsNamespace:
-        """The view code with *reads* may use (all of it for ``EVERY_CONSTANT``)."""
-        view = object.__new__(GlobalConstantsNamespace)
-        for slot in ("_values", "_defined", "_source", "_error"):
-            object.__setattr__(view, slot, getattr(self, slot))
-        allowed = None if isinstance(reads, _EveryConstant) else frozenset(reads)
-        object.__setattr__(view, "_allowed", allowed)
-        return view
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
@@ -434,6 +422,23 @@ class GlobalConstantsNamespace:
         return f"<global constants for source {self._source!r}: {', '.join(self._defined)}>"
 
 
+def namespace_for_graph(graph: PipelineGraph, source: str) -> GlobalConstantsNamespace:
+    """*graph*'s constants and load error resolved for *source*."""
+    return GlobalConstantsNamespace(
+        graph.global_constants, source=source, error=graph.global_constants_error
+    )
+
+
+def restricted_view(
+    namespace: GlobalConstantsNamespace, reads: ConstantReads
+) -> GlobalConstantsNamespace:
+    """The view code with *reads* may use (all of *namespace* for ``EVERY_CONSTANT``)."""
+    allowed = None if isinstance(reads, _EveryConstant) else frozenset(reads)
+    return _rebuild_namespace(
+        namespace._values, namespace._defined, namespace._source, namespace._error, allowed
+    )
+
+
 def _rebuild_namespace(
     values: dict[str, object],
     defined: tuple[str, ...],
@@ -461,7 +466,7 @@ def node_code_globals(
     """A new mapping: *namespace* (never mutated) plus ``global_constants`` for *source*."""
     return {
         **(namespace or {}),
-        GLOBAL_CONSTANTS_NAME: GlobalConstantsNamespace.for_graph(graph, source),
+        GLOBAL_CONSTANTS_NAME: namespace_for_graph(graph, source),
     }
 
 
@@ -472,7 +477,8 @@ def bind_code_view(namespace: Mapping[str, Any] | None, code: str) -> Mapping[st
     constants = namespace.get(GLOBAL_CONSTANTS_NAME)
     if not isinstance(constants, GlobalConstantsNamespace):
         return namespace
-    return {**namespace, GLOBAL_CONSTANTS_NAME: constants.restricted_to(code_constant_reads(code))}
+    view = restricted_view(constants, code_constant_reads(code))
+    return {**namespace, GLOBAL_CONSTANTS_NAME: view}
 
 
 def function_constant_reads(fn: Callable[..., Any]) -> ConstantReads:
@@ -496,7 +502,7 @@ def bind_function_view(
     """
     if not isinstance(fn, types.FunctionType):
         return fn
-    view = constants.restricted_to(function_constant_reads(fn))
+    view = restricted_view(constants, function_constant_reads(fn))
     copy = types.FunctionType(
         fn.__code__,
         {**fn.__globals__, GLOBAL_CONSTANTS_NAME: view},

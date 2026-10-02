@@ -1218,6 +1218,11 @@ _GLOBAL_CONSTANT_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
+#: The largest integer a global constant may hold: the editor edits values as
+#: JavaScript numbers, which represent every integer up to this one exactly.
+MAX_CONSTANT_INTEGER = 2**53 - 1
+
+
 def _checked_constant_value(
     name: str,
     constant_type: GlobalConstantType,
@@ -1227,9 +1232,13 @@ def _checked_constant_value(
 ) -> GlobalConstantValue:
     """Return *value* if it is valid for *constant_type* (a float as a float), else raise."""
     if constant_type == "integer":
-        if isinstance(value, int) and not isinstance(value, bool):
+        if (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and abs(value) <= MAX_CONSTANT_INTEGER
+        ):
             return value
-        expected = "a whole number"
+        expected = f"a whole number between -{MAX_CONSTANT_INTEGER} and {MAX_CONSTANT_INTEGER}"
     elif constant_type == "float":
         if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
             return float(value)

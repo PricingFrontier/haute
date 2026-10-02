@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import datetime as _dt
 import json
 import math
 import re
@@ -1444,7 +1445,7 @@ def _global_constant_values(namespace: Mapping[str, Any], code: str) -> dict[str
             value = getattr(constants, name)
         except Exception:  # noqa: BLE001 - an unresolved read stays as written in the trace
             continue
-        if isinstance(value, (bool, int, float, str)):
+        if isinstance(value, (bool, int, float, str, _dt.date)):
             values[name] = value
     return values
 
@@ -1459,7 +1460,13 @@ class _InlineGlobalConstants(ast.NodeTransformer):
             and node.value.id == "global_constants"
             and node.attr in self._values
         ):
-            return ast.copy_location(ast.Constant(self._values[node.attr]), node)
+            value = self._values[node.attr]
+            if isinstance(value, _dt.date):
+                # A date is a literal of the run: Polars builds it per row.
+                built = f"pl.date({value.year}, {value.month}, {value.day})"
+                literal = ast.parse(built, mode="eval")
+                return ast.copy_location(literal.body, node)
+            return ast.copy_location(ast.Constant(value), node)
         return self.generic_visit(node)
 
 

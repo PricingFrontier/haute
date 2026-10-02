@@ -383,14 +383,22 @@ function operandProblem(value: unknown, where: string, depth = 1): string | null
   if (!isShape(value, "object")) return `${where} is missing its value.`
   const operand = value as Record<string, unknown>
   if (operand.kind === "literal") return literalProblem(operand, where)
-  if (operand.kind === "column" || operand.kind === "variable") {
+  if (operand.kind === "column" || operand.kind === "variable" || operand.kind === "constant") {
     return typeof operand.name === "string" ? null : `${where} has a malformed value.`
   }
   if (operand.kind === "expr") return exprProblem(operand.expr, `${where} expression`, depth + 1)
   return `${where} has a malformed value.`
 }
 
-/** A literal-only operand position (membership lists, variables, function arguments). */
+/** A function argument: a plain value or a global constant. */
+function argumentProblem(value: unknown, where: string): string | null {
+  if (isShape(value, "object") && (value as Record<string, unknown>).kind === "constant") {
+    return typeof (value as Record<string, unknown>).name === "string" ? null : `${where} has a malformed value.`
+  }
+  return plainLiteralProblem(value, where)
+}
+
+/** A literal-only operand position (membership lists, variables, pivot values). */
 function plainLiteralProblem(value: unknown, where: string): string | null {
   if (!isShape(value, "object") || (value as Record<string, unknown>).kind !== "literal") return `${where} must be a plain value.`
   return literalProblem(value as Record<string, unknown>, where)
@@ -452,7 +460,7 @@ export function exprProblem(value: unknown, where: string, depth = 1): string | 
     case "function":
       if (typeof expr.fn !== "string") return `${where} is missing its function.`
       if (expr.text !== undefined && typeof expr.text !== "string") return `${where} has malformed formula text.`
-      if (!Array.isArray(expr.args) || expr.args.some((a) => plainLiteralProblem(a, where) !== null)) return `${where} has malformed function arguments.`
+      if (!Array.isArray(expr.args) || expr.args.some((a) => argumentProblem(a, where) !== null)) return `${where} has malformed function arguments.`
       return operandProblem(expr.operand, where, depth)
     case "conditional":
       if (typeof expr.match !== "string") return `${where} is missing its match mode.`

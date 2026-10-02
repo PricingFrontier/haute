@@ -263,7 +263,8 @@ order, for a split one. An Add button appends an empty uniform `float` constant 
 generated free name (`constant_1`, `constant_2`, …), and each constant can be deleted. Values
 are edited with the input that fits the type (a number field, text, true/false, a date). The
 pane validates as the analyst types, and marks each invalid name, duplicate name and invalid
-value with its reason. It marks a split constant's empty source value as missing, and the
+value with its reason. It marks a split constant's source value as missing when the source has
+none, or has an empty one for a type other than text (an empty text value is a value), and the
 toolbar's Save stays available. Save is refused while any constant is invalid.
 
 - Switching "Split by source" on fills every source's value with the uniform value. Switching it
