@@ -98,13 +98,11 @@ const CARD_GRID_STYLE = {
 function SummaryCard({
   title,
   icon: Icon,
-  description,
   children,
   ariaLabel,
 }: {
   title: string
   icon: LucideIcon
-  description?: string
   children: ReactNode
   ariaLabel?: string
 }) {
@@ -116,21 +114,14 @@ function SummaryCard({
       className="min-w-0 p-3 space-y-3 [&_table]:tabular-nums [&_thead]:bg-[var(--bg-input)] [&_tbody_tr]:border-b [&_tbody_tr]:border-[var(--border)] [&_tbody_tr:last-child]:border-0 [&_th]:py-2 [&_td]:py-2"
       style={{ borderBottom: "1px solid var(--border)" }}
     >
-      <div>
-        <h3
-          id={headingId}
-          className="flex items-center gap-1.5 text-[14px] font-semibold"
-          style={{ color: "var(--text-primary)" }}
-        >
-          <Icon size={14} className="shrink-0" aria-hidden="true" />
-          {title}
-        </h3>
-        {description && (
-          <p className="mt-1 text-[12px] leading-relaxed" style={{ color: "var(--text-muted)" }}>
-            {description}
-          </p>
-        )}
-      </div>
+      <h3
+        id={headingId}
+        className="flex items-center gap-1.5 text-[14px] font-semibold"
+        style={{ color: "var(--text-primary)" }}
+      >
+        <Icon size={14} className="shrink-0" aria-hidden="true" />
+        {title}
+      </h3>
       {children}
     </section>
   )
@@ -139,18 +130,16 @@ function SummaryCard({
 function MetricsList({
   label,
   metrics,
-  description,
   icon,
 }: {
   label: string
   metrics: Record<string, number>
-  description: string
   icon: LucideIcon
 }) {
   if (Object.keys(metrics).length === 0) return null
 
   return (
-    <SummaryCard title={label} description={description} icon={icon}>
+    <SummaryCard title={label} icon={icon}>
       <dl
         className="grid gap-3"
         style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 120px), 1fr))" }}
@@ -190,7 +179,6 @@ function ValidationMetrics({ evaluation }: { evaluation: EvaluationReport }) {
           : `Validation, ${rows} rows`
       }
       metrics={Object.fromEntries(summaries.map(([name, summary]) => [name, summary.mean]))}
-      description={`Out-of-sample performance of the validation ${crossValidated ? "fits" : "fit"}, used to select the model.`}
       icon={Target}
     />
   )
@@ -293,30 +281,16 @@ export function SummaryTab({ result, onUseBestParameters, elapsedSeconds }: Summ
         formatLabel={formatDiagnosticLabel}
       />
 
-      {result.final_test_rows === 0 && (
-        <p className="text-[12px] leading-relaxed" style={{ color: "var(--text-muted)" }}>
-          No test set was reserved for this run.
-        </p>
-      )}
-
       <div className="grid gap-3" style={CARD_GRID_STYLE}>
         {validationLeads && <ValidationMetrics evaluation={evaluation!} />}
         <MetricsList
           label="Test metrics"
           metrics={result.final_test_metrics}
-          description="Performance on the untouched test set."
           icon={Target}
         />
         <MetricsList
           label={`${diagnosticsLabel} diagnostics`}
           metrics={result.diagnostic_metrics}
-          description={
-            result.diagnostics_set === "final_test"
-              ? "Diagnostic measures evaluated on the test set."
-              : result.diagnostics_set === "validation"
-                ? "Diagnostic measures evaluated on the validation set."
-              : "Diagnostics on the fitted training data; these are in-sample metrics."
-          }
           icon={Activity}
         />
       </div>
@@ -394,14 +368,12 @@ export function SummaryTab({ result, onUseBestParameters, elapsedSeconds }: Summ
             <MetricsList
               label="Fit statistics"
               metrics={result.glm_fit_statistics ?? {}}
-              description="Statistics describing the fitted GLM."
               icon={ChartNoAxesCombined}
             />
             {result.glm_regularization && (
               <SummaryCard
                 title="Regularization"
                 icon={SlidersHorizontal}
-                description="The penalty RustyStats applied."
               >
                 <dl className="space-y-2">
                   {regularizationRows(result.glm_regularization).map(([label, value]) => (
@@ -423,7 +395,6 @@ export function SummaryTab({ result, onUseBestParameters, elapsedSeconds }: Summ
               <SummaryCard
                 title="Smooth terms"
                 icon={SlidersHorizontal}
-                description="Effective degrees of freedom and smoothing strength chosen for each automatic spline."
               >
                 <table aria-label="Smooth terms" className="w-full text-xs font-mono">
                   <thead>
@@ -464,7 +435,6 @@ export function SummaryTab({ result, onUseBestParameters, elapsedSeconds }: Summ
               title="Candidate selection"
               ariaLabel="Candidate selection results"
               icon={ChartNoAxesCombined}
-              description="Validation results used to select the model, separate from test performance."
             >
               <p className="text-xs" style={{ color: "var(--text-primary)" }}>
                 {validationLabel(evaluation.validation_method, evaluation.validation_fit_count)} ·{" "}
@@ -524,7 +494,6 @@ export function SummaryTab({ result, onUseBestParameters, elapsedSeconds }: Summ
               title="Tuning"
               ariaLabel="Tuning results"
               icon={SlidersHorizontal}
-              description="Compare the winning trial with the baseline and inspect the final parameters."
             >
               <div className="flex flex-wrap items-end justify-between gap-3">
                 <div>

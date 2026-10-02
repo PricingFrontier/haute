@@ -550,7 +550,7 @@ appears only when the result has something to show in it:
 - **Residuals**: prediction errors and actual against predicted.
 - **Features**: feature importance, with a button per measure. **Prediction** is the
   model's own importance; **Loss** (CatBoost) is how much the loss worsens without each
-  feature; **SHAP** (CatBoost, XGBoost, LightGBM) is each feature's mean absolute SHAP
+  feature, which can be negative, and features are ranked by its size; **SHAP** (CatBoost, XGBoost, LightGBM) is each feature's mean absolute SHAP
   value. **SHAP beeswarm** shows the top 20 of those features, one dot per sampled row:
   how far right or left a dot sits is how much that row's value pushed its prediction up
   or down (on the model's link scale), and its colour runs from blue for a low value to
@@ -591,7 +591,8 @@ The Summary keeps model-selection evidence distinct from final performance:
   node's **Parameters JSON** and turns tuning off, after asking.
 - An EBM's **Terms** view shows each main effect's shape (including the score for
   missing values) and each interaction's score table, as additive scores on the model's
-  link scale. They are the model itself, not SHAP values.
+  link scale (log for Poisson, Gamma and Tweedie; log-odds for Logloss): the prediction is
+  the intercept plus every term's score. They are the model itself, not SHAP values.
 - A GLM shows its fit statistics, the penalty actually applied (with the folds, rule,
   and seed when it was cross-validated), and each automatic spline's effective degrees
   of freedom. Standard errors and p-values are valid only for an unpenalised,

@@ -21,8 +21,8 @@ export type FeatureItem = {
 export type FeatureRanking = {
   /** The measure's name, shown above the list ("Rate spread"). */
   label: string
-  /** One line on what the measure means. */
-  description: string
+  /** One line on what the measure means, when the pane explains it. */
+  description?: string
 }
 
 export interface FeatureBrowserProps {
@@ -90,9 +90,11 @@ export function FeatureBrowser({
           <div className="text-[11px] font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--text-muted)" }}>
             {rankedBy.label}
           </div>
-          <p className="m-0 text-[11px]" style={{ color: "var(--text-muted)" }}>
-            {rankedBy.description}
-          </p>
+          {rankedBy.description && (
+            <p className="m-0 text-[11px]" style={{ color: "var(--text-muted)" }}>
+              {rankedBy.description}
+            </p>
+          )}
         </div>
       )}
 

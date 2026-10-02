@@ -103,13 +103,12 @@ const TERMS: EbmTerm[] = [
 describe("EBMTermsTab (MOD-F04)", () => {
   afterEach(cleanup)
 
-  it("shows the most important term's shape with its missing bin, labelled as term scores", () => {
+  it("shows the most important term's shape with its missing bin, not as SHAP values", () => {
     render(<EBMTermsTab result={makeTrainResult({ ebm_terms: TERMS })} />)
     expect(screen.getByRole("heading", { name: "age" })).toBeInTheDocument()
     expect(screen.getByText(/Main effect/)).toBeInTheDocument()
     expect(screen.getByText("Missing values score 0.05")).toBeInTheDocument()
     expect(screen.getByRole("img", { name: "Shape function for age" })).toBeInTheDocument()
-    expect(screen.getByText(/Additive term scores on the model's link scale/)).toBeInTheDocument()
     expect(screen.queryByText(/SHAP/)).toBeNull()
   })
 

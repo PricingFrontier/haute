@@ -76,8 +76,8 @@ results are supplied by API and result-store layers.
   count), separately labelled diagnostics, model information, and optional GLM fit
   statistics, the regularisation actually applied, and smooth terms. When RustyStats marks a
   GLM's inference invalid (penalties, monotonicity, smoothing), coefficients show dashes and the
-  reason instead of statistics. Metric values are prominent. No reserved final test is stated
-  explicitly without presenting development diagnostics as held-out performance. Candidate selection and tuning
+  reason instead of statistics. Metric values are prominent. Without a reserved final test, no
+  card presents development diagnostics as held-out performance. Candidate selection and tuning
   retain their complete evidence in separately headed cards; warnings remain visible
   above the summary. The summary carries no export action or model path: saving the
   trained model to a file and logging it to MLflow belong to the modelling editor's
@@ -637,8 +637,8 @@ this discrete solve a positive λ can sit beside positive slack.
   the backend's EBM rules (`ebm-max-rounds` on Parameters, `ebm-interactions` on Features).
 - An EBM result adds a Terms tab: terms ranked by importance, a main effect drawn as its shape
   (bars per category, a step line over value bins, the missing-value score stated), and an
-  interaction as a score table over its two axes, all labelled as additive link-scale term
-  scores, never SHAP. A traced EBM prediction lists one contribution per term, an interaction
+  interaction as a score table over its two axes, all additive link-scale term scores and
+  never labelled as SHAP. A traced EBM prediction lists one contribution per term, an interaction
   as one row.
 - The response guard treats fit-evidence fields and a tuning report's `final_tree_count` as
   optional, because the backend drops nulls: a GLM's evidence is its threads alone, and a
