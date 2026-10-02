@@ -57,20 +57,18 @@ function clippedText(value: string, maxLength: number): string {
   return value.length <= maxLength ? value : `${value.slice(0, maxLength - 1)}…`
 }
 
-function median(values: readonly number[]): number {
-  const sorted = [...values].sort((a, b) => a - b)
-  const middle = Math.floor(sorted.length / 2)
-  return sorted.length % 2 === 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2
-}
+/** A feature's plotted rows and SHAP range and median, computed once per result. */
+type FeatureSummary = { rows: number; low: number; high: number; median: number }
 
-function shapRange(feature: TrainShapBeeswarmFeature): [number, number] {
-  let low = Infinity
-  let high = -Infinity
-  for (const value of feature.shap_values) {
-    low = Math.min(low, value)
-    high = Math.max(high, value)
+function summarise(feature: TrainShapBeeswarmFeature): FeatureSummary {
+  const sorted = [...feature.shap_values].sort((a, b) => a - b)
+  const middle = Math.floor(sorted.length / 2)
+  return {
+    rows: sorted.length,
+    low: sorted[0],
+    high: sorted[sorted.length - 1],
+    median: sorted.length % 2 === 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2,
   }
-  return [low, high]
 }
 
 function displayValue(value: number | string | null): string {
@@ -87,9 +85,8 @@ function colourMeaning(feature: TrainShapBeeswarmFeature, row: number): string {
   return `value rank ${rank.toFixed(2)} of low 0 to high 1`
 }
 
-function describeFeature(feature: TrainShapBeeswarmFeature): string {
-  const [low, high] = shapRange(feature)
-  return `${feature.feature}: ${feature.shap_values.length.toLocaleString()} rows, SHAP from ${formatChartNumber(low)} to ${formatChartNumber(high)}`
+function describeFeature(feature: TrainShapBeeswarmFeature, summary: FeatureSummary): string {
+  return `${feature.feature}: ${summary.rows.toLocaleString()} rows, SHAP from ${formatChartNumber(summary.low)} to ${formatChartNumber(summary.high)}`
 }
 
 /** Paint every dot, batched by colour, at the device's pixel ratio. */
@@ -136,16 +133,39 @@ function paintDots(
 
 export default function ShapBeeswarm({ features, width }: ShapBeeswarmProps) {
   const [active, setActive] = useState<Active>(null)
+  // Pointing changes `active` on every dot, so nothing per-result is recomputed here.
+  const summaries = useMemo(() => features.map(summarise), [features])
+  const hasUnordered = useMemo(
+    () => features.some((feature) => feature.value_ranks.some((rank) => rank === null)),
+    [features],
+  )
+  const tableRows = useMemo(
+    () =>
+      features.map((feature, index) => [
+        feature.feature,
+        summaries[index].rows.toLocaleString(),
+        formatChartNumber(summaries[index].low),
+        formatChartNumber(summaries[index].median),
+        formatChartNumber(summaries[index].high),
+      ]),
+    [features, summaries],
+  )
   if (features.length === 0) return null
 
-  const hasUnordered = features.some((feature) => feature.value_ranks.some((rank) => rank === null))
   const detailFeature = active ? features[active.feature] : null
+  const detailSummary = active ? summaries[active.feature] : null
 
   return (
     <section className="space-y-2" aria-label="SHAP beeswarm">
       <ResponsiveChart width={width}>
         {(chartWidth) => (
-          <BeeswarmChart features={features} width={chartWidth} active={active} onActivate={setActive} />
+          <BeeswarmChart
+            features={features}
+            summaries={summaries}
+            width={chartWidth}
+            active={active}
+            onActivate={setActive}
+          />
         )}
       </ResponsiveChart>
 
@@ -154,7 +174,7 @@ export default function ShapBeeswarm({ features, width }: ShapBeeswarmProps) {
       )}
 
       <div className="validation-bin-detail" role="status" aria-live="polite">
-        {active && detailFeature ? (
+        {active && detailFeature && detailSummary ? (
           active.kind === "dot" ? (
             <>
               <strong>{detailFeature.feature}</strong>
@@ -165,10 +185,9 @@ export default function ShapBeeswarm({ features, width }: ShapBeeswarmProps) {
           ) : (
             <>
               <strong>{detailFeature.feature}</strong>
-              <span>Rows: {detailFeature.shap_values.length.toLocaleString()}</span>
+              <span>Rows: {detailSummary.rows.toLocaleString()}</span>
               <span>
-                SHAP: {formatChartNumber(shapRange(detailFeature)[0])} to{" "}
-                {formatChartNumber(shapRange(detailFeature)[1])}
+                SHAP: {formatChartNumber(detailSummary.low)} to {formatChartNumber(detailSummary.high)}
               </span>
             </>
           )
@@ -181,16 +200,7 @@ export default function ShapBeeswarm({ features, width }: ShapBeeswarmProps) {
         summary="View SHAP values"
         ariaLabel="SHAP beeswarm values"
         headers={["Feature", "Rows", "Min SHAP", "Median SHAP", "Max SHAP"]}
-        rows={features.map((feature) => {
-          const [low, high] = shapRange(feature)
-          return [
-            feature.feature,
-            feature.shap_values.length.toLocaleString(),
-            formatChartNumber(low),
-            formatChartNumber(median(feature.shap_values)),
-            formatChartNumber(high),
-          ]
-        })}
+        rows={tableRows}
       />
     </section>
   )
@@ -198,11 +208,13 @@ export default function ShapBeeswarm({ features, width }: ShapBeeswarmProps) {
 
 function BeeswarmChart({
   features,
+  summaries,
   width,
   active,
   onActivate,
 }: {
   features: TrainShapBeeswarmFeature[]
+  summaries: FeatureSummary[]
   width: number
   active: Active
   onActivate: (active: Active) => void
@@ -274,7 +286,7 @@ function BeeswarmChart({
               data-testid="shap-beeswarm-feature"
               role="button"
               tabIndex={0}
-              aria-label={describeFeature(feature)}
+              aria-label={describeFeature(feature, summaries[index])}
               aria-pressed={isActive}
               className="focus-ring"
               onFocus={activate}
