@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "smoke_output_mapping_clarification",
+  "case": "smoke_output_mapping_clarification",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "inspect",
+              "tool": "get_pipeline",
+              "arguments": {},
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "NEEDS_INPUT: Which columns should quote_response expose, and under which JSON paths?",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

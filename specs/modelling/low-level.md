@@ -294,11 +294,14 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    (`_declared_categorical_levels_for_training`); `_validate_config` (target set,
    algorithm registered, canonical `evaluation` and optional `tuning` parsed,
    the removed `split`/`cross_validation` rejected by the one check
-   `src/haute/modelling/_train_config.py::reject_removed_evaluation_fields`, GLM family/link
-   validity or, for every other family, loss validity against the selected family's own
-   descriptor (`algorithm_descriptor(algorithm).native_loss(task, loss)`, the check the
-   training builder repeats), so a loss that family supports and CatBoost does not (Gamma for
-   LightGBM, XGBoost and EBM) is not refused in CatBoost's name; then
+   `src/haute/modelling/_train_config.py::reject_removed_evaluation_fields`, the configured
+   values checked by `src/haute/modelling/_train_config.py::validate_modelling_config_values`:
+   the algorithm name exactly as a descriptor key (case-sensitive), GLM family/link and
+   solver validity (`validate_glm_params`) or, for every other family, loss validity against
+   the selected family's own descriptor (`algorithm_descriptor(algorithm).native_loss(task,
+   loss)`), so a loss that family supports and CatBoost does not (Gamma for LightGBM, XGBoost
+   and EBM) is not refused in CatBoost's name, and a target that is not also in
+   `feature_columns`. Save validation and the training builder run the same function; then
    `training_objective_issue` for completeness); under
    `_start_lock`, reject if another job is already `"running"`
    (`_check_no_concurrent_jobs`), create the job record, and register its cancellation
@@ -1307,6 +1310,10 @@ rows/features) and retry.
   incomplete or invalid modelling-node config. Raised by `build_training_job_kwargs`
   and `training_objective_issue`; translated to HTTP 400 by
   `src/haute/routes/modelling.py::export_script` and by `TrainService._validate_config`.
+  The malformed subset, raised by `validate_modelling_config_values`, is also a save
+  refusal: `validate_node_config` runs it for every modelling node, so a save (the editor's
+  or the assistant's dry-run and apply) answers 400 naming the node and the value, and an
+  incomplete node still saves.
 - **`FeatureMismatchError`** (`haute.errors.HauteError` subclass) — feature-contract
   structural problems: missing/unknown top-level fields, wrong field types, hash
   mismatch (edited/corrupted file), invalid `categorical_levels` declarations, and

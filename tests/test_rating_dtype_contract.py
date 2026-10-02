@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 import polars as pl
@@ -455,4 +456,98 @@ def test_date_entries_reject_other_spellings_on_both_paths(entry: str) -> None:
             {"factor": datetime.date(2024, 1, 31)},
             {"rate": 2.0},
             factor_input_dtypes={"factor": pl.Date},
+        )
+
+
+def _duration_entry_table(entry: str) -> dict[str, Any]:
+    return {
+        "name": "durations",
+        "factors": ["factor"],
+        "outputColumn": "rate",
+        "entries": [{"factor": entry, "value": 2.0}],
+        "onMissing": "neutral",
+    }
+
+
+@pytest.mark.parametrize(
+    ("entry", "duration"),
+    [
+        ("PT1.5S", timedelta(milliseconds=1500)),
+        ("-P1DT2H", -timedelta(days=1, hours=2)),
+    ],
+)
+def test_a_duration_key_reads_an_iso_8601_spelling_exactly_on_both_paths(
+    entry: str, duration: timedelta
+) -> None:
+    """A Duration factor's string key is the ISO-8601 duration Polars displays."""
+    dtype = pl.Duration("ms")
+    source = pl.DataFrame({"factor": pl.Series([duration], dtype=dtype)}).lazy()
+
+    rated = _apply_rating_table(source, _duration_entry_table(entry)).collect()
+
+    assert rated["rate"].to_list() == [2.0]
+    assert normalise_rating_key(entry, dtype) == normalise_rating_key(duration, dtype)
+
+
+_WHOLE_MILLISECONDS = "Round the key to whole milliseconds."
+
+
+@pytest.mark.parametrize(
+    ("key", "message", "fix"),
+    [
+        (
+            "1 second",
+            "invalid ISO-8601 duration rating key '1 second'",
+            "A Duration factor's key is an ISO-8601 duration like PT1.5S, PT30M or P1DT2H.",
+        ),
+        (
+            "PT",
+            "invalid ISO-8601 duration rating key 'PT'",
+            "A Duration factor's key is an ISO-8601 duration like PT1.5S, PT30M or P1DT2H.",
+        ),
+        (
+            "PT0.0001S",
+            "duration rating key 'PT0.0001S' is not exactly representable as ms",
+            _WHOLE_MILLISECONDS,
+        ),
+        (
+            "PT1.0000000000000000000000000001S",
+            "duration rating key 'PT1.0000000000000000000000000001S' is not exactly "
+            "representable as ms",
+            _WHOLE_MILLISECONDS,
+        ),
+        (
+            "P999999999999D",
+            "duration rating key 'P999999999999D' is out of range for ms",
+            "A Duration(ms) column holds between -2**63 and 2**63 - 1 milliseconds.",
+        ),
+    ],
+    ids=[
+        "not-iso-8601",
+        "no-component",
+        "finer-than-the-time-unit",
+        "finer-past-28-digits",
+        "out-of-range",
+    ],
+)
+def test_a_duration_key_that_names_no_exact_duration_is_refused_on_both_paths(
+    key: str, message: str, fix: str
+) -> None:
+    """Pricing and the trace refuse the key as the same configuration error."""
+    from haute.errors import ConfigSettingError
+
+    dtype = pl.Duration("ms")
+    source = pl.DataFrame({"factor": pl.Series([timedelta(seconds=1)], dtype=dtype)}).lazy()
+
+    with pytest.raises(ConfigSettingError) as priced:
+        _apply_rating_table(source, _duration_entry_table(key)).collect()
+    with pytest.raises(ConfigSettingError) as traced:
+        normalise_rating_key(key, dtype)
+
+    for caught in (priced, traced):
+        assert str(caught.value) == message
+        assert (caught.value.setting, caught.value.values, caught.value.fix) == (
+            "tables",
+            (key,),
+            fix,
         )

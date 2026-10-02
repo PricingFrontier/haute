@@ -1,0 +1,60 @@
+{
+  "node_type": "output",
+  "authorable": true,
+  "fields": {
+    "outputMapping": "One row per response field: which input column fills which JSON path. Only mapped, enabled columns reach the response.",
+    "outputMapping[].source_port": "The name of the input the column comes from.",
+    "input names": "An input is named after its incoming edge: the upstream node's name, except that an edge from a Quote Input frame, which `add_edge`'s `source_handle` selects, is named by that frame, and an edge from a submodel output by its port.",
+    "outputMapping[].source_column": "The column on that input.",
+    "outputMapping[].output_path": "Where the value goes in the response. Always starts with \"$[:]\" (one response object per row), then \".name\" keys: \"$[:].premium\", or \"$[:].pricing.premium\" for a nested object. A bare \"premium\" or \"$.premium\" is refused.",
+    "outputMapping[].enabled": "true to include the row; false keeps it listed but leaves it out of the response.",
+    "outputFormat": "\"json\", the only response format."
+  },
+  "inputs": [
+    {
+      "edge": "priced",
+      "columns": {
+        "quote_id": "String",
+        "age_band": "String",
+        "premium": "Float64"
+      }
+    }
+  ],
+  "configs": [
+    {
+      "name": "minimal",
+      "intent": "Return each quote's id and premium.",
+      "config": {
+        "outputMapping": [
+          {"source_port": "priced", "source_column": "quote_id", "output_path": "$[:].quote_id", "enabled": true},
+          {"source_port": "priced", "source_column": "premium", "output_path": "$[:].premium", "enabled": true}
+        ],
+        "outputFormat": "json"
+      },
+      "produces": ["quote_id", "premium"]
+    },
+    {
+      "name": "realistic",
+      "intent": "Return the quote id with a nested pricing object holding the premium and the age band.",
+      "config": {
+        "outputMapping": [
+          {"source_port": "priced", "source_column": "quote_id", "output_path": "$[:].quote_id", "enabled": true},
+          {"source_port": "priced", "source_column": "premium", "output_path": "$[:].pricing.premium", "enabled": true},
+          {"source_port": "priced", "source_column": "age_band", "output_path": "$[:].pricing.age_band", "enabled": true}
+        ],
+        "outputFormat": "json"
+      },
+      "produces": ["quote_id"]
+    }
+  ],
+  "fixture": {
+    "frames": {
+      "priced": {
+        "rows": [
+          {"quote_id": "q1", "age_band": "17-24", "premium": 812.5},
+          {"quote_id": "q2", "age_band": "25-59", "premium": 402.0}
+        ]
+      }
+    }
+  }
+}

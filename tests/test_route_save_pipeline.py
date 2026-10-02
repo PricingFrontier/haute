@@ -85,6 +85,32 @@ def _file_input_config(path: str) -> dict:
     }
 
 
+def _quote_input_config(*labels: str) -> dict:
+    """A JSON Quote Input config with one typed table per label."""
+    return {
+        "path": "quote.json",
+        "tables": [
+            {
+                "path": "$[:]",
+                "label": label,
+                "emit": True,
+                "row_id_column": None,
+                "columns": [
+                    {
+                        "name": "quote_id",
+                        "path": "$[:].quote_id",
+                        "type": "str",
+                        "status": "Confirmed",
+                        "selected": True,
+                        "levels": None,
+                    }
+                ],
+            }
+            for label in labels
+        ],
+    }
+
+
 def _make_node(
     nid: str,
     label: str,
@@ -473,6 +499,69 @@ class TestValidateScenarioExpanderGridSize:
         SavePipelineService(tmp_path).validate_graph(graph, source_file="pipeline.py")
 
 
+class TestValidateModellingValues:
+    """A malformed modelling value can never train, so save refuses it; an
+    unfinished node is incomplete, not malformed, and still saves."""
+
+    @staticmethod
+    def _graph(config: dict) -> PipelineGraph:
+        return _make_graph(_make_node("m", "train", "modelling", config))
+
+    @pytest.mark.parametrize(
+        ("config", "message"),
+        [
+            pytest.param(
+                {"algorithm": "GLM", "family": "Poisson"},
+                "Unknown algorithm 'GLM'",
+                id="algorithm-case",
+            ),
+            pytest.param({"algorithm": "gbm"}, "Unknown algorithm 'gbm'", id="unknown-algorithm"),
+            pytest.param(
+                {"algorithm": "glm", "family": "poison"},
+                "Unknown GLM family 'poison'",
+                id="unknown-family",
+            ),
+            pytest.param(
+                {"algorithm": "glm", "family": "poisson", "link": "logit"},
+                "Link 'logit' is not valid for the poisson family",
+                id="family-link",
+            ),
+            pytest.param(
+                {"algorithm": "catboost", "loss_function": "Gamma"},
+                "CatBoost does not support the Gamma loss",
+                id="family-loss",
+            ),
+            pytest.param(
+                {"target": "claims", "feature_columns": ["age", "claims"]},
+                "Target column 'claims' is also listed in feature_columns",
+                id="target-is-a-feature",
+            ),
+        ],
+    )
+    def test_a_malformed_value_is_refused_naming_the_node(
+        self, tmp_path: Path, config: dict, message: str
+    ) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService(tmp_path).validate_graph(
+                self._graph(config), source_file="pipeline.py"
+            )
+
+        assert exc_info.value.status_code == 400
+        assert "'train'" in exc_info.value.detail
+        assert message in exc_info.value.detail
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            pytest.param({}, id="palette-empty"),
+            pytest.param({"algorithm": "glm"}, id="glm-without-family"),
+            pytest.param({"algorithm": "catboost", "target": "claims"}, id="no-loss"),
+        ],
+    )
+    def test_an_incomplete_node_still_saves(self, tmp_path: Path, config: dict) -> None:
+        SavePipelineService(tmp_path).validate_graph(self._graph(config), source_file="pipeline.py")
+
+
 class TestValidateDeclaredConfigKeys:
     def test_validate_graph_rejects_an_undeclared_key_before_writing(self, tmp_path: Path) -> None:
         """A key the node type does not declare would be lost on save, so the
@@ -668,6 +757,37 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             svc.save(req)
         assert exc_info.value.status_code == 400
         assert "Foo_Bar" in exc_info.value.detail
+
+
+class TestValidateQuoteInputTablesDoNotShadowNodes:
+    """A Quote Input table's frame handle is an input name, so no node may share it.
+
+    The parser infers an edge from any parameter named like a node, so a
+    consumer's `quotes` parameter would bind the frame and a node `quotes`
+    both, and the saved file would not reload.
+    """
+
+    def test_a_table_labelled_like_a_submodel_child_raises_400(self) -> None:
+        graph = _make_submodel_graph(
+            _make_node("quotes", "quotes", "polars", {"code": "df"}),
+            root_nodes=(_make_node("quote", "Quote", "apiInput", _quote_input_config("quotes")),),
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService._validate_quote_input_tables_do_not_shadow_nodes(graph)
+
+        assert exc_info.value.status_code == 400
+        detail = exc_info.value.detail
+        assert "table 'quotes'" in detail and "Quote Input 'Quote'" in detail
+        assert "node 'quotes'" in detail
+
+    def test_a_table_labelled_like_its_own_quote_input_passes(self) -> None:
+        graph = _make_graph(
+            _make_node("quote", "quote", "apiInput", _quote_input_config("quote", "drivers")),
+            _make_node("rated", "rated", "polars", {"code": "df = quote"}),
+        )
+
+        SavePipelineService._validate_quote_input_tables_do_not_shadow_nodes(graph)
 
 
 # ---------------------------------------------------------------------------
@@ -1427,6 +1547,47 @@ class TestSaveEndpointIntegration:
         )
         assert resp.status_code == 400
         assert "API Input" in resp.json()["detail"]
+
+    def test_save_quote_input_table_labelled_like_a_node_returns_400(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """A parameter named `quotes` would bind both the frame and the node `quotes`."""
+
+        def node(nid: str, node_type: str, config: dict) -> dict:
+            return {
+                "id": nid,
+                "type": "pipelineNode",
+                "position": {"x": 0, "y": 0},
+                "data": {"label": nid, "nodeType": node_type, "config": config},
+            }
+
+        graph = {
+            "nodes": [
+                node("quote", "apiInput", _quote_input_config("quotes")),
+                node("quotes", "polars", {"code": "df = pl.LazyFrame({'x': [1]})"}),
+                node("aged", "polars", {"code": "df = quotes"}),
+            ],
+            "edges": [
+                {"id": "e1", "source": "quote", "target": "aged", "sourceHandle": "quotes"},
+            ],
+        }
+        resp = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "clash",
+                "description": "",
+                "graph": graph,
+                "source_file": "clash.py",
+                "base_revision": None,
+            },
+        )
+
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert "table 'quotes'" in detail
+        assert "Quote Input 'quote'" in detail
+        assert "node 'quotes'" in detail
+        assert not (tmp_path / "clash.py").exists()
 
     def test_save_parent_binding_to_unrouted_input_returns_actionable_400(
         self,

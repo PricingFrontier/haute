@@ -33,11 +33,17 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal
 
+import polars as pl
+
+from haute._polars_dtypes import parse_rendered_dtype
 from haute._polars_steps_layout import layout_statement
 from haute._types import NodeType
+from haute._user_exec import _exec_user_code
+from haute.errors import SchemaMismatchError
 
 __all__ = [
     "STEPPED_NODE_TYPES",
+    "STEPPED_SURFACE_LABELS",
     "STEP_STARTS",
     "StepStart",
     "SteppedSurface",
@@ -64,9 +70,14 @@ __all__ = [
     "STEP_KINDS",
     "PolarsStepError",
     "RenderedSteps",
+    "ResolvedFreeCode",
+    "resolve_free_code_columns",
     "referenced_step_inputs",
     "rename_step_inputs",
+    "step_input_references",
+    "render_node_steps",
     "render_polars_steps",
+    "step_fields",
     "validate_polars_steps",
 ]
 
@@ -116,6 +127,19 @@ STEPPED_NODE_TYPES: Mapping[NodeType, SteppedSurface] = MappingProxyType(
     }
 )
 
+#: The name an analyst knows each stepped surface by, for messages about its steps.
+STEPPED_SURFACE_LABELS: Mapping[NodeType, str] = MappingProxyType(
+    {
+        NodeType.POLARS: "Transform",
+        NodeType.DATA_INPUT: "Data Input",
+        NodeType.EXTERNAL_FILE: "External File",
+        NodeType.RATING_STEP: "Rating Step",
+        NodeType.MODEL_SCORE: "Model Score",
+        NodeType.SCENARIO_EXPANDER: "Scenario Expander",
+        NodeType.EXPLORE: "Explore",
+    }
+)
+
 
 def stepped_surface_for(node_type: NodeType) -> SteppedSurface:
     """The stepped surface of *node_type*; a type outside the table is an error."""
@@ -134,6 +158,19 @@ def step_input_names(node_type: NodeType, edge_names: Sequence[str]) -> list[str
     """
     surface = stepped_surface_for(node_type)
     return list(edge_names) if surface.inputs == "edges" else []
+
+
+def render_node_steps(node_type: NodeType, steps: object) -> RenderedSteps:
+    """Render a stepped *node_type*'s *steps* as its saved config materialises them.
+
+    A surface whose code sees only ``df`` has no eligible input names, so a
+    join or concat is refused; an ``edges`` surface's names are only known to
+    the graph, so its references are rendered as written and checked at build
+    time against the connected edges.
+    """
+    surface = stepped_surface_for(node_type)
+    input_names: list[str] | None = [] if surface.inputs == "none" else None
+    return render_polars_steps(steps, input_names, start=surface.start)
 
 
 def is_stepped_config(node_type: NodeType, config: Mapping[str, object]) -> bool:
@@ -397,11 +434,27 @@ def render_polars_steps(
     return _Renderer(steps, input_names, start, spelling).render()
 
 
+def step_fields() -> dict[str, dict[str, list[str]]]:
+    """Each step kind's required and optional fields besides ``id`` and ``kind``.
+
+    The validator's own tables, in :data:`STEP_KINDS` order, so a description of
+    the step grammar cannot drift from what :func:`validate_polars_steps` accepts.
+    """
+    fields: dict[str, dict[str, list[str]]] = {}
+    for kind in STEP_KINDS:
+        optional = _OPTIONAL_STEP_KEYS.get(kind, frozenset())
+        fields[kind] = {
+            "required": sorted(_STEP_KEYS[kind] - optional),
+            "optional": sorted(optional),
+        }
+    return fields
+
+
 def referenced_step_inputs(steps: object) -> list[str]:
     """Return the distinct input names a valid step list references, in order."""
     seen: dict[str, None] = {}
     for step in validate_polars_steps(steps):
-        for name in _step_input_references(step):
+        for name in step_input_references(step):
             seen.setdefault(name, None)
     return list(seen)
 
@@ -433,12 +486,118 @@ def rename_step_inputs(steps: object, renames: Mapping[str, str]) -> list[dict[s
     return out
 
 
+#: A column list as the editor holds it: ``(name, str(dtype))`` pairs.
+ColumnList = Sequence[tuple[str, str]]
+
+
+@dataclass(frozen=True)
+class ResolvedFreeCode:
+    """The columns of ``df`` after one free-code step, or why they are unknown."""
+
+    step_index: int
+    columns: tuple[tuple[str, str], ...] | None
+    message: str
+
+
+def resolve_free_code_columns(
+    steps: Sequence[Mapping[str, Any]],
+    rendered: RenderedSteps,
+    *,
+    start: StepStart,
+    input_names: Sequence[str],
+    input_columns: Mapping[str, ColumnList],
+    frame_columns: ColumnList,
+) -> list[ResolvedFreeCode]:
+    """The schema of ``df`` after each ``free_code`` step of a rendered list.
+
+    The rendered lines up to the end of the step run as node code over empty
+    frames of the columns the editor knows (the eligible inputs by name, and
+    ``df`` on a frame-mode surface) without the preamble, and only the
+    resulting schema is read. An entry has no columns and a one-line reason
+    when the code names an input whose columns are not known, a known column's
+    type cannot be rebuilt, or the code or its schema fails.
+    """
+    frames: dict[str, pl.LazyFrame] = {}
+    unknown: dict[str, str] = {}
+    for name in input_names:
+        columns = input_columns.get(name)
+        if not columns:
+            unknown[name] = f"The columns of input {name!r} are not known yet."
+            continue
+        try:
+            frames[name] = _empty_frame(columns, f"input {name!r}")
+        except SchemaMismatchError as exc:
+            unknown[name] = exc.message
+    frame: pl.LazyFrame | None = None
+    frame_problem = ""
+    if start == "frame" and not frame_columns:
+        frame_problem = "The columns of this node's data are not known yet."
+    elif start == "frame":
+        try:
+            frame = _empty_frame(frame_columns, "this node's data")
+        except SchemaMismatchError as exc:
+            frame_problem = exc.message
+
+    lines = rendered.code.split("\n")
+    resolved: list[ResolvedFreeCode] = []
+    for index, step in enumerate(steps):
+        if step["kind"] != "free_code":
+            continue
+        program = "\n".join(lines[: rendered.step_lines[index][1]])
+        read = {
+            node.id
+            for node in ast.walk(ast.parse(program))
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        }
+        problem = frame_problem or next(
+            (unknown[name] for name in input_names if name in unknown and name in read), ""
+        )
+        if problem:
+            resolved.append(ResolvedFreeCode(index, None, problem))
+            continue
+        names = list(frames)
+        bound = tuple(frames.values())
+        if frame is not None:
+            names, bound = ["df", *names], (frame, *bound)
+        try:
+            result = _exec_user_code(
+                program, names, bound, alias_first_input_as_df=frame is not None
+            )
+            if not isinstance(result, pl.LazyFrame):
+                resolved.append(
+                    ResolvedFreeCode(index, None, "The code must leave df as a Polars frame.")
+                )
+                continue
+            schema = result.collect_schema()
+        except Exception as exc:  # the reason is the entry's message
+            reason = f"{type(exc).__name__}: {exc}".strip().split("\n", 1)[0]
+            resolved.append(ResolvedFreeCode(index, None, reason))
+            continue
+        columns = tuple((name, str(dtype)) for name, dtype in schema.items())
+        resolved.append(ResolvedFreeCode(index, columns, ""))
+    return resolved
+
+
+def _empty_frame(columns: ColumnList, owner: str) -> pl.LazyFrame:
+    """An empty lazy frame of *columns*, each type rebuilt from its rendering."""
+    schema: dict[str, pl.DataType] = {}
+    for name, rendered in columns:
+        try:
+            schema[name] = parse_rendered_dtype(rendered, column=name)
+        except SchemaMismatchError:
+            raise SchemaMismatchError(
+                f"The type of column {name!r} in {owner} cannot be read: {rendered}."
+            ) from None
+    return pl.LazyFrame(schema=schema)
+
+
 # ---------------------------------------------------------------------------
 # Renderer
 # ---------------------------------------------------------------------------
 
 
-def _step_input_references(step: Mapping[str, Any]) -> list[str]:
+def step_input_references(step: Mapping[str, Any]) -> list[str]:
+    """The input names one validated step reads (a source, join or concat)."""
     kind = step["kind"]
     if kind in ("source", "join"):
         return [step["input"]]

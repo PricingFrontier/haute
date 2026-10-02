@@ -644,6 +644,12 @@ browser without a server or JS bundle.
   invalid GLM family/link combination) are rejected before any pipeline execution or
   job record is created, as HTTP 400 with a message naming the exact missing/invalid
   setting.
+- A configured value that can never train is malformed and is refused when the pipeline
+  is saved, from the editor and the assistant alike: an unknown algorithm or GLM family
+  (names are case-sensitive: `glm`, `poisson`), a link, solver setting or loss the chosen
+  family rejects, or a target also listed in `feature_columns`. An unfinished node is
+  incomplete, not malformed, and still saves: a new modelling node is `{}`, and an unset
+  target, objective or feature set is reported when training starts.
 - An admission failure discovered before a job handle can be returned surfaces as HTTP
   507. RAM or GPU-VRAM failure discovered during background preparation transitions the
   pollable job to `memory_limited` and preserves the equivalent structured 507 detail

@@ -64,6 +64,7 @@ export type {
   PipelineSettingsAutomatic,
   PipelineSettingsResponse,
   PipelineSettingsValues,
+  PolarsFreeCodeColumnsResponse,
   PolarsStepsRenderResponse,
 } from "../generated/api-contracts.generated"
 export interface SchemaWarning {

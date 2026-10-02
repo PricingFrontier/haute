@@ -1,0 +1,117 @@
+{
+  "node_type": "modelling",
+  "authorable": true,
+  "fields": {
+    "name": "The model's name, used for its saved files and MLflow run.",
+    "target": "The column to predict; never also a feature.",
+    "feature_columns": "The predictor columns. Target, weight and offset columns are never features.",
+    "algorithm": "The model family, lower case: \"catboost\", \"xgboost\", \"lightgbm\" and \"ebm\" are tree families; \"glm\" is a generalised linear model.",
+    "task": "\"regression\" or \"classification\"; a GLM trains regression only.",
+    "loss_function": "Tree families: the training loss, required: \"RMSE\", \"MAE\", \"Poisson\", \"Gamma\", \"Tweedie\" (with variance_power between 1 and 2), \"Logloss\" or \"CrossEntropy\". CatBoost has no Gamma.",
+    "params": "Tree families: the family's own hyperparameters, such as CatBoost's iterations, depth and learning_rate. Unknown keys fail when training starts.",
+    "family / link": "GLM: the distribution and link, lower case: \"poisson\" with \"log\" for claim counts, \"gamma\" with \"log\" for severity, \"tweedie\" (with var_power) for burning cost, \"gaussian\" with \"identity\".",
+    "terms": "GLM: {column: {\"type\": ...}} per predictor: \"linear\", \"categorical\" (optional reference level), \"ns\"/\"bs\" splines with df, or an encoding.",
+    "offset": "A strictly positive exposure column, such as exposure in years. Under a log link (a log-link GLM, or a Poisson or Tweedie tree loss) it multiplies the prediction; do not log it yourself.",
+    "weight": "Optional row-weight column.",
+    "evaluation": "Required before the node can train. How rows are held out: {\"schema_version\": 1, \"strategy\": \"random\", \"seed\": n, \"validation\": {\"method\": \"single\", \"size\": 0.2}}.",
+    "wiring": "A Model Training node has no output and ends its branch; the analyst trains it from the node, and a Model Scoring node scores with the trained model."
+  },
+  "inputs": [
+    {
+      "edge": "policies",
+      "columns": {
+        "policy_id": "String",
+        "driver_age": "Int64",
+        "region": "String",
+        "vehicle_value": "Float64",
+        "exposure": "Float64",
+        "claim_count": "Int64",
+        "claim_cost": "Float64"
+      }
+    }
+  ],
+  "configs": [
+    {
+      "name": "minimal",
+      "intent": "Train a CatBoost claim-cost model with a squared-error loss.",
+      "config": {
+        "name": "claim_cost_gbm",
+        "target": "claim_cost",
+        "feature_columns": ["driver_age", "region", "vehicle_value"],
+        "algorithm": "catboost",
+        "task": "regression",
+        "loss_function": "RMSE",
+        "params": {"iterations": 20, "depth": 3, "learning_rate": 0.1},
+        "evaluation": {
+          "schema_version": 1,
+          "strategy": "random",
+          "seed": 42,
+          "validation": {"method": "single", "size": 0.2}
+        }
+      },
+      "produces": ["claim_cost"]
+    },
+    {
+      "name": "realistic",
+      "intent": "Train a Poisson claim-frequency GLM under a log link with exposure as the offset.",
+      "config": {
+        "name": "frequency_glm",
+        "target": "claim_count",
+        "algorithm": "glm",
+        "task": "regression",
+        "family": "poisson",
+        "link": "log",
+        "offset": "exposure",
+        "terms": {
+          "driver_age": {"type": "linear"},
+          "region": {"type": "categorical", "reference": "South"}
+        },
+        "evaluation": {
+          "schema_version": 1,
+          "strategy": "random",
+          "seed": 42,
+          "validation": {"method": "single", "size": 0.2}
+        }
+      },
+      "produces": ["claim_count", "exposure"]
+    }
+  ],
+  "fixture": {
+    "frames": {
+      "policies": {
+        "rows": [
+          {"policy_id": "p01", "driver_age": 38, "region": "North", "vehicle_value": 13055.0, "exposure": 0.25, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p02", "driver_age": 21, "region": "North", "vehicle_value": 3050.0, "exposure": 1.0, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p03", "driver_age": 21, "region": "North", "vehicle_value": 28529.0, "exposure": 0.25, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p04", "driver_age": 20, "region": "North", "vehicle_value": 10109.0, "exposure": 0.5, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p05", "driver_age": 61, "region": "North", "vehicle_value": 4886.0, "exposure": 0.5, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p06", "driver_age": 21, "region": "North", "vehicle_value": 15900.0, "exposure": 1.0, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p07", "driver_age": 41, "region": "South", "vehicle_value": 8956.0, "exposure": 0.5, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p08", "driver_age": 51, "region": "South", "vehicle_value": 26504.0, "exposure": 1.0, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p09", "driver_age": 44, "region": "North", "vehicle_value": 23200.0, "exposure": 0.5, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p10", "driver_age": 22, "region": "South", "vehicle_value": 11523.0, "exposure": 0.75, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p11", "driver_age": 71, "region": "North", "vehicle_value": 28451.0, "exposure": 1.0, "claim_count": 1, "claim_cost": 2301.0},
+          {"policy_id": "p12", "driver_age": 37, "region": "South", "vehicle_value": 9969.0, "exposure": 1.0, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p13", "driver_age": 40, "region": "North", "vehicle_value": 19106.0, "exposure": 1.0, "claim_count": 1, "claim_cost": 736.3},
+          {"policy_id": "p14", "driver_age": 33, "region": "South", "vehicle_value": 12947.0, "exposure": 1.0, "claim_count": 1, "claim_cost": 1828.5},
+          {"policy_id": "p15", "driver_age": 74, "region": "North", "vehicle_value": 24940.0, "exposure": 0.75, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p16", "driver_age": 42, "region": "North", "vehicle_value": 6226.0, "exposure": 0.5, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p17", "driver_age": 71, "region": "North", "vehicle_value": 9357.0, "exposure": 0.25, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p18", "driver_age": 38, "region": "North", "vehicle_value": 21334.0, "exposure": 0.25, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p19", "driver_age": 61, "region": "South", "vehicle_value": 13146.0, "exposure": 1.0, "claim_count": 1, "claim_cost": 561.8},
+          {"policy_id": "p20", "driver_age": 22, "region": "North", "vehicle_value": 14338.0, "exposure": 0.25, "claim_count": 1, "claim_cost": 400.6},
+          {"policy_id": "p21", "driver_age": 27, "region": "North", "vehicle_value": 28571.0, "exposure": 0.25, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p22", "driver_age": 58, "region": "South", "vehicle_value": 28753.0, "exposure": 0.75, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p23", "driver_age": 47, "region": "South", "vehicle_value": 15547.0, "exposure": 0.25, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p24", "driver_age": 48, "region": "North", "vehicle_value": 16457.0, "exposure": 0.5, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p25", "driver_age": 52, "region": "North", "vehicle_value": 23228.0, "exposure": 0.75, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p26", "driver_age": 34, "region": "South", "vehicle_value": 27431.0, "exposure": 0.75, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p27", "driver_age": 39, "region": "North", "vehicle_value": 19170.0, "exposure": 0.5, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p28", "driver_age": 32, "region": "North", "vehicle_value": 16494.0, "exposure": 0.75, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p29", "driver_age": 48, "region": "South", "vehicle_value": 7422.0, "exposure": 0.75, "claim_count": 0, "claim_cost": 0.0},
+          {"policy_id": "p30", "driver_age": 41, "region": "North", "vehicle_value": 8173.0, "exposure": 0.5, "claim_count": 0, "claim_cost": 0.0}
+        ]
+      }
+    }
+  }
+}

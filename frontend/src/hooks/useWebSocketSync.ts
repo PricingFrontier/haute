@@ -118,10 +118,43 @@ function sourceFileLabel(value: unknown, fallback = "the current pipeline"): str
   return value.replace(/\\/g, "/")
 }
 
+/** The assistant change an update saved or undid, and every node id it names. */
+interface AssistantDocumentOrigin {
+  kind: "assistant"
+  sessionId: string
+  changeId: string
+  nodeIds: string[]
+}
+
 interface PipelineDocumentUpdateFrame {
   document: PipelineEditorDocument
   documentFingerprint: string
   sourceFile: string
+  /** Present only on an update an assistant apply or undo published. */
+  origin: AssistantDocumentOrigin | null
+}
+
+function parseDocumentOrigin(value: unknown): AssistantDocumentOrigin {
+  const invalid = () => new Error("pipeline_document_update: invalid origin")
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw invalid()
+  const origin = value as Record<string, unknown>
+  const keys = Object.keys(origin).sort()
+  if (keys.join(",") !== "change_id,kind,node_ids,session_id") throw invalid()
+  if (
+    origin.kind !== "assistant" ||
+    typeof origin.session_id !== "string" ||
+    typeof origin.change_id !== "string" ||
+    !Array.isArray(origin.node_ids) ||
+    !origin.node_ids.every((id) => typeof id === "string")
+  ) {
+    throw invalid()
+  }
+  return {
+    kind: "assistant",
+    sessionId: origin.session_id,
+    changeId: origin.change_id,
+    nodeIds: origin.node_ids as string[],
+  }
 }
 
 function parsePipelineDocumentUpdateFrame(
@@ -133,6 +166,7 @@ function parsePipelineDocumentUpdateFrame(
     "document",
     "document_fingerprint",
     "source_file",
+    ...("origin" in message ? ["origin"] : []),
   ]
   const actualKeys = Object.keys(message).sort()
   if (
@@ -165,6 +199,7 @@ function parsePipelineDocumentUpdateFrame(
     document,
     documentFingerprint,
     sourceFile: message.source_file,
+    origin: "origin" in message ? parseDocumentOrigin(message.origin) : null,
   }
 }
 
@@ -406,13 +441,26 @@ export default function useWebSocketSync({
               "info",
               frame.document.load_status === "degraded"
                 ? "Pipeline updated in recovery mode"
-                : "Pipeline updated from file",
+                : frame.origin !== null
+                  ? "Pipeline updated by the assistant"
+                  : "Pipeline updated from file",
             )
             if (rejectedEdges.length > 0) {
               addToast("warning", formatRejectedEdgeWarning(rejectedEdges))
             }
+            // An assistant change rings and centres the nodes it names that the
+            // new graph has; any other update clears that focus and fits the graph.
+            const focused = frame.origin === null
+              ? null
+              : frame.origin.nodeIds.filter((id) => newNodeIds.has(id))
+            if (focused === null) ui.setChangeFocus(null)
             scheduleDelayed(() => {
-              if (mounted && updateSeq === graphUpdateSeq) fitView({ padding: 0.8 })
+              if (!mounted || updateSeq !== graphUpdateSeq) return
+              if (focused === null) {
+                fitView({ padding: 0.8 })
+              } else {
+                useUIStore.getState().setChangeFocus(focused.length > 0 ? focused : null)
+              }
             }, 100)
           } catch (err) {
             if (!mounted || updateSeq !== graphUpdateSeq) return

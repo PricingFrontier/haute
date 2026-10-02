@@ -1,1 +1,1 @@
-{"outputMapping":[{"source_port":"train","source_column":"target","output_path":"$[:].target","enabled":true}],"outputFormat":"json"}
+{"outputMapping":[{"source_port":"scored","source_column":"prediction","output_path":"$[:].prediction","enabled":true}],"outputFormat":"json"}

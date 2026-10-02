@@ -167,7 +167,15 @@ running heavy work in a child process the parent can kill on timeout or memory l
   inside a hard memory cap (in the current isolated worker, or a spawned one admitted from
   the execution's budget), warned before and recorded in the terminal diagnostics; a
   schema-only execution, or one without an admitted context, never builds and meets the
-  typed `input_snapshot_missing` rejection instead. Optional input code runs exactly once through `_exec_user_code` after
+  typed `input_snapshot_missing` rejection instead. The one exception is the inferred
+  schema tier: a schema-only caller that records inferred inputs resolves a missing local
+  file snapshot's schema through the format's lazy scanner with the node's own settings
+  and bounded type inference, collecting nothing and writing no snapshot, and records the
+  tier `inferred`; formats without a scanner, configurations only the eager reader
+  accepts, and non-file providers are refused with the remedy to preview the input
+  first. The same caller resolves a structured API Input table with no snapshot from
+  its declared column types, reading no request data, and records the tier `declared`
+  per table. Optional input code runs exactly once through `_exec_user_code` after
   provider resolution. Direct source signatures — or, for a snapshot-backed input, the
   generation pointer together with the current source signature — along with source
   identity, mode, and code, participate in fingerprints without resolved secrets, so a
@@ -459,7 +467,7 @@ running heavy work in a child process the parent can kill on timeout or memory l
   failures into a diagnosed opaque contract. Every non-preview profile, and an
   unprofiled low-level eager or lazy call, raises `ContractResolutionError` before
   node work. This policy is independent of projection/materialisation strictness.
-- **Assistant schema inspection is plan-only.** `get_node_schema` performs the
+- **Assistant schema inspection is plan-only.** `inspect_node`'s schema part performs the
   same flattening, preamble compilation, active-source selection, node building,
   and contract enforcement as production lazy execution up to the requested
   top-level node, then calls `collect_schema()` on the preserved lazy result.
@@ -469,9 +477,12 @@ running heavy work in a child process the parent can kill on timeout or memory l
   an OUTPUT node.
   Multi-frame results report one schema per output port.
   This is execution-plan evidence, not proof of row values or commercial
-  correctness. The current assistant mutation service declares structural
-  verification after save; it does not claim that this schema read ran for every
-  mutation.
+  correctness. The assistant mutation service's tier follows its evidence: it
+  declares `schema` when schema evidence was collected for at least one target and
+  re-proves that evidence after save, and `structural` when there is none — a plan
+  with no executable target to resolve, or one whose every target already failed to
+  resolve on the saved graph and was excluded with a `pre_existing_schema_failure`
+  warning.
 - **Partitioned Parquet remains lazy and projected.** Directory-backed inputs retain
   Hive-partition predicates and required columns in the optimized scan, pruning
   irrelevant files/columns before checkpointing, caching, or response materialisation.

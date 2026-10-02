@@ -55,6 +55,12 @@ def _api_contract_fingerprint() -> dict[str, dict[str, dict[str, Any]]]:
 
 
 EXPECTED_API_CONTRACT_FINGERPRINT = {
+    "/api/assistant/changes/undo": {
+        "POST": {
+            "request_ref": "#/components/schemas/AssistantUndoRequest",
+            "success_schema": {"$ref": "#/components/schemas/AssistantUndoResponse"},
+        }
+    },
     "/api/assistant/message": {
         "POST": {
             "request_ref": "#/components/schemas/AssistantMessageRequest",
@@ -661,6 +667,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
         "POST": {
             "request_ref": "#/components/schemas/EditorIdentitiesRequest",
             "success_schema": {"$ref": "#/components/schemas/EditorIdentitiesResponse"},
+        },
+    },
+    "/api/pipeline/polars-steps/free-code-columns": {
+        "POST": {
+            "request_ref": "#/components/schemas/PolarsFreeCodeColumnsRequest",
+            "success_schema": {"$ref": "#/components/schemas/PolarsFreeCodeColumnsResponse"},
         },
     },
     "/api/pipeline/polars-steps/render": {

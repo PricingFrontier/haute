@@ -1158,6 +1158,23 @@ class SourceCacheStore:
                     return "discarded_staging"
                 return "absent"
 
+    def published_generation_id(self, identity: SourceCacheIdentity) -> str:
+        """The published generation's id, read from metadata alone.
+
+        Reads the current pointer, validates its generation id and identity
+        digest, and checks that the generation's directory and ``meta.json``
+        exist. Unlike :meth:`open_generation` it takes no identity lock and
+        opens no part, so it never compares part sizes, reads a footer or
+        hashes content: the generation is published, not verified. Raises
+        ``FileNotFoundError`` when no pointer or generation exists and
+        :class:`SourceCacheCorruptError` when the pointer cannot be read.
+        """
+        generation_id = self._read_pointer(identity)
+        metadata_path = self.identity_path(identity) / "generations" / generation_id / "meta.json"
+        if not metadata_path.is_file():
+            raise FileNotFoundError(metadata_path)
+        return generation_id
+
     def clear(self, identity: SourceCacheIdentity) -> None:
         with self._identity_lock(identity):
             with self._lease_lock:

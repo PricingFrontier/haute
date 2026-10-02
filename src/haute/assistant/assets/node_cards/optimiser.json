@@ -1,0 +1,135 @@
+{
+  "node_type": "optimiser",
+  "authorable": true,
+  "fields": {
+    "mode": "\"online\" picks one scenario per quote; \"ratebook\" solves one factor per band of each factor column, shared by every quote in the band.",
+    "objective": "The scored column whose total the solve maximises, such as expected income.",
+    "constraints": "{column: bound} per constrained total: {\"min\": x} or {\"max\": x} bound the column's total absolutely; {\"min_pct\": 0.95} or {\"max_pct\": x} bound it as a fraction of its baseline total.",
+    "quote_id / scenario_index / scenario_value": "The scored frame's quote id, scenario step index and scenario value columns, as the Expander wrote them.",
+    "data_input": "The incoming edge holding the scored scenarios; required when several inputs are connected.",
+    "banding_source": "Ratebook only: the incoming edge from the Banding node whose band columns are the rating factors. Its frame carries the quote id column too.",
+    "factor_columns": "Ratebook only: the factors to solve, each a list of band columns: [[\"region\"]] for one factor, [[\"age_band\", \"region\"]] for a joint one.",
+    "max_iter / tolerance": "Solver iteration cap and convergence tolerance.",
+    "max_cd_iterations / cd_tolerance": "Ratebook only: coordinate-descent passes over the factors and their tolerance.",
+    "wiring": "An Optimisation node has no output and ends its branch. The analyst runs the solve from the node and saves the result for an Apply Optimisation node to price with."
+  },
+  "inputs": [
+    {
+      "edge": "scored",
+      "columns": {
+        "quote_id": "String",
+        "scenario_index": "Int64",
+        "scenario_value": "Float64",
+        "expected_income": "Float64",
+        "volume": "Float64"
+      }
+    },
+    {
+      "edge": "rating_factors",
+      "columns": {
+        "quote_id": "String",
+        "area": "String",
+        "region": "String"
+      }
+    }
+  ],
+  "configs": [
+    {
+      "name": "minimal",
+      "intent": "Pick each quote's price scenario to maximise expected income while keeping total volume at least 3.",
+      "inputs": [
+        {
+          "edge": "scored",
+          "columns": {
+            "quote_id": "String",
+            "scenario_index": "Int64",
+            "scenario_value": "Float64",
+            "expected_income": "Float64",
+            "volume": "Float64"
+          }
+        }
+      ],
+      "config": {
+        "mode": "online",
+        "objective": "expected_income",
+        "constraints": {"volume": {"min": 3.0}},
+        "quote_id": "quote_id",
+        "scenario_index": "scenario_index",
+        "scenario_value": "scenario_value",
+        "max_iter": 50,
+        "tolerance": 0.000001
+      },
+      "produces": ["quote_id", "scenario_value", "expected_income"]
+    },
+    {
+      "name": "realistic",
+      "intent": "Solve one price factor per region from a Banding node, keeping at least 95% of the baseline volume.",
+      "config": {
+        "mode": "ratebook",
+        "objective": "expected_income",
+        "constraints": {"volume": {"min_pct": 0.95}},
+        "quote_id": "quote_id",
+        "scenario_index": "scenario_index",
+        "scenario_value": "scenario_value",
+        "data_input": "scored",
+        "banding_source": "rating_factors",
+        "factor_columns": [["region"]],
+        "max_iter": 50,
+        "tolerance": 0.000001,
+        "max_cd_iterations": 5,
+        "cd_tolerance": 0.001
+      },
+      "produces": ["quote_id", "scenario_value", "expected_income"]
+    }
+  ],
+  "fixture": {
+    "frames": {
+      "scored": {
+        "rows": [
+          {"quote_id": "q1", "scenario_index": 0, "scenario_value": 0.9, "expected_income": 90.0, "volume": 1.0},
+          {"quote_id": "q1", "scenario_index": 1, "scenario_value": 1.0, "expected_income": 100.0, "volume": 0.9},
+          {"quote_id": "q1", "scenario_index": 2, "scenario_value": 1.1, "expected_income": 110.0, "volume": 0.7},
+          {"quote_id": "q2", "scenario_index": 0, "scenario_value": 0.9, "expected_income": 45.0, "volume": 1.0},
+          {"quote_id": "q2", "scenario_index": 1, "scenario_value": 1.0, "expected_income": 50.0, "volume": 0.95},
+          {"quote_id": "q2", "scenario_index": 2, "scenario_value": 1.1, "expected_income": 55.0, "volume": 0.8},
+          {"quote_id": "q3", "scenario_index": 0, "scenario_value": 0.9, "expected_income": 180.0, "volume": 1.0},
+          {"quote_id": "q3", "scenario_index": 1, "scenario_value": 1.0, "expected_income": 200.0, "volume": 0.85},
+          {"quote_id": "q3", "scenario_index": 2, "scenario_value": 1.1, "expected_income": 220.0, "volume": 0.6},
+          {"quote_id": "q4", "scenario_index": 0, "scenario_value": 0.9, "expected_income": 72.0, "volume": 1.0},
+          {"quote_id": "q4", "scenario_index": 1, "scenario_value": 1.0, "expected_income": 80.0, "volume": 0.9},
+          {"quote_id": "q4", "scenario_index": 2, "scenario_value": 1.1, "expected_income": 88.0, "volume": 0.75}
+        ]
+      },
+      "policies": {
+        "rows": [
+          {"quote_id": "q1", "area": "NE"},
+          {"quote_id": "q2", "area": "SW"},
+          {"quote_id": "q3", "area": "NE"},
+          {"quote_id": "q4", "area": "SW"}
+        ]
+      }
+    },
+    "upstream": [
+      {
+        "op": "add_node",
+        "node_type": "banding",
+        "name": "rating_factors",
+        "config": {
+          "factors": [
+            {
+              "banding": "categorical",
+              "column": "area",
+              "outputColumn": "region",
+              "rules": [
+                {"value": "NE", "assignment": "North"},
+                {"value": "SW", "assignment": "South"}
+              ],
+              "default": "Other"
+            }
+          ]
+        }
+      },
+      {"op": "add_edge", "source": "policies", "target": "rating_factors"}
+    ]
+  }
+}

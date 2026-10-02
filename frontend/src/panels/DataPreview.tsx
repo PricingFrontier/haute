@@ -65,6 +65,8 @@ interface DataPreviewProps {
   onSelectFrame?: (portLabel: string) => void
   /** An action shown beside Refresh (Import, for a snapshot-backed Data Input). */
   inputAction?: ReactNode
+  /** An action shown under a run error (Ask the assistant to fix). */
+  errorAction?: ReactNode
 }
 
 
@@ -271,7 +273,7 @@ const DataCell = memo(function DataCell({
   )
 })
 
-export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, tracedCell, embedded = false, nodeType, onSelectFrame, inputAction }: DataPreviewProps) {
+export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, tracedCell, embedded = false, nodeType, onSelectFrame, inputAction, errorAction }: DataPreviewProps) {
   const [columnSearch, setColumnSearch] = useState("")
 
   // Frame labels for a multi-frame producer (a multi-table apiInput). The
@@ -481,6 +483,7 @@ export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, t
       <div className="text-center">
         <AlertCircle size={24} className="mx-auto mb-2" style={{ color: 'var(--danger)', opacity: 0.5 }} />
         <div className="text-xs max-w-md" style={{ color: 'var(--danger)' }}>{data.error}</div>
+        {errorAction}
       </div>
     </div>
   ) : (

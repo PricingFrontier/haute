@@ -12,6 +12,7 @@ import pytest
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_walker import (
     CollectPolicy,
+    MeasuredInput,
     WalkPurpose,
     WalkRequest,
     WalkResult,
@@ -732,3 +733,84 @@ def test_projecting_to_no_demand_keeps_the_frame() -> None:
     frame = pl.LazyFrame({"x": [1]})
 
     assert project_output(frame, None, node=_node("n", NodeType.POLARS)) is frame
+
+
+class _RowCounts:
+    """Measurement queries that count rows and read every column."""
+
+    def input_query(self, node: GraphNode, measured: MeasuredInput) -> pl.LazyFrame:
+        return measured.frame.select(pl.len().alias("rows"), pl.all().null_count().sum())
+
+    def joint_query(self, node: GraphNode, inputs: object) -> None:
+        return None
+
+    def output_query(
+        self, node: GraphNode, port: str | None, frame: pl.LazyFrame, inputs: object
+    ) -> pl.LazyFrame:
+        return frame.select(pl.len().alias("rows"), pl.all().null_count().sum())
+
+
+def test_a_measuring_walk_records_each_failure_against_the_node_it_belongs_to(
+    haute_scratch: Path,
+) -> None:
+    """A builder's failure is its own node's; a failure collecting an input is
+    its producer's, at or upstream; independent branches still measure."""
+    graph = PipelineGraph(
+        nodes=[
+            _source(haute_scratch, "src", pl.DataFrame({"x": ["1", "two", "3"]})),
+            _node("unbuildable", NodeType.RATING_STEP, tables="not a list"),
+            _node(
+                "as_int", NodeType.POLARS, code="df = src.with_columns(pl.col('x').cast(pl.Int64))"
+            ),
+            _node("reads_unbuildable", NodeType.POLARS, code="df = unbuildable"),
+            _node("reads_as_int", NodeType.POLARS, code="df = as_int"),
+            _node("also_reads_as_int", NodeType.POLARS, code="df = as_int.head(1)"),
+            _node("independent", NodeType.POLARS, code="df = src.with_columns(y=pl.lit(1))"),
+        ],
+        edges=[
+            _edge("src", "unbuildable"),
+            _edge("src", "as_int"),
+            _edge("unbuildable", "reads_unbuildable"),
+            _edge("as_int", "reads_as_int"),
+            _edge("as_int", "also_reads_as_int"),
+            _edge("src", "independent"),
+        ],
+    )
+    checked = ("reads_unbuildable", "reads_as_int", "also_reads_as_int", "independent")
+
+    walked = walk_graph(
+        graph,
+        _build_node_fn,
+        policy=CollectPolicy.measuring(checked=checked, row_bound=2, queries=_RowCounts()),
+    )
+
+    assert walked.frames == {}
+    assert {
+        node: failure.at_or_upstream for node, failure in walked.attributed_failures.items()
+    } == {
+        "unbuildable": False,
+        "as_int": True,
+    }
+    inherited = {
+        node: (measurement.status, measurement.failure and measurement.failure.node_id)
+        for node, measurement in walked.measurements.items()
+    }
+    assert inherited == {
+        "reads_unbuildable": ("upstream_failed", "unbuildable"),
+        "reads_as_int": ("upstream_failed", "as_int"),
+        "also_reads_as_int": ("upstream_failed", "as_int"),
+        "independent": ("measured", None),
+    }
+    independent = walked.measurements["independent"]
+    # Each measured frame is cut to the row bound.
+    assert independent.inputs[0] == ("src", {"rows": 2, "x": 0})
+    assert independent.outputs == ((None, {"rows": 2, "x": 0, "y": 0}),)
+
+
+def test_a_measuring_policy_carries_queries_and_a_row_bound() -> None:
+    with pytest.raises(ValueError, match="carries queries"):
+        CollectPolicy(purpose=WalkPurpose.MEASURE, row_limit=10)
+    with pytest.raises(ValueError, match="carries queries"):
+        CollectPolicy(purpose=WalkPurpose.DISPLAY, queries=_RowCounts())
+    with pytest.raises(ValueError, match="row bound"):
+        CollectPolicy(purpose=WalkPurpose.MEASURE, queries=_RowCounts())

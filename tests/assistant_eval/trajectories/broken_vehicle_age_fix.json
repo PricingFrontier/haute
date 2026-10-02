@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "id": "broken_vehicle_age_fix",
+  "case": "broken_vehicle_age_fix",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "schema",
+              "tool": "inspect_node",
+              "arguments": {
+                "node": "rating_features"
+              },
+              "result": {
+                "status": "error",
+                "error_code": "schema_unresolvable"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "config",
+              "tool": "inspect_node",
+              "arguments": {
+                "node": "rating_features",
+                "parts": [
+                  "config"
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Read the vehicle's year from year_of_manufacture, the column quotes provides, in rating_features.",
+                "ops": [
+                  {
+                    "op": "edit_steps",
+                    "node": "rating_features",
+                    "edits": [
+                      {
+                        "replace": "logic",
+                        "step": {
+                          "kind": "free_code",
+                          "code": "# Derive the vehicle's age from its year of manufacture\ndf = df.with_columns(vehicle_age=2025 - pl.col('year_of_manufacture'))"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved the change.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

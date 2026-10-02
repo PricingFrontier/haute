@@ -334,15 +334,36 @@ def _function_body_source(
     Whole lines, except when the body starts on the header's last line
     (``def f(): ...``): that line is sliced from the first statement's column,
     which ``ast`` reports in UTF-8 bytes.
+
+    Comment lines above the first statement belong to the body: ``ast`` starts
+    the body at its first statement, so they are recovered by walking back
+    over the comment-only and blank lines indented at least as far as that
+    statement. The walk stops at the first line holding code, which is at the
+    latest the header's last line (the one with the signature's closing
+    ``:``), so it never enters the signature; blank lines before the first
+    recovered comment stay out.
     """
     first = function.body[0]
     start = first.lineno - 1
     end = function.body[-1].end_lineno or first.lineno
-    lines = source_lines[start:end]
-    head = lines[0].encode("utf-8")
+    head = source_lines[start].encode("utf-8")
     if head[: first.col_offset].strip():
+        lines = source_lines[start:end]
         lines[0] = head[first.col_offset :].decode("utf-8")
-    return "\n".join(lines)
+        return "\n".join(lines)
+    indent = first.col_offset
+    cursor = start
+    while cursor - 1 >= function.lineno:
+        line = source_lines[cursor - 1]
+        stripped = line.lstrip()
+        if not stripped:
+            cursor -= 1
+            continue
+        if not stripped.startswith("#") or len(line) - len(stripped) < indent:
+            break
+        cursor -= 1
+        start = cursor
+    return "\n".join(source_lines[start:end])
 
 
 def _eval_connect_value(receiver: str, role: str, node: ast.expr) -> Any:

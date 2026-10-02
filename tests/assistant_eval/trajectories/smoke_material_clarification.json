@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "smoke_material_clarification",
+  "case": "smoke_material_clarification",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "NEEDS_INPUT: Which factors, factor values and missing-factor default should the rating use?",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "steps": [],
+  "sourceType": "run",
+  "run_id": "00000000000000000000000000000000",
+  "artifact_path": "claim_frequency.cbm",
+  "task": "regression",
+  "output_column": "expected_frequency",
+  "contract": {
+    "inputs": [
+      "driver_age",
+      "vehicle_group",
+      "vehicle_value"
+    ],
+    "outputs": [
+      "expected_frequency"
+    ]
+  }
+}

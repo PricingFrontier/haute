@@ -1,0 +1,342 @@
+{
+  "schema_version": 1,
+  "id": "smoke_staged_pricing_build",
+  "case": "smoke_staged_pricing_build",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "plan",
+              "tool": "update_build_plan",
+              "arguments": {
+                "items": [
+                  {
+                    "id": "source",
+                    "title": "Data input and features"
+                  },
+                  {
+                    "id": "banding",
+                    "title": "Region banding"
+                  },
+                  {
+                    "id": "rating",
+                    "title": "Region rating"
+                  },
+                  {
+                    "id": "response",
+                    "title": "Quote response"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "source_dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Read the new-business batch and add the vehicle value in thousands.",
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "dataInput",
+                    "name": "nb_batch",
+                    "ref": "source",
+                    "config": {
+                      "inputType": "file",
+                      "format": "parquet",
+                      "mode": "scan",
+                      "path": "data/nb_batch.parquet",
+                      "arguments": {}
+                    }
+                  },
+                  {
+                    "op": "add_node",
+                    "node_type": "polars",
+                    "name": "quote_features",
+                    "ref": "features",
+                    "config": {
+                      "steps": [
+                        {
+                          "id": "start",
+                          "kind": "source",
+                          "input": "nb_batch"
+                        },
+                        {
+                          "id": "logic",
+                          "kind": "free_code",
+                          "code": "# Vehicle value in thousands\ndf = df.with_columns((pl.col('vehicle_value') / 1000).alias('vehicle_value_k'))\n"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "$source",
+                    "target": "$features"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "source_apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "source_dry.plan_hash"
+                },
+                "item": "source"
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "source_done",
+              "tool": "update_build_plan",
+              "arguments": {
+                "complete": "source"
+              },
+              "result": {
+                "status": "ok"
+              }
+            },
+            {
+              "id": "banding_dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Band region into region_group after the quote features.",
+                "ops": [
+                  {
+                    "op": "recipe",
+                    "recipe": "categorical_banding",
+                    "arguments": {
+                      "source": "quote_features",
+                      "name": "region_band",
+                      "column": "region",
+                      "output_column": "region_group",
+                      "rules": [
+                        {
+                          "value": "north",
+                          "assignment": "core"
+                        },
+                        {
+                          "value": "south",
+                          "assignment": "outer"
+                        }
+                      ],
+                      "default": "other"
+                    }
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "banding_apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "banding_dry.plan_hash"
+                },
+                "item": "banding"
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "banding_done",
+              "tool": "update_build_plan",
+              "arguments": {
+                "complete": "banding"
+              },
+              "result": {
+                "status": "ok"
+              }
+            },
+            {
+              "id": "rating_dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Rate each quote by its region group and combine the factor into a technical premium.",
+                "ops": [
+                  {
+                    "op": "recipe",
+                    "recipe": "rating_step",
+                    "arguments": {
+                      "source": "region_band",
+                      "name": "region_rating",
+                      "tables": [
+                        {
+                          "factors": [
+                            "region_group"
+                          ],
+                          "output_column": "region_factor",
+                          "entries": [
+                            {
+                              "factor_values": [
+                                "core"
+                              ],
+                              "value": 1.1
+                            },
+                            {
+                              "factor_values": [
+                                "outer"
+                              ],
+                              "value": 0.9
+                            }
+                          ],
+                          "default_value": 1.0
+                        }
+                      ],
+                      "combined_outputs": [
+                        {
+                          "output_column": "technical_premium",
+                          "operation": "multiply",
+                          "base_value": 500
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "rating_apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "rating_dry.plan_hash"
+                },
+                "item": "rating"
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "rating_done",
+              "tool": "update_build_plan",
+              "arguments": {
+                "complete": "rating"
+              },
+              "result": {
+                "status": "ok"
+              }
+            },
+            {
+              "id": "response_dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Map the quote id, region factor and technical premium into the quote response.",
+                "ops": [
+                  {
+                    "op": "recipe",
+                    "recipe": "response_output",
+                    "arguments": {
+                      "source": "region_rating",
+                      "output_name": "quote_response",
+                      "output_columns": [
+                        "quote_id",
+                        "region_factor",
+                        "technical_premium"
+                      ]
+                    }
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "response_apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "response_dry.plan_hash"
+                },
+                "item": "response"
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "response_done",
+              "tool": "update_build_plan",
+              "arguments": {
+                "complete": "response"
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Built the pipeline in four saved plans: the source with its features, the banding, the rating and the response.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

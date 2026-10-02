@@ -22,7 +22,7 @@ A submodel's panel has no tabs. It shows:
 
 ## Ports
 
-Input ports define what data flows into the submodel from the parent pipeline. Output ports define what flows back out. When you create a submodel from selected nodes, ports are created automatically based on the existing connections.
+Input ports define what data flows into the submodel from the parent pipeline. Output ports define what flows back out: a node connected to an output reads its data under the output's port name, whatever you name the submodel node. When you create a submodel from selected nodes, ports are created automatically based on the existing connections.
 
 You can add ports afterwards on the occurrence that owns the definition. A collapsed submodel has a single `inputs` socket: dropping a new connection on it adds an input port. Inside the submodel, wiring a node to the Output boundary adds an output port. To remove an input, select the Input boundary inside the submodel: its panel lists the **INPUTS**, and each input's **×** removes that public input, with its internal routes and every occurrence's connection.
 
@@ -53,7 +53,7 @@ Grouping the scoring steps:
     | Setting in the editor | Stored as |
     |---|---|
     | **Submodel name** | the definition file's name, and the occurrence's first name |
-    | Renaming the node | `alias`: the occurrence's name, which is also the node's name downstream; the second argument of `pipeline.submodel(...)` |
+    | Renaming the node | `alias`: the occurrence's name, which the pipeline file's connections use (a node downstream reads each output under its port name); the second argument of `pipeline.submodel(...)` |
     | **INPUTS**, **OUTPUTS** | the `input_ports` and `output_ports` of the definition file's `haute.Submodel(...)` header |
     | **Create Instance** | `instanceOf`: the owning occurrence's name, written as `instance_of="…"` in the instance's `pipeline.submodel(...)` |
 

@@ -126,6 +126,10 @@ _SOURCE_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
     NodeType.DATA_INPUT: "path",
     NodeType.EXTERNAL_FILE: "path",
 }
+# The node types whose runtime inputs an execution identity signs.
+_RUNTIME_INPUT_NODE_TYPES = frozenset(
+    {*_SOURCE_PATH_CONFIG_BY_NODE_TYPE, NodeType.MODEL_SCORE, NodeType.OPTIMISER_APPLY}
+)
 
 _LOCAL_RUNTIME_INPUT_PATH_FIELDS_BY_NODE_TYPE: dict[NodeType, tuple[str, ...]] = {
     NodeType.API_INPUT: ("path",),
@@ -879,7 +883,22 @@ def _snapshot_source_signature(
         return None
 
 
-def _mlflow_backend_signature(config: Mapping[str, object]) -> object:
+def _snapshot_source_file(graph: PipelineGraph, config: Mapping[str, object]) -> Path | None:
+    """The file :func:`_snapshot_source_signature` hashes (``None`` when none).
+
+    Called only for an input whose generation pointer resolved, whose cache
+    identity already validated and anchored this configuration.
+    """
+    from haute._builders import _configured_pipeline_dir
+    from haute._input_providers import signed_source_file
+
+    return signed_source_file(
+        config,
+        base_dir=_cache_pipeline_dir(graph) or _configured_pipeline_dir(),
+    )
+
+
+def mlflow_backend_signature(config: Mapping[str, object]) -> object:
     """Secret-free identity of the backend an MLflow-sourced node reads from.
 
     Returns ``resolve_backend(<node destination>).identity`` — never the
@@ -959,7 +978,7 @@ def _runtime_input_fingerprint_entry(
         NodeType.MODEL_SCORE,
         NodeType.OPTIMISER_APPLY,
     ) and config.get("sourceType") in ("run", "registered"):
-        files["mlflow_backend"] = _mlflow_backend_signature(config)
+        files["mlflow_backend"] = mlflow_backend_signature(config)
         if config.get("sourceType") == "registered":
             files["registered_version"] = _mlflow_registered_version_signature(config)
     return checked_cache_identity_record(
@@ -1054,14 +1073,10 @@ def dataframe_graph_input_identity(
             ],
         }
     )
-    runtime_input_node_types = set(_SOURCE_PATH_CONFIG_BY_NODE_TYPE) | {
-        NodeType.MODEL_SCORE,
-        NodeType.OPTIMISER_APPLY,
-    }
     source_entries = [
         _runtime_input_fingerprint_entry(scoped_graph, node)
         for node in sorted(scoped_graph.nodes, key=lambda item: item.id)
-        if node.data.nodeType in runtime_input_node_types
+        if node.data.nodeType in _RUNTIME_INPUT_NODE_TYPES
     ]
     return RuntimeInputIdentity(
         {
@@ -1074,6 +1089,31 @@ def dataframe_graph_input_identity(
             ),
         }
     )
+
+
+def runtime_input_signed_paths(graph: PipelineGraph) -> tuple[Path, ...]:
+    """The resolved local files :func:`dataframe_graph_input_identity` signs for every node.
+
+    Each node's signed paths, and for a snapshot-backed input the original
+    source file its source signature hashes beside the generation pointer,
+    listed only while it exists: a source that is gone is signed as missing,
+    not as a file. Read from configuration plus that existence check, so
+    listing them touches no file's content. The preamble's imported utility
+    modules, which the identity signs through the preamble fingerprint, are
+    not listed.
+    """
+    canonical = canonical_dataframe_execution_graph(graph)
+    paths: set[Path] = set()
+    for node in canonical.nodes:
+        if node.data.nodeType not in _RUNTIME_INPUT_NODE_TYPES:
+            continue
+        signed = _runtime_file_signature_paths(canonical, node)
+        paths.update(path.resolve() for path in signed.values())
+        if "snapshot_pointer" in signed:
+            source = _snapshot_source_file(canonical, node.data.config)
+            if source is not None:
+                paths.add(source.resolve())
+    return tuple(sorted(paths, key=str))
 
 
 def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict[str, Path]:

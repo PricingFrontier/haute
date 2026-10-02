@@ -46,6 +46,7 @@ describe("SteppedCodePane", () => {
     const onReplace = vi.fn()
     render(
       <SteppedCodePane
+        nodeId="node-1"
         config={{ steps: [] }}
         onUpdate={vi.fn()}
         onReplaceConfig={onReplace}
@@ -60,6 +61,7 @@ describe("SteppedCodePane", () => {
     expect(screen.queryByText("Polars Code")).not.toBeInTheDocument()
     expect(stepsEditorProps.at(-1)).toMatchObject({
       start,
+      nodeId: "node-1",
       inputNames: [...inputNames],
       runError: "boom",
       onReplaceConfig: onReplace,
@@ -69,6 +71,7 @@ describe("SteppedCodePane", () => {
   it("renders the code box with its hint when there is no steps list", () => {
     render(
       <SteppedCodePane
+        nodeId="node-1"
         config={{ code: "df = df.head(2)" }}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -87,6 +90,7 @@ describe("SteppedCodePane", () => {
   it("completes the input columns, then the node's own columns, in the code box", () => {
     render(
       <SteppedCodePane
+        nodeId="node-1"
         config={{ code: "df = df" }}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -104,6 +108,7 @@ describe("SteppedCodePane", () => {
   it("completes the node's own columns when it has no inputs", () => {
     render(
       <SteppedCodePane
+        nodeId="node-1"
         config={{ code: "" }}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -121,6 +126,7 @@ describe("SteppedCodePane", () => {
   it("starts a frame-mode step list from the same columns, each with its input type", () => {
     render(
       <SteppedCodePane
+        nodeId="node-1"
         config={{ steps: [] }}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -141,6 +147,7 @@ describe("SteppedCodePane", () => {
   it("keeps the code columns' identity while an edit leaves both column lists alone", () => {
     const pane = (steps: unknown[]) => (
       <SteppedCodePane
+        nodeId="node-1"
         config={{ steps }}
         onUpdate={vi.fn()}
         inputSources={[]}
@@ -163,6 +170,7 @@ describe("SteppedCodePane", () => {
   it("shows the discard notice above the code box after steps were discarded on load", () => {
     render(
       <SteppedCodePane
+        nodeId="node-1"
         config={{ code: "df = df.head(3)", _steps_discarded: "Steps were discarded because the function body no longer matches the rendered steps." }}
         onUpdate={vi.fn()}
         inputSources={[]}

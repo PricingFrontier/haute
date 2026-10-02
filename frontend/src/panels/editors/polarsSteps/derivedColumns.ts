@@ -22,9 +22,21 @@ export type StepColumns = { columns: KnownColumn[]; complete: boolean; exact: bo
  * `inputs` holds each input's columns (absent or empty while not loaded); in
  * `frame` mode the surface binds its own frame, whose full schema the editor
  * cannot know (a rating or scoring surface adds columns), so `frame` only
- * seeds suggestions.
+ * seeds suggestions. `freeCode` holds, by step id, the columns the render
+ * endpoint resolved after each free-code step it could resolve.
  */
-export type ColumnSource = { inputs: Readonly<Record<string, ColumnInfo[]>>; frame: ColumnInfo[] }
+export type ColumnSource = {
+  inputs: Readonly<Record<string, ColumnInfo[]>>
+  frame: ColumnInfo[]
+  freeCode: ReadonlyMap<string, ResolvedColumns>
+}
+
+/**
+ * The columns after a free-code step, as the render endpoint resolved them;
+ * `complete` when they are the whole list (a Transform, whose inputs' columns
+ * the endpoint had), not when they grew from a frame that only seeds.
+ */
+export type ResolvedColumns = { columns: ColumnInfo[]; complete: boolean }
 
 const fromInput = (columns: ColumnInfo[]): KnownColumn[] => columns.map((c) => ({ name: c.name, dtype: c.dtype, made: false }))
 const made = (name: string, dtype: string | null = null): KnownColumn => ({ name, dtype, made: true })
@@ -72,9 +84,14 @@ function applyStep(state: StepColumns, step: Step, source: ColumnSource): StepCo
       const input = source.inputs[step.input] ?? []
       return { columns: fromInput(input), complete: input.length > 0, exact: input.length > 0 }
     }
-    case "free_code":
-      // Authored Python can replace the frame or change its schema arbitrarily.
-      return { columns: [], complete: false, exact: false }
+    case "free_code": {
+      // Authored Python can replace the frame or change its schema
+      // arbitrarily, so only what the render endpoint resolved is known.
+      const resolved = source.freeCode.get(step.id)
+      if (!resolved) return { columns: [], complete: false, exact: false }
+      const columns = resolved.columns.map((c) => ({ name: c.name, dtype: c.dtype, made: byName.get(c.name)?.made ?? true }))
+      return { columns, complete: resolved.complete, exact: resolved.complete }
+    }
     case "with_column":
       if (!step.name) return state
       return byName.has(step.name)

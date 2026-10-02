@@ -165,6 +165,7 @@ components = ["assistant", "frontend-assistant-ui"]
 documents = [
   "specs/assistant/high-level.md",
   "specs/assistant/low-level.md",
+  "specs/assistant/evaluation.md",
   "specs/frontend-assistant-ui/high-level.md",
   "specs/frontend-assistant-ui/low-level.md",
 ]
@@ -1195,7 +1196,7 @@ tests = [
   "tests/test_assistant_loop.py::TestCancellation::test_inflight_mutation_completes_despite_cancel",
   "tests/test_assistant_routes.py::TestSessionResume::test_resume_after_restart_returns_same_id_and_transcript",
   "tests/test_assistant_session_persistence.py::TestRevival::test_restart_revives_a_session_from_disk",
-  "tests/test_assistant_providers.py::TestDatabricksProvider::test_all_providers_advertise_the_same_portable_production_schema",
+  "tests/test_assistant_providers.py::TestDatabricksProvider::test_each_lane_sends_its_projection_of_the_production_tools",
   "tests/test_assistant_config.py::TestReadinessMatrix::test_missing_api_key_names_the_env_var",
   "tests/test_assistant_tools.py::TestReadTools::test_get_node_config_returns_redacted_policy_eligible_config",
   "tests/test_assistant_ops.py::TestSemanticPlans::test_plan_rejects_polars_code_whose_result_is_discarded",
@@ -1207,9 +1208,9 @@ tests = [
 invariant = "A turn streams typed events through the real application service with a deterministic provider; a proposal is validated and applied only under its exact revision-bound plan, a stale proposal is rejected before any write, a failed post-commit verification stays visible, cancellation lets an in-flight save finish, a session resumes after restart, an applied mutation is undone by moving the save ledger back to the prior commit, and the client renders failed, cancelled and interrupted streams as such."
 
 [scenarios.evidence]
-commit = "090a5003"
+commit = "06427690"
 command = 'uv run pytest tests/test_assistant_routes.py tests/test_assistant_loop.py tests/test_assistant_application.py tests/test_assistant_integration.py tests/test_assistant_session_persistence.py tests/test_assistant_providers.py tests/test_assistant_config.py tests/test_assistant_tools.py tests/test_assistant_ops.py -q -p no:warnings'
-result = "522 passed, 1 skipped in 38.94s"
+result = "931 passed, 1 skipped in 92.76s, with ASSIST-38's per-lane tool projections on 06427690; the provider witness is now the per-lane projection test, which replaced the one-projection-for-every-provider test"
 
 [[scenarios]]
 id = "W13-S01"

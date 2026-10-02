@@ -312,6 +312,15 @@ _DTYPE_MAPPING_ARGUMENTS: frozenset[str] = frozenset(
 )
 
 
+def _declares_full_schema(arguments: Mapping[str, Any]) -> bool:
+    """Whether validated arguments declare the whole schema, so no type inference runs.
+
+    Only a non-null ``schema`` does: Polars reads ``schema=None`` as no declared
+    schema, and ``schema_overrides`` still leaves the other columns to inference.
+    """
+    return arguments.get("schema") is not None
+
+
 class PolarsIoConfigError(ValueError):
     """A dataInput/dataOutput config does not describe a valid invocation."""
 
@@ -850,7 +859,7 @@ def read_polars_input(
                     format=fmt.name,
                     profile=str(profile),
                 )
-        if fmt.needs_schema_when_bounded and "schema" not in arguments:
+        if fmt.needs_schema_when_bounded and not _declares_full_schema(arguments):
             raise BoundedMemoryUnsupportedError(
                 f"Format {fmt.name!r} requires a full declared 'schema' argument for "
                 "bounded-memory execution profiles (schema inference reads the data).",
@@ -898,15 +907,21 @@ _SCANNER_VALUE_DOMAINS: Mapping[str, Mapping[str, frozenset[str]]] = {
 }
 
 
-def _scanner_accepts_values(fmt: IoFormat, config: Mapping[str, Any]) -> bool:
-    """Whether every configured value sits inside the scanner's value domain."""
+def scanner_rejected_arguments(fmt: IoFormat, config: Mapping[str, Any]) -> list[str]:
+    """Configured argument names the format's scanner does not accept.
+
+    An argument is rejected when the scanner's argument surface lacks its name
+    or its value lies outside the scanner's value domain. This is the one
+    check of whether a configuration only the eager reader supports; *fmt*
+    must have a scanner.
+    """
+    owner, scanner_name = input_callable_key(fmt, "scan")
+    allowed = allowed_arguments(fmt, owner, scanner_name)
     domains = _SCANNER_VALUE_DOMAINS.get(fmt.name, {})
-    if not domains:
-        return True
-    return all(
-        str(value) in domains[name]
+    return sorted(
+        name
         for name, value in (config.get("arguments") or {}).items()
-        if name in domains
+        if name not in allowed or (name in domains and str(value) not in domains[name])
     )
 
 
@@ -927,11 +942,7 @@ def snapshot_input_plan(
         return resolve_input_mode(fmt, config), base, None
     mode = resolve_input_mode(fmt, config)
     if mode == "read" and fmt.scanner is not None:
-        owner, scanner_name = input_callable_key(fmt, "scan")
-        configured = set(config.get("arguments") or {})
-        if configured <= allowed_arguments(fmt, owner, scanner_name) and _scanner_accepts_values(
-            fmt, config
-        ):
+        if not scanner_rejected_arguments(fmt, config):
             return "scan", "bounded", "eager_read_mode_scanned"
         return "read", "admitted_eager", None
     return mode, base, None
@@ -953,9 +964,44 @@ def read_polars_input_for_snapshot(
     mode, _build_class, warning_code = snapshot_input_plan(fmt, config)
     owner, callable_name = input_callable_key(fmt, mode)
     arguments = dict(validate_arguments(fmt, owner, callable_name, config.get("arguments") or {}))
-    if fmt.needs_schema_when_bounded and "schema" not in arguments:
+    if fmt.needs_schema_when_bounded and not _declares_full_schema(arguments):
         arguments["infer_schema_length"] = None
     return _invoke_polars_input(fmt, callable_name, config, arguments), warning_code
+
+
+# Rows a schema-only resolution reads to infer column types when an input has
+# no snapshot yet. A snapshot build inspects the whole file; this tier never does.
+INFERRED_SCHEMA_ROWS = 10_000
+
+
+def scan_polars_input_for_schema(config: Mapping[str, Any]) -> tuple[pl.LazyFrame, int | None]:
+    """Open a file input's scanner for schema resolution, with bounded type inference.
+
+    The caller has established that the format has a scanner and that
+    :func:`scanner_rejected_arguments` is empty. Returns the uncollected scan
+    and the ``infer_schema_length`` it passed: the configured value capped at
+    :data:`INFERRED_SCHEMA_ROWS` (the cap when unset or ``None``), or ``None``
+    when no type inference runs because the scanner reads file metadata or
+    the configuration declares a full ``schema`` or ``infer_schema: false``.
+    """
+    fmt = format_for_config(config)
+    owner, scanner_name = input_callable_key(fmt, "scan")
+    arguments = dict(validate_arguments(fmt, owner, scanner_name, config.get("arguments") or {}))
+    inference_rows: int | None = None
+    if (
+        "infer_schema_length" in allowed_arguments(fmt, owner, scanner_name)
+        and not _declares_full_schema(arguments)
+        and arguments.get("infer_schema") is not False
+    ):
+        configured = arguments.get("infer_schema_length")
+        inference_rows = (
+            INFERRED_SCHEMA_ROWS
+            if configured is None
+            or (isinstance(configured, int) and configured > INFERRED_SCHEMA_ROWS)
+            else configured
+        )
+        arguments["infer_schema_length"] = inference_rows
+    return _invoke_polars_input(fmt, scanner_name, config, arguments), inference_rows
 
 
 def _resolve_output_target(fmt: IoFormat, config: Mapping[str, Any]) -> dict[str, Any]:

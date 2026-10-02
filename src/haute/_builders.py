@@ -73,14 +73,14 @@ from haute._polars_steps import (
 from haute._price_contour import price_contour
 from haute._ratebook_collar import COMBINED_FACTOR_BOUNDS_KEY, parse_combined_factor_bounds
 from haute._rating import (
-    _apply_banding_factors,
     _apply_rating_step_outputs,
     _apply_rating_table,
     _combine_rating_columns,
     _normalise_banding_factors,
-    _normalise_combined_outputs,
+    apply_banding_factors,
     banding_factor_is_active,
     is_rating_dtype_descriptor,
+    normalise_combined_outputs,
     rating_dtype_descriptor,
 )
 from haute._rating_step_config import normalise_rating_tables
@@ -452,6 +452,17 @@ def _configured_pipeline_dir() -> Path | None:
     return configured.parent if configured is not None else None
 
 
+def load_external_file_object(config: Mapping[str, Any]) -> object:
+    """Load a Load File node's object exactly as the node does when it runs.
+
+    A relative ``path`` is anchored to the pipeline directory at call time,
+    because ``load_external_object`` resolves against cwd. The assistant's
+    dry-run calls this to prove a Load File it writes, since a node with empty
+    steps passes its input through and never loads the file.
+    """
+    return load_external_object_from_config(config, base_dir=_configured_pipeline_dir())
+
+
 def _resolve_runtime_data_path(data_path: str) -> str:
     """Anchor a (possibly relative) runtime data path to the pipeline dir.
 
@@ -523,6 +534,7 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         ),
         _config: dict[str, Any] = config,
         _node_id: str = ctx.node.id,
+        _schema_only: bool = ctx.schema_only,
     ) -> _Frame | dict[str, _Frame]:
         projected = _source_scan_projection(
             _profile,
@@ -539,6 +551,7 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             columns=projected.columns,
             port_columns=_port_columns,
             read_snapshots=True,
+            schema_tier_node=_node_id if _schema_only else None,
         )
 
     return ctx.func_name, api_source_fn, True
@@ -561,6 +574,7 @@ def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         _profile: str | None = ctx.execution_profile,
         _columns: frozenset[str] | set[str] | None = ctx.required_output_columns,
         _node_id: str = ctx.node.id,
+        _schema_only: bool = ctx.schema_only,
     ) -> _Frame:
         from haute._input_providers import resolve_data_input
 
@@ -573,6 +587,7 @@ def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
                 _config,
                 base_dir=_configured_pipeline_dir(),
                 profile=_profile,
+                schema_tier_node=_node_id if _schema_only else None,
             ),
             profile=_profile,
             required_output_columns=_columns,
@@ -705,10 +720,7 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             # served from the project root would otherwise hash/open the wrong
             # (or a missing) file. Resolved at call time, mirroring codegen.
             ens = dict(_preamble_ext)
-            ens["obj"] = load_external_object_from_config(
-                config,
-                base_dir=_configured_pipeline_dir(),
-            )
+            ens["obj"] = load_external_file_object(config)
             if dfs_by_name:
                 dfs = tuple(dfs_by_name[name] for name in _src_names if name in dfs_by_name)
             else:
@@ -813,7 +825,7 @@ def _build_banding(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             lf = dfs_positional[0] if dfs_positional else pl.LazyFrame()
         # Shared with apply_banding_from_config (generated standalone code)
         # so the canvas and the saved file cannot drift.
-        return _apply_banding_factors(lf, _factors_captured)
+        return apply_banding_factors(lf, _factors_captured)
 
     return ctx.func_name, banding_fn, False
 
@@ -829,7 +841,7 @@ def _rating_step_columns(config: dict[str, Any]) -> _ColumnContract:
         if out:
             produced.add(out)
         referenced.update(t.get("factors") or [])
-    for combined in _normalise_combined_outputs(config):
+    for combined in normalise_combined_outputs(config):
         produced.add(combined["outputColumn"])
     return produced, referenced
 
@@ -849,7 +861,7 @@ def _build_rating_step(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         # Incomplete post-rating steps must not rate the frame and pass it on.
         return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), False
     tables = normalise_rating_tables(config)
-    combined_outputs = _normalise_combined_outputs(config)
+    combined_outputs = normalise_combined_outputs(config)
     code = str(config.get("code") or "").strip()
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 

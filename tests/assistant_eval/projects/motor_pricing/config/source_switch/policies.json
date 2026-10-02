@@ -1,0 +1,10 @@
+{
+  "input_scenario_map": {
+    "quotes": "live",
+    "batch_quotes": "nb_batch"
+  },
+  "inputs": [
+    "quotes",
+    "batch_quotes"
+  ]
+}

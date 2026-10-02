@@ -1397,6 +1397,7 @@ max_sensitivity = "internal"
 allow_project_knowledge = true
 allow_executable_source = false
 allow_row_samples = false
+allow_aggregate_statistics = false
 """.lstrip(),
             encoding="utf-8",
         )

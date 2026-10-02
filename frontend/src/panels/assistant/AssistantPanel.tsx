@@ -1,27 +1,40 @@
-import { useEffect, useRef } from "react"
-import { ArrowLeft, Bot, Plus } from "lucide-react"
+import { useEffect, useRef, useState } from "react"
+import { ArrowLeft, Bot, Loader2, Plus } from "lucide-react"
 
 import PanelShell from "../PanelShell"
-import TranscriptEntryView from "./TranscriptEntryView"
+import TranscriptEntryView, { type OutcomeReply } from "./TranscriptEntryView"
+import AssistantIntro from "./AssistantIntro"
+import BuildChecklist from "./BuildChecklist"
 import Composer from "./Composer"
+import ReadinessCard from "./ReadinessCard"
 import SessionList from "./SessionList"
-import useAssistantStore from "../../stores/useAssistantStore"
+import useAssistantStore, {
+  CHOOSE_FOR_ME_REPLY,
+  FIX_ERROR_PROMPT,
+  assistantSendDisabledReason,
+} from "../../stores/useAssistantStore"
+import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
+import useGraphStore from "../../stores/useGraphStore"
 import useUIStore from "../../stores/useUIStore"
 
 interface AssistantPanelProps {
   isInsideSubmodel: boolean
-  currentSourceFile: string | null
   readOnly: boolean
 }
 
 export default function AssistantPanel({
   isInsideSubmodel,
-  currentSourceFile,
   readOnly,
 }: AssistantPanelProps) {
+  // Every chat is bound to the loaded pipeline document, never to the drilled
+  // submodel file; an unsaved canvas has no source file to bind to.
+  const documentSourceFile = useDocumentStatusStore((state) => state.sourceFile)
+  const currentSourceFile = documentSourceFile === "" ? null : documentSourceFile
   const setAssistantOpen = useUIStore((state) => state.setAssistantOpen)
   const entries = useAssistantStore((state) => state.entries)
+  const buildPlan = useAssistantStore((state) => state.buildPlan)
   const turnStatus = useAssistantStore((state) => state.turnStatus)
+  const thinking = useAssistantStore((state) => state.thinking)
   const status = useAssistantStore((state) => state.status)
   const notice = useAssistantStore((state) => state.notice)
   const refreshStatus = useAssistantStore((state) => state.refreshStatus)
@@ -29,7 +42,26 @@ export default function AssistantPanel({
   const view = useAssistantStore((state) => state.view)
   const loadSessions = useAssistantStore((state) => state.loadSessions)
   const showSessionList = useAssistantStore((state) => state.showSessionList)
+  const chatSource = useAssistantStore((state) => state.pipelineSource)
+  const dirty = useGraphStore((state) => state.dirty)
+  const previewErrorNodeId = useUIStore((state) => state.assistantPreviewErrorNodeId)
   const transcriptRef = useRef<HTMLDivElement>(null)
+  const [draft, setDraft] = useState("")
+
+  // "Ask the assistant to fix": an empty draft says what to do, once per
+  // request (adjusted while rendering, the way React derives state from a
+  // changed input)...
+  const [draftedFixRequest, setDraftedFixRequest] = useState<string | null>(null)
+  if (previewErrorNodeId !== draftedFixRequest) {
+    setDraftedFixRequest(previewErrorNodeId)
+    if (previewErrorNodeId !== null && !draft.trim()) setDraft(FIX_ERROR_PROMPT)
+  }
+  // ...and the request needs a composer, so the list screen gives way to a new chat.
+  useEffect(() => {
+    if (previewErrorNodeId !== null && useAssistantStore.getState().view === "list") {
+      useAssistantStore.getState().newChat()
+    }
+  }, [previewErrorNodeId])
 
   useEffect(() => {
     void refreshStatus()
@@ -46,14 +78,48 @@ export default function AssistantPanel({
     if (transcript && turnStatus === "streaming") {
       transcript.scrollTop = transcript.scrollHeight
     }
-  }, [entries, turnStatus])
+  }, [entries, turnStatus, thinking])
 
   const statusError = status === "error"
+
+  // Only the latest question can be answered in one click, and only when the
+  // composer could send: the reply is an ordinary message under the same gate.
+  const lastEntry = entries[entries.length - 1]
+  const reply: OutcomeReply | undefined =
+    turnStatus === "idle" &&
+    lastEntry?.kind === "outcome" &&
+    lastEntry.outcome.kind === "needs_input"
+      ? {
+          disabledReason: assistantSendDisabledReason({
+            status,
+            isInsideSubmodel,
+            dirty,
+            readOnly,
+            sourceFile: currentSourceFile,
+            chatSource,
+          }),
+          onSend: () => {
+            void useAssistantStore.getState().sendMessage(CHOOSE_FOR_ME_REPLY, {
+              isInsideSubmodel,
+              currentSourceFile,
+              readOnly,
+            })
+          },
+        }
+      : undefined
 
   return (
     <PanelShell
       testId="assistant-panel"
       title="Pricing Assistant"
+      subtitle={
+        status !== "unknown" && status !== "error" && status.configured && status.model !== null ? (
+          <span data-testid="assistant-model">
+            {status.model}
+            {status.provider !== null && ` · ${status.provider}`}
+          </span>
+        ) : undefined
+      }
       onClose={() => setAssistantOpen(false)}
       icon={
         view === "chat" ? (
@@ -92,28 +158,7 @@ export default function AssistantPanel({
         </button>
       }
     >
-      {statusError && (
-        <div
-          data-testid="assistant-status-error"
-          role="alert"
-          className="mx-3 mt-3 rounded-md px-2.5 py-2 text-[11px]"
-          style={{
-            background: "var(--danger-soft)",
-            border: "1px solid var(--danger-border)",
-            color: "var(--danger-text)",
-          }}
-        >
-          <div className="font-medium">Assistant status could not be loaded.</div>
-          <button
-            type="button"
-            data-testid="assistant-status-retry"
-            onClick={() => { void refreshStatus() }}
-            className="mt-1 underline underline-offset-2"
-          >
-            Retry
-          </button>
-        </div>
-      )}
+      <ReadinessCard showReadinessReasons={view === "list"} />
       {status !== "unknown" && status !== "error" && status.configured && (
         <div
           data-testid="assistant-egress-status"
@@ -140,18 +185,31 @@ export default function AssistantPanel({
           style={{ background: "var(--bg-panel)" }}
         >
           {entries.length === 0 && !statusError && (
-            <div
-              data-testid="assistant-empty"
-              className="flex h-full items-center justify-center px-5 text-center text-[11px]"
-              style={{ color: "var(--text-muted)" }}
-            >
-              Describe a pipeline change and Assistant will help author it here.
-            </div>
+            <AssistantIntro sourceFile={currentSourceFile} onChoosePrompt={setDraft} />
           )}
           {entries.map((entry, index) => (
-            <TranscriptEntryView key={`${entry.kind}-${index}`} entry={entry} />
+            <TranscriptEntryView
+              key={`${entry.kind}-${index}`}
+              entry={entry}
+              reply={index === entries.length - 1 ? reply : undefined}
+            />
           ))}
+          {thinking && (
+            <div
+              data-testid="assistant-thinking"
+              role="status"
+              className="flex items-center gap-1.5 text-[11px]"
+              style={{ color: "var(--text-muted)" }}
+            >
+              <Loader2 size={12} className="animate-spin" aria-hidden="true" />
+              Thinking…
+            </div>
+          )}
         </div>
+      )}
+
+      {view === "chat" && buildPlan !== null && (
+        <BuildChecklist plan={buildPlan} entries={entries} transcriptRef={transcriptRef} />
       )}
 
       {notice && (
@@ -174,6 +232,8 @@ export default function AssistantPanel({
           isInsideSubmodel={isInsideSubmodel}
           currentSourceFile={currentSourceFile}
           readOnly={readOnly}
+          text={draft}
+          setText={setDraft}
         />
       )}
     </PanelShell>

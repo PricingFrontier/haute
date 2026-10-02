@@ -7,7 +7,7 @@ This is the general-purpose node for shaping your data. Joining two datasets, ca
     - Creating derived columns (age from date of birth, vehicle age from year of manufacture).
     - Filtering or reshaping data in ways the specialised nodes don't cover.
 
-A Polars node takes any number of inputs and has one output. Each connection brings in the upstream node's data under the upstream node's name (a [Quote Input](quote-input.md) table arrives under its label). The panel has two tabs: **POLARS**, where you build the node, and **COLUMNS**.
+A Polars node takes any number of inputs and has one output. Each connection brings in the upstream node's data under the upstream node's name (a [Quote Input](quote-input.md) table arrives under its label, and a [submodel](submodel.md) output under its port's name). The panel has two tabs: **POLARS**, where you build the node, and **COLUMNS**.
 
 ## Building the node from steps
 

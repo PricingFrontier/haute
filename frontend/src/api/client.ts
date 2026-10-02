@@ -95,6 +95,7 @@ import type {
   OutputAssembleDryRunResponse,
   OutputDestinationResponse,
   PipelineGraph,
+  PolarsFreeCodeColumnsResponse,
   PolarsStepsRenderResponse,
   PreviewInputsResponse,
   PreviewNodeResponse,
@@ -873,13 +874,42 @@ export interface RenderPolarsStepsArgs {
   signal?: AbortSignal
 }
 
-/** Render a low-code step list to the Polars code it stands for. */
+/** Render a low-code step list to the Polars code it stands for; it runs no authored code. */
 export function renderPolarsSteps(args: RenderPolarsStepsArgs): Promise<PolarsStepsRenderResponse> {
   return post<unknown>(
     "/api/pipeline/polars-steps/render",
     { steps: args.steps, input_names: args.inputNames, start: args.start },
     { signal: args.signal },
   ).then(async (data) => expectGeneratedContract("PolarsStepsRenderResponse", (await editorValidators()).validatePolarsStepsRenderResponse, data))
+}
+
+export interface ResolveFreeCodeColumnsArgs extends RenderPolarsStepsArgs {
+  /** The node the steps belong to: the server runs one resolution per node, a newer one stopping an older. */
+  nodeId: string
+  /** The columns the editor knows for each eligible input. */
+  inputColumns: Record<string, { name: string; dtype: string }[]>
+  /** The columns the editor knows for a frame-mode surface's `df`; empty in `input` mode. */
+  frameColumns: { name: string; dtype: string }[]
+}
+
+/**
+ * The columns of `df` after each free-code step, or why they are unknown. The
+ * server runs the steps over empty frames in the preview worker with a short
+ * deadline, so ask only after a successful render of a list with free code.
+ */
+export function resolveFreeCodeColumns(args: ResolveFreeCodeColumnsArgs): Promise<PolarsFreeCodeColumnsResponse> {
+  return post<unknown>(
+    "/api/pipeline/polars-steps/free-code-columns",
+    {
+      node_id: args.nodeId,
+      steps: args.steps,
+      input_names: args.inputNames,
+      start: args.start,
+      input_columns: args.inputColumns,
+      frame_columns: args.frameColumns,
+    },
+    { signal: args.signal },
+  ).then(async (data) => expectGeneratedContract("PolarsFreeCodeColumnsResponse", (await editorValidators()).validatePolarsFreeCodeColumnsResponse, data))
 }
 
 export interface RecoveryPreviewNodeArgs {
@@ -2198,17 +2228,20 @@ export function gitBranchAway(
 }
 
 /**
- * Read-only view of a commit's pipeline (S11): materialise the pipeline as it
- * stood at `sha` and parse it to the same graph shape the editor loads. Backs
- * the side-by-side comparison view. No checkout — the working tree is untouched.
+ * Read-only view of a commit's pipeline (S11): materialise the pipeline file
+ * `sourceFile` as it stood at `sha` and parse it to the same graph shape the
+ * editor loads. Backs the side-by-side comparison view. No checkout — the
+ * working tree is untouched.
  */
 export function getCommitPipeline(
   sha: string,
+  sourceFile: string,
   options?: { signal?: AbortSignal },
 ): Promise<PipelineGraph> {
-  return request<unknown>(`/api/git/show/${encodeURIComponent(sha)}`, options).then(
-    parsePipelineResponse,
-  )
+  return request<unknown>(
+    `/api/git/show/${encodeURIComponent(sha)}?source_file=${encodeURIComponent(sourceFile)}`,
+    options,
+  ).then(parsePipelineResponse)
 }
 
 /** A commit's breadcrumb context — nearest ancestor milestone + distance (S11).

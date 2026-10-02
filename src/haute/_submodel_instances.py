@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from haute._graph_utils import (
     _edge_id,
@@ -44,11 +44,28 @@ class ResolvedSubmodelInstance:
     definition: SubmodelDefinition
 
 
+_RUNTIME_PREFIX = "submodel_runtime/"
+
+
 def qualified_runtime_node_id(instance_id: str, local_node_id: str) -> str:
     """Return a deterministic, delimiter-safe runtime id for one cloned child."""
     if not instance_id or not local_node_id:
         raise ValueError("Runtime submodel ids require non-empty instance and local ids.")
-    return f"submodel_runtime/{quote(instance_id, safe='')}/{quote(local_node_id, safe='')}"
+    return f"{_RUNTIME_PREFIX}{quote(instance_id, safe='')}/{quote(local_node_id, safe='')}"
+
+
+def runtime_instance_id(node_id: str) -> str | None:
+    """The occurrence a :func:`qualified_runtime_node_id` id was cloned for, or ``None``.
+
+    ``None`` for an id that is not a runtime id. The occurrence's own id may
+    itself be a runtime id, for a submodel nested inside another.
+    """
+    if not node_id.startswith(_RUNTIME_PREFIX):
+        return None
+    instance, separator, local = node_id[len(_RUNTIME_PREFIX) :].partition("/")
+    if not instance or not separator or not local:
+        raise ValueError(f"Malformed runtime submodel node id: {node_id!r}")
+    return unquote(instance)
 
 
 def _definition_registry(graph: PipelineGraph) -> dict[str, SubmodelDefinition]:
@@ -195,7 +212,7 @@ def resolve_submodel_instances(
                     source=edge.source,
                     target=edge.target,
                 )
-            _output_port(resolved[edge.source], edge)
+            bound_output_port(resolved[edge.source], edge)
         if edge.target in resolved:
             if edge.source not in parent_node_ids:
                 raise ParseError(
@@ -205,7 +222,7 @@ def resolve_submodel_instances(
                     target=edge.target,
                 )
             instance = resolved[edge.target]
-            port = _input_port(instance, edge)
+            port = bound_input_port(instance, edge)
             binding_key = (edge.target, port.name)
             previous_edge_id = bound_input_ports.get(binding_key)
             if previous_edge_id is not None:
@@ -254,10 +271,11 @@ def _port_name(
     return port_name
 
 
-def _input_port(
+def bound_input_port(
     instance: ResolvedSubmodelInstance,
     edge: GraphEdge,
 ) -> SubmodelInputPort:
+    """The public input port a parent edge into *instance* binds."""
     port_name = _port_name(
         edge=edge,
         handle=edge.targetHandle,
@@ -279,10 +297,11 @@ def _input_port(
     )
 
 
-def _output_port(
+def bound_output_port(
     instance: ResolvedSubmodelInstance,
     edge: GraphEdge,
 ) -> SubmodelOutputPort:
+    """The public output port a parent edge out of *instance* binds."""
     port_name = _port_name(
         edge=edge,
         handle=edge.sourceHandle,
@@ -868,7 +887,7 @@ def expand_submodel_instances(
                     edge_id=edge.id,
                     instance_id=edge.source,
                 )
-            output = _output_port(source_instance, edge)
+            output = bound_output_port(source_instance, edge)
             source_variants = [
                 (
                     id_maps[edge.source][output.source.node_id],
@@ -892,7 +911,7 @@ def expand_submodel_instances(
                     edge_id=edge.id,
                     instance_id=edge.target,
                 )
-            input_port = _input_port(target_instance, edge)
+            input_port = bound_input_port(target_instance, edge)
             if not input_port.targets:
                 raise ParseError(
                     "Submodel input port bound by a parent edge has no internal targets.",
@@ -927,7 +946,7 @@ def expand_submodel_instances(
                     continue
                 if edge.target in selected_ids:
                     assert target_instance is not None
-                    old_name = _input_port(target_instance, edge).name
+                    old_name = bound_input_port(target_instance, edge).name
                 else:
                     old_name = _boundary_edge_input_name(
                         edge,

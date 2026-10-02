@@ -19,8 +19,8 @@ from haute.errors import GroupByExecutionUnsupportedError
 from haute.execution import ProjectionRequest, execute_lazy_graph, plan_execution_strategy
 from haute.executor import _build_node_fn
 from haute.routes._train_service import (
-    _build_training_feature_selection,
     _training_required_columns_by_node,
+    build_training_feature_selection,
 )
 from tests.conftest import build_test_input_snapshot
 
@@ -292,7 +292,7 @@ def test_generated_join_training_projection_scale_contract(
     expected = _semantic_summary(reference_lf).collect(engine="streaming")
     assert_frame_equal(actual, expected, check_exact=False, rel_tol=1e-12)
 
-    feature_selection = _build_training_feature_selection(
+    feature_selection = build_training_feature_selection(
         training_config,
         training_lf.collect_schema().names(),
     )

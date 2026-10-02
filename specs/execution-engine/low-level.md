@@ -9,7 +9,7 @@
 | `src/haute/execution.py` | Execution facade and implementation module: re-exports lower-level execution helpers; directly owns strategy-planner entry points (and `plan_projection`, the projection half of `plan_execution_strategy`, for a caller that needs another execution's per-node column demand without planning or admitting it), runtime-input fingerprints, `preview_lineage_cache_key`, and `PREVIEW_EXECUTION_SEMANTICS_VERSION`. It is the stable application import boundary, but is not currently a thin re-export module. |
 | `src/haute/_path_resolution.py` | Cross-component dependency owned by [sandbox-security](../sandbox-security/low-level.md); canonical local-runtime-path resolution: separator normalization, project/pipeline candidate choice, symlink-aware containment, selected-external-pipeline root inference, and the context-local root used by eager/lazy builders. |
 | `src/haute/_execute_lazy.py` | Node-boundary machinery the graph walker uses: `PreparedExecutionRequest`/`PreparedExecution` (one canonical eager/lazy graph, identity, routing and contract-policy preparation result), `NodeBoundaryRunner` (shared per-node contract resolution, input-frame routing, invocation and boundary assertions), `_build_funcs` (per-node callable construction), and `_PlannedCaptures` (seed-plan closures and captures), with the contract, column-shaping, recipe and runtime-demand helpers each node step uses, and the recorded-failure line helpers `_extract_error_line` and `_located_step_line`. |
-| `src/haute/_graph_walker.py` | The graph walker: `walk_graph(graph, build_node_fn, *, policy: CollectPolicy, ...)` walks a graph once and returns a `WalkResult` (each built node's frame, the prepared order, parents, names, and the join and write recipes and pre-shaping frames it built). `WalkRequest` holds the execution-independent inputs, `CollectPolicy` what the walk collects, at which row and column limits, whether it records node failures, and its purpose (`WalkPurpose.SINK` hands lazy frames to a sink; `WalkPurpose.DISPLAY` reports schemas and collects for a person; `WalkPurpose.CHUNK` walks a chain one start frame at a time and has no production caller since the chunked runner was deleted). The Data Output sink, every lazy execution through the execution facade, the preview and the trace walk through it. `prepare_walk(...)` prepares a chunk walk once and `PreparedWalk.run(start_frames)` walks it per start frame; `project_output` narrows a node's output to a demand in schema order. No function in the module exceeds a cyclomatic complexity of 15, held by ruff's C901 rule scoped to this module alone. |
+| `src/haute/_graph_walker.py` | The graph walker: `walk_graph(graph, build_node_fn, *, policy: CollectPolicy, ...)` walks a graph once and returns a `WalkResult` (each built node's frame, the prepared order, parents, names, and the join and write recipes and pre-shaping frames it built). `WalkRequest` holds the execution-independent inputs, `CollectPolicy` what the walk collects, at which row and column limits, whether it records node failures, and its purpose (`WalkPurpose.SINK` hands lazy frames to a sink; `WalkPurpose.DISPLAY` reports schemas and collects for a person; `WalkPurpose.CHUNK` walks a chain one start frame at a time and has no production caller since the chunked runner was deleted; `WalkPurpose.MEASURE` builds a lineage as a display walk does but, at each checked node, collects the caller's `MeasurementQueries` over its input frames and then its output ports, each cut to a row bound, and returns one `NodeMeasurement` per checked node, never a frame, with each failure an `AttributedFailure` naming the node it is attributed to). The Data Output sink, every lazy execution through the execution facade, the preview, the trace and the assistant's data check walk through it. `prepare_walk(...)` prepares a chunk walk once and `PreparedWalk.run(start_frames)` walks it per start frame; `project_output` narrows a node's output to a demand in schema order. No function in the module exceeds a cyclomatic complexity of 15, held by ruff's C901 rule scoped to this module alone. |
 | `src/haute/_contracts.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution consumes the shared column-contract model and registry lookup. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution reads the canonical node registry. |
 | `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, profile-independent projection decisions, fan-in edge demands, materialisation/opaque boundaries, derivation of each code node's recompute facts (`recompute_facts_by_node(...)`), demand-only source-scan projection (a node's configured column selection bounds what may be demanded but is never pushed into or validated against a physical read), and bounded strategy diagnostics. |
@@ -125,11 +125,12 @@
   (200) and memory-pressure events capped at 32, with `truncated_*_count` properties
   so a caller can tell a summary is partial without re-deriving it.
 - **`CollectPolicy` / `WalkResult`** (`_graph_walker.py`, frozen dataclasses) — a walk's
-  policy and its result. The policy holds `purpose` (`WalkPurpose.SINK` or `DISPLAY`),
-  `collect` (the nodes collected into DataFrames; `None` collects every node the walk
-  builds), `row_limit`, `row_limits_by_node`, `column_limits_by_node`, and
-  `record_failures`; `CollectPolicy.sink()` and `CollectPolicy.display(...)` build the two
-  kinds, and a limit that is not a positive integer keyed by a node id raises
+  policy and its result. The policy holds `purpose` (`WalkPurpose.SINK`, `DISPLAY` or
+  `MEASURE`), `collect` (the nodes collected into DataFrames, or measured; `None` collects
+  every node the walk builds), `row_limit`, `row_limits_by_node`, `column_limits_by_node`,
+  `record_failures` and, for a measuring walk, its `queries`; `CollectPolicy.sink()`,
+  `CollectPolicy.display(...)` and `CollectPolicy.measuring(checked=, row_bound=, queries=)`
+  build the three kinds, and a limit that is not a positive integer keyed by a node id raises
   `ValueError`. The result holds `frames` (each built node's frame as its consumers read
   it: a sink walk's lazy frames, a display walk's uncapped plans, per-port plans for a
   multi-frame node), `order` (the prepared order), `run_order` (what the walk visited),
@@ -745,7 +746,11 @@ the prepared order. The Data Output sink (`prepare_data_output`) runs through
 `walk_graph` and slices its own write by `WalkResult.write_recipes`;
 `execution.execute_lazy_graph` returns the walk's frames, order, parents and names, and
 copies its join and write recipes and pre-shaping frames into the caller's dictionaries
-once the walk has finished.
+once the walk has finished. A walk that does not record node failures marks an exception
+raised while it builds or runs a node with that node's id
+(`errors.mark_failing_node`, read by `errors.failing_node`; the innermost node wins) and
+re-raises it unchanged, so a caller can say which node failed; a failure a lazy frame
+raises only when a later caller reads its schema carries no mark.
 
 A display walk (`CollectPolicy.display(...)`) is described under **Display walks** below;
 the preview and the trace run one. Its caller plans the strategy
@@ -1130,7 +1135,19 @@ spike.
 **Warm interactive worker pool.** `InteractiveWorkerPool` owns a fixed number of
 long-lived `spawn` workers (default two, configured by
 `HAUTE_INTERACTIVE_WORKER_COUNT`). Each slot has a single request in flight and a
-bounded result queue. A stable, non-user-visible affinity digest maps the same
+bounded result queue. Each slot index has one scheduling lock, created with the pool and
+kept across worker generations: `run` takes its index's lock (counting itself as pending
+while it waits, under the pool's state lock) and then submits to the index's current
+slot, so a request that waited through a replacement submits to the replacement, which is
+installed while the job that ended the old worker still holds the lock.
+`run_preemptible` (the assistant's data check) never waits and never starts the pool: it
+is refused at once (`InteractiveWorkerBusyError`) when the pool has not started, the lock
+is held or any interactive request is pending for the index, so a pre-empting request's
+handoff is reserved; it runs under one absolute deadline that bounds its submission, its
+result wait and its release acknowledgement; and while it runs, a pending interactive
+request marks it pre-empted, which stops and replaces its worker before the lock is
+released (`InteractiveWorkerPreemptedError`), so the waiting request runs next on the
+replacement. A stable, non-user-visible affinity digest maps the same
 graph/source lineage to the same slot so `_preview_cache` and trace cache hits survive
 between clicks. The server starts the pool after environment/project initialisation
 and closes it during lifespan teardown; a lazy start is retained for non-ASGI callers.
@@ -1345,7 +1362,8 @@ the server process's already-initialised Polars pool.
 
 ### Assistant interaction
 
-`src/haute/assistant/_tools.py::get_node_schema` is a cross-component caller of
+`src/haute/assistant/_tools.py::node_schema`, the schema part of the assistant's
+`inspect_node` tool, is a cross-component caller of
 the public lazy-execution facade. It validates the target against the original
 hierarchical graph, flattens submodels for execution, compiles the saved
 preamble with the pipeline directory, selects the graph's saved active source,
@@ -2364,7 +2382,17 @@ present a structural or schema result as execution evidence.
 - **Node builders receive the schema-only declaration.** `execute_lazy_graph`
   forwards its `schema_only` value to every builder through
   `NodeBuildContext.schema_only`, so a builder that would otherwise materialise
-  while the graph is being built honours it. There are two such builders.
+  while the graph is being built honours it. DATA_INPUT passes its node id when the read is
+  schema-only to `resolve_data_input(..., schema_tier_node=...)`, which reaches the inferred schema tier
+  only while an `_input_providers.recording_schema_tiers()` collector is active
+  (the assistant's plan verification); the builder records each inferred input under
+  its node id. API_INPUT passes the same through
+  `resolve_api_input_from_config(..., read_snapshots=True, schema_tier_node=...)`
+  to `load_v2_api_source`, which reaches the IO layer's declared schema tier for a table
+  with no snapshot under the same collector and records it by node id and table label. Without a collector a missing snapshot keeps its `input_snapshot_missing`
+  rejection, so a caller that cannot report the weaker tier (the GLM training column
+  check) never validates against an inferred schema. There are two builders that would
+  otherwise materialise.
   MODEL_SCORE passes it to `ModelScorer(schema_only=...)`, and `_run_score_pipeline`
   then scores through the lazy row-local scan (`_score_row_local_scan`), never the
   batched path, which sinks and scores the whole input at build time; the scan
@@ -2448,6 +2476,11 @@ present a structural or schema result as execution evidence.
 
 ## Error handling
 
+- Every `HauteError` and `HauteValidationError` survives a process boundary: both bases
+  pickle through `restore_exception` (`_validation_error.py`), which restores `args` and the
+  instance attributes without calling `__init__`, so an error whose `__init__` takes
+  keyword-only fields (`LiveSwitchScenarioError`, `NodeConfigError`, `ConfigSettingError`)
+  reaches the parent of an interactive worker or a spawned evaluation case intact.
 - `PreambleError` (`haute.errors`, extends `ExecutionError`) — preamble compile/exec
   failure with stable public code `preamble_failed` and optional public
   `source_line`. Interactive preview catches it inside `_eager_execute` and

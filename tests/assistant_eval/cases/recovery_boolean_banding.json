@@ -1,0 +1,62 @@
+{
+  "schema_version": 5,
+  "id": "recovery_boolean_banding",
+  "fixture_version": "1",
+  "project_fixture": "data_recovery",
+  "area": "recovery",
+  "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
+  "turns": [
+    {
+      "request": "Add a banding node called claims_band after quotes that bands has_prior_claim into a new claims_group column: claimant for quotes with a prior claim and clean for quotes without one.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "banding"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [
+          {
+            "source": "quotes",
+            "target": "claims_band",
+            "target_handle": null
+          }
+        ],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [],
+        "node_configs": {
+          "claims_band": {
+            "factors": [
+              {
+                "banding": "categorical",
+                "column": "has_prior_claim",
+                "outputColumn": "claims_group"
+              }
+            ]
+          }
+        },
+        "execution": [
+          {
+            "node": "claims_band",
+            "scenario": "live",
+            "golden": "quotes = pl.scan_parquet('data/quotes.parquet')\ndf = quotes.with_columns(\n    claims_group=pl.when(pl.col('has_prior_claim'))\n    .then(pl.lit('claimant'))\n    .otherwise(pl.lit('clean'))\n)\n",
+            "order_free": false
+          }
+        ],
+        "efficiency": null,
+        "data_findings": {
+          "reported": [
+            {
+              "kind": "banding_all_default",
+              "node": "claims_band"
+            }
+          ],
+          "kept": []
+        }
+      }
+    }
+  ]
+}

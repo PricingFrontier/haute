@@ -51,7 +51,7 @@ from haute._rating import (
     SUPPORTED_BANDING_OPERATORS,
     _banding_rule_comparators,
     _breakpoints_to_rules,
-    _normalise_combined_outputs,
+    normalise_combined_outputs,
     normalise_rating_key,
 )
 from haute._rating_step_config import normalise_rating_tables
@@ -233,7 +233,7 @@ def enrich_rating_step(
     ]
 
     combined_outputs = []
-    for combined in _normalise_combined_outputs(config):
+    for combined in normalise_combined_outputs(config):
         column = combined["outputColumn"]
         combined_outputs.append(
             {

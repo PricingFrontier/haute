@@ -1,0 +1,94 @@
+{
+  "tables": [
+    {
+      "factors": [
+        "age_band"
+      ],
+      "outputColumn": "age_relativity",
+      "entries": [
+        {
+          "age_band": "17-24",
+          "value": 1.8
+        },
+        {
+          "age_band": "25-59",
+          "value": 1.0
+        },
+        {
+          "age_band": "60+",
+          "value": 1.2
+        }
+      ],
+      "defaultValue": 1.0
+    },
+    {
+      "factors": [
+        "region",
+        "vehicle_group"
+      ],
+      "outputColumn": "region_vehicle_relativity",
+      "entries": [
+        {
+          "region": "North",
+          "vehicle_group": "A",
+          "value": 0.9
+        },
+        {
+          "region": "North",
+          "vehicle_group": "B",
+          "value": 1.0
+        },
+        {
+          "region": "North",
+          "vehicle_group": "C",
+          "value": 1.2
+        },
+        {
+          "region": "South",
+          "vehicle_group": "A",
+          "value": 1.0
+        },
+        {
+          "region": "South",
+          "vehicle_group": "B",
+          "value": 1.1
+        },
+        {
+          "region": "South",
+          "vehicle_group": "C",
+          "value": 1.3
+        },
+        {
+          "region": "London",
+          "vehicle_group": "A",
+          "value": 1.3
+        },
+        {
+          "region": "London",
+          "vehicle_group": "B",
+          "value": 1.45
+        },
+        {
+          "region": "London",
+          "vehicle_group": "C",
+          "value": 1.7
+        }
+      ],
+      "defaultValue": 1.0
+    }
+  ],
+  "combinedOutputs": [
+    {
+      "outputColumn": "premium",
+      "operation": "multiply",
+      "baseValue": 320.0
+    }
+  ],
+  "steps": [
+    {
+      "id": "logic",
+      "kind": "free_code",
+      "code": "# Round the premium to pence\ndf = df.with_columns(pl.col('premium').round(2))"
+    }
+  ]
+}

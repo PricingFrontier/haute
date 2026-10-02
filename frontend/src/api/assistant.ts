@@ -20,12 +20,125 @@ export interface AssistantUsage {
   output_tokens: number
 }
 
+/**
+ * How a completed turn ended, and what it saved. The detail is the model's
+ * question, the blocker, the verification error of a save that committed, or
+ * the controller's reason the model stopped before finishing. `changes` are the
+ * ids of the change cards the turn saved, in order: at least one for `applied`,
+ * none for `answered`, and any number before a question, blocker or stop.
+ */
+export type AssistantTurnOutcome =
+  | { kind: "applied" | "answered"; detail: null; changes: string[] }
+  | {
+      kind: "needs_input" | "blocked" | "committed_unverified" | "incomplete"
+      detail: string
+      changes: string[]
+    }
+
+/** One edge a saved plan added or removed, by its endpoint node ids. */
+export interface AssistantChangeEdge {
+  source: string
+  target: string
+}
+
+/** One node chip on a change card: which node, its palette type and what happened. */
+export interface AssistantChangeNode {
+  id: string
+  type: string
+  change: "added" | "changed" | "removed" | "renamed"
+  renamed_from: string | null
+  /** The configuration fields the plan changed, in plain words, never their values. */
+  fields: string[]
+  /** The node's step kinds after the change; null for a node without a step list. */
+  steps: string[] | null
+  steps_changed: number
+}
+
+/** One data-check finding on a change card, worded by the backend from counts and names. */
+export interface AssistantDataFinding {
+  severity: "advisory" | "informational"
+  node: string
+  text: string
+}
+
+/**
+ * The data check of the dry-run whose plan a change saved, mirrored from
+ * `schemas.py`. `other_scenario` keeps no findings, only the scenario they
+ * described; `not_checked` is one line on what the check did not look at.
+ */
+export interface AssistantChangeDataCheck {
+  visibility: "current" | "earlier_inputs" | "other_scenario"
+  outcome: "checked" | "not_run"
+  scenario: string
+  findings: AssistantDataFinding[]
+  findings_omitted: number
+  not_checked: string | null
+}
+
+/** The value-free change card of one saved plan, mirrored from `schemas.py`. */
+export interface AssistantChangeRecord {
+  /** The hash of the plan the change saved; the turn outcome lists it. */
+  id: string
+  summary: string
+  assumptions: string[]
+  changes: {
+    nodes: AssistantChangeNode[]
+    edges_added: AssistantChangeEdge[]
+    edges_removed: AssistantChangeEdge[]
+    preamble_changed: boolean
+    truncated: boolean
+  }
+  warnings: string[]
+  git_sha: string | null
+  parent_sha: string | null
+  /** The editor document revision the save produced; Undo needs the canvas still at it. */
+  revision: string
+  /** The plan's data check; null when none ran or a record predates data checks. */
+  data_check: AssistantChangeDataCheck | null
+}
+
+/** One saved change recorded against a build-plan item, by its change card's id. */
+export interface AssistantBuildPlanChange {
+  id: string
+  /** The analyst undid it; it stays listed, as its card stays in the chat. */
+  undone: boolean
+}
+
+/**
+ * One stage of a build plan: whether the assistant marked it complete, and the
+ * changes the backend recorded against it from the applies that named it.
+ */
+export interface AssistantBuildPlanItem {
+  id: string
+  title: string
+  complete: boolean
+  changes: AssistantBuildPlanChange[]
+}
+
+/** The stages a multi-stage request is built in, mirrored from `schemas.py`. */
+export interface AssistantBuildPlan {
+  items: AssistantBuildPlanItem[]
+}
+
 export type AssistantStreamEvent =
   | { type: "text_delta"; text: string }
-  | { type: "tool_started"; id: string; name: string; summary: string }
-  | { type: "tool_finished"; id: string; name: string; is_error: boolean; summary: string }
-  | { type: "graph_updated"; fingerprint: string }
-  | { type: "completed"; usage: AssistantUsage }
+  /** The model is thinking; the event carries none of the thinking. */
+  | { type: "thinking" }
+  | { type: "tool_started"; id: string; name: string; title: string; summary: string }
+  /** A running tool moved to a new stage: its row's title until it finishes. */
+  | { type: "tool_progress"; id: string; title: string }
+  | {
+      type: "tool_finished"
+      id: string
+      name: string
+      title: string
+      is_error: boolean
+      summary: string
+    }
+  | { type: "change_applied"; change: AssistantChangeRecord }
+  /** A tool call changed the session's build plan: the whole plan as it now stands. */
+  | { type: "build_plan_updated"; build_plan: AssistantBuildPlan }
+  | { type: "completed"; usage: AssistantUsage; outcome: AssistantTurnOutcome }
   | { type: "failed"; message: string }
   | { type: "cancelled" }
 
@@ -58,17 +171,20 @@ function requireNullableString(value: unknown, path: string): string | null {
   return value
 }
 
-function requireNullableLiteral<T extends string>(
-  value: unknown,
-  path: string,
-  allowed: readonly T[],
-): T | null {
-  if (value === null) return null
+function requireLiteral<T extends string>(value: unknown, path: string, allowed: readonly T[]): T {
   const result = requireString(value, path)
   if (!allowed.includes(result as T)) {
     invalidAssistantPayload(path, allowed.map((item) => JSON.stringify(item)).join(" or "))
   }
   return result as T
+}
+
+function requireNullableLiteral<T extends string>(
+  value: unknown,
+  path: string,
+  allowed: readonly T[],
+): T | null {
+  return value === null ? null : requireLiteral(value, path, allowed)
 }
 
 function parseAssistantStatus(value: unknown): AssistantStatus {
@@ -104,9 +220,182 @@ function parseAssistantStatus(value: unknown): AssistantStatus {
   return status
 }
 
+function parseTurnOutcome(value: unknown, path: string): AssistantTurnOutcome {
+  const payload = requireRecord(value, path)
+  const kind = requireString(payload.kind, `${path}.kind`)
+  const changes = requireStringArray(payload.changes, `${path}.changes`)
+  switch (kind) {
+    case "applied":
+    case "answered":
+      if (payload.detail !== null) invalidAssistantPayload(`${path}.detail`, "null")
+      if (kind === "applied" && changes.length === 0) {
+        invalidAssistantPayload(`${path}.changes`, "at least one saved change")
+      }
+      if (kind === "answered" && changes.length > 0) {
+        invalidAssistantPayload(`${path}.changes`, "no saved change")
+      }
+      return { kind, detail: null, changes }
+    case "needs_input":
+    case "blocked":
+    case "committed_unverified":
+    case "incomplete": {
+      const detail = requireString(payload.detail, `${path}.detail`)
+      if (!detail.trim()) invalidAssistantPayload(`${path}.detail`, "a non-empty string")
+      return { kind, detail, changes }
+    }
+    default:
+      throw new Error(`Unknown assistant turn outcome kind: ${kind}`)
+  }
+}
+
+function requireStringArray(value: unknown, path: string): string[] {
+  if (!Array.isArray(value)) invalidAssistantPayload(path, "an array")
+  return value.map((item, index) => requireString(item, `${path}[${index}]`))
+}
+
+function parseChangeEdges(value: unknown, path: string): AssistantChangeEdge[] {
+  if (!Array.isArray(value)) invalidAssistantPayload(path, "an array")
+  return value.map((item, index) => {
+    const edge = requireRecord(item, `${path}[${index}]`)
+    return {
+      source: requireString(edge.source, `${path}[${index}].source`),
+      target: requireString(edge.target, `${path}[${index}].target`),
+    }
+  })
+}
+
+const CHANGE_KINDS = ["added", "changed", "removed", "renamed"] as const
+
+function parseChangeNode(value: unknown, path: string): AssistantChangeNode {
+  const node = requireRecord(value, path)
+  const change = requireString(node.change, `${path}.change`)
+  if (!(CHANGE_KINDS as readonly string[]).includes(change)) {
+    invalidAssistantPayload(`${path}.change`, CHANGE_KINDS.join(" or "))
+  }
+  const stepsChanged = requireNumber(node.steps_changed, `${path}.steps_changed`)
+  if (!Number.isInteger(stepsChanged) || stepsChanged < 0) {
+    invalidAssistantPayload(`${path}.steps_changed`, "a non-negative integer")
+  }
+  return {
+    id: requireString(node.id, `${path}.id`),
+    type: requireString(node.type, `${path}.type`),
+    change: change as AssistantChangeNode["change"],
+    renamed_from: requireNullableString(node.renamed_from, `${path}.renamed_from`),
+    fields: requireStringArray(node.fields, `${path}.fields`),
+    steps: node.steps === null ? null : requireStringArray(node.steps, `${path}.steps`),
+    steps_changed: stepsChanged,
+  }
+}
+
+function parseDataCheck(value: unknown, path: string): AssistantChangeDataCheck | null {
+  if (value === null) return null
+  const check = requireRecord(value, path)
+  if (!Array.isArray(check.findings)) invalidAssistantPayload(`${path}.findings`, "an array")
+  const omitted = requireNumber(check.findings_omitted, `${path}.findings_omitted`)
+  if (!Number.isInteger(omitted) || omitted < 0) {
+    invalidAssistantPayload(`${path}.findings_omitted`, "a non-negative integer")
+  }
+  return {
+    visibility: requireLiteral(check.visibility, `${path}.visibility`, [
+      "current",
+      "earlier_inputs",
+      "other_scenario",
+    ] as const),
+    outcome: requireLiteral(check.outcome, `${path}.outcome`, ["checked", "not_run"] as const),
+    scenario: requireString(check.scenario, `${path}.scenario`),
+    findings: check.findings.map((raw, index) => {
+      const finding = requireRecord(raw, `${path}.findings[${index}]`)
+      return {
+        severity: requireLiteral(finding.severity, `${path}.findings[${index}].severity`, [
+          "advisory",
+          "informational",
+        ] as const),
+        node: requireString(finding.node, `${path}.findings[${index}].node`),
+        text: requireString(finding.text, `${path}.findings[${index}].text`),
+      }
+    }),
+    findings_omitted: omitted,
+    not_checked: requireNullableString(check.not_checked, `${path}.not_checked`),
+  }
+}
+
+/** Parse a change record field by field; any missing or mistyped field throws. */
+function parseChangeRecord(value: unknown, path: string): AssistantChangeRecord {
+  const record = requireRecord(value, path)
+  const changes = requireRecord(record.changes, `${path}.changes`)
+  if (!Array.isArray(changes.nodes)) invalidAssistantPayload(`${path}.changes.nodes`, "an array")
+  return {
+    id: requireString(record.id, `${path}.id`),
+    summary: requireString(record.summary, `${path}.summary`),
+    assumptions: requireStringArray(record.assumptions, `${path}.assumptions`),
+    changes: {
+      nodes: changes.nodes.map((node, index) =>
+        parseChangeNode(node, `${path}.changes.nodes[${index}]`),
+      ),
+      edges_added: parseChangeEdges(changes.edges_added, `${path}.changes.edges_added`),
+      edges_removed: parseChangeEdges(changes.edges_removed, `${path}.changes.edges_removed`),
+      preamble_changed: requireBoolean(
+        changes.preamble_changed,
+        `${path}.changes.preamble_changed`,
+      ),
+      truncated: requireBoolean(changes.truncated, `${path}.changes.truncated`),
+    },
+    warnings: requireStringArray(record.warnings, `${path}.warnings`),
+    git_sha: requireNullableString(record.git_sha, `${path}.git_sha`),
+    parent_sha: requireNullableString(record.parent_sha, `${path}.parent_sha`),
+    revision: requireString(record.revision, `${path}.revision`),
+    data_check: parseDataCheck(record.data_check, `${path}.data_check`),
+  }
+}
+
+/**
+ * Parse a build plan field by field. An empty item list, a repeated item id and
+ * a complete item without a change that is not undone are contract violations.
+ */
+function parseBuildPlan(value: unknown, path: string): AssistantBuildPlan {
+  const plan = requireRecord(value, path)
+  if (!Array.isArray(plan.items) || plan.items.length === 0) {
+    invalidAssistantPayload(`${path}.items`, "a non-empty array")
+  }
+  const seen = new Set<string>()
+  const items = plan.items.map((raw, index): AssistantBuildPlanItem => {
+    const itemPath = `${path}.items[${index}]`
+    const item = requireRecord(raw, itemPath)
+    const id = requireString(item.id, `${itemPath}.id`)
+    if (seen.has(id)) invalidAssistantPayload(`${itemPath}.id`, "an id no other item has")
+    seen.add(id)
+    if (!Array.isArray(item.changes)) invalidAssistantPayload(`${itemPath}.changes`, "an array")
+    const changes = item.changes.map((rawChange, changeIndex) => {
+      const changePath = `${itemPath}.changes[${changeIndex}]`
+      const change = requireRecord(rawChange, changePath)
+      return {
+        id: requireString(change.id, `${changePath}.id`),
+        undone: requireBoolean(change.undone, `${changePath}.undone`),
+      }
+    })
+    const complete = requireBoolean(item.complete, `${itemPath}.complete`)
+    if (complete && changes.every((change) => change.undone)) {
+      invalidAssistantPayload(`${itemPath}.complete`, "false without a change that is not undone")
+    }
+    return { id, title: requireString(item.title, `${itemPath}.title`), complete, changes }
+  })
+  return { items }
+}
+
+/** A response's required `build_plan`: `null` before the model sets one. */
+function parseNullableBuildPlan(value: unknown, path: string): AssistantBuildPlan | null {
+  return value === null ? null : parseBuildPlan(value, path)
+}
+
 function parseAssistantHistoryEntry(value: unknown, path: string): AssistantHistoryEntry {
   const payload = requireRecord(value, path)
   const kind = requireString(payload.kind, `${path}.kind`)
+  if (kind === "outcome") {
+    return { kind, outcome: parseTurnOutcome(payload.outcome, `${path}.outcome`) }
+  }
+  if (kind === "change" || kind === "undo") {
+    return { kind, change: parseChangeRecord(payload.change, `${path}.change`) }
+  }
   if (kind !== "user" && kind !== "assistant" && kind !== "tool") {
     throw new Error(`Unknown assistant history entry kind: ${kind}`)
   }
@@ -114,6 +403,7 @@ function parseAssistantHistoryEntry(value: unknown, path: string): AssistantHist
     kind,
     text: requireString(payload.text, `${path}.text`),
     name: requireString(payload.name, `${path}.name`),
+    title: requireString(payload.title, `${path}.title`),
     summary: requireString(payload.summary, `${path}.summary`),
     is_error: requireBoolean(payload.is_error, `${path}.is_error`),
   }
@@ -124,9 +414,11 @@ function parseAssistantSession(value: unknown): AssistantSessionResult {
   if (!Array.isArray(payload.history)) invalidAssistantPayload("session.history", "an array")
   return {
     sessionId: requireString(payload.session_id, "session.session_id"),
+    sourceFile: requireString(payload.source_file, "session.source_file"),
     history: payload.history.map((entry, index) =>
       parseAssistantHistoryEntry(entry, `session.history[${index}]`),
     ),
+    buildPlan: parseNullableBuildPlan(payload.build_plan, "session.build_plan"),
   }
 }
 
@@ -136,23 +428,35 @@ function parseEvent(payload: string): AssistantStreamEvent {
   switch (type) {
     case "text_delta":
       return { type, text: requireString(parsed.text, "stream event.text") }
+    case "thinking":
+      return { type }
     case "tool_started":
       return {
         type,
         id: requireString(parsed.id, "stream event.id"),
         name: requireString(parsed.name, "stream event.name"),
+        title: requireString(parsed.title, "stream event.title"),
         summary: requireString(parsed.summary, "stream event.summary"),
+      }
+    case "tool_progress":
+      return {
+        type,
+        id: requireString(parsed.id, "stream event.id"),
+        title: requireString(parsed.title, "stream event.title"),
       }
     case "tool_finished":
       return {
         type,
         id: requireString(parsed.id, "stream event.id"),
         name: requireString(parsed.name, "stream event.name"),
+        title: requireString(parsed.title, "stream event.title"),
         is_error: requireBoolean(parsed.is_error, "stream event.is_error"),
         summary: requireString(parsed.summary, "stream event.summary"),
       }
-    case "graph_updated":
-      return { type, fingerprint: requireString(parsed.fingerprint, "stream event.fingerprint") }
+    case "change_applied":
+      return { type, change: parseChangeRecord(parsed.change, "stream event.change") }
+    case "build_plan_updated":
+      return { type, build_plan: parseBuildPlan(parsed.build_plan, "stream event.build_plan") }
     case "completed": {
       const usage = requireRecord(parsed.usage, "stream event.usage")
       return {
@@ -161,6 +465,7 @@ function parseEvent(payload: string): AssistantStreamEvent {
           input_tokens: requireNumber(usage.input_tokens, "stream event.usage.input_tokens"),
           output_tokens: requireNumber(usage.output_tokens, "stream event.usage.output_tokens"),
         },
+        outcome: parseTurnOutcome(parsed.outcome, "stream event.outcome"),
       }
     }
     case "failed":
@@ -187,27 +492,41 @@ export function getAssistantStatus(): Promise<AssistantStatus> {
   return request<unknown>("/api/assistant/status").then(parseAssistantStatus)
 }
 
-export interface AssistantHistoryEntry {
-  kind: "user" | "assistant" | "tool"
-  text: string
-  name: string
-  summary: string
-  is_error: boolean
-}
+export type AssistantHistoryEntry =
+  | {
+      kind: "user" | "assistant" | "tool"
+      text: string
+      name: string
+      /** A tool row's plain-words title; empty on text rows. */
+      title: string
+      summary: string
+      is_error: boolean
+    }
+  /** Closes a completed turn with the outcome its live `completed` event carried. */
+  | { kind: "outcome"; outcome: AssistantTurnOutcome }
+  /** An apply's change card, after its tool row, as the live `change_applied` event showed. */
+  | { kind: "change"; change: AssistantChangeRecord }
+  /** The analyst undid this change, after the turn it followed. */
+  | { kind: "undo"; change: AssistantChangeRecord }
 
 export interface AssistantSessionResult {
   sessionId: string
+  /** The canonical source file the server bound the session to. */
+  sourceFile: string
   history: AssistantHistoryEntry[]
+  /** The session's build plan for the checklist; null until the model sets one. */
+  buildPlan: AssistantBuildPlan | null
 }
 
+/** Create (or resume) a chat bound to the canvas document's source file. */
 export function createAssistantSession(
-  pipeline: string | null,
+  sourceFile: string,
   sessionId: string | null = null,
   signal?: AbortSignal,
 ): Promise<AssistantSessionResult> {
   return post<unknown>(
     "/api/assistant/session",
-    { pipeline, session_id: sessionId },
+    { source_file: sourceFile, session_id: sessionId },
     { signal },
   ).then(parseAssistantSession)
 }
@@ -231,33 +550,92 @@ function parseAssistantSessionSummary(value: unknown, path: string): AssistantSe
   }
 }
 
+export interface AssistantSessionList {
+  /** The canonical source file the listed chats are bound to. */
+  sourceFile: string
+  sessions: AssistantSessionSummary[]
+}
+
+/** List the chats bound to the canvas document's source file. */
 export function listAssistantSessions(
-  pipeline: string | null = null,
+  sourceFile: string,
   signal?: AbortSignal,
-): Promise<AssistantSessionSummary[]> {
-  const query = pipeline === null ? "" : `?pipeline=${encodeURIComponent(pipeline)}`
+): Promise<AssistantSessionList> {
+  const query = `?source_file=${encodeURIComponent(sourceFile)}`
   return request<unknown>(`/api/assistant/sessions${query}`, { signal }).then((value) => {
     const payload = requireRecord(value, "sessions")
     if (!Array.isArray(payload.sessions)) invalidAssistantPayload("sessions.sessions", "an array")
-    return payload.sessions.map((entry, index) =>
-      parseAssistantSessionSummary(entry, `sessions.sessions[${index}]`),
-    )
+    return {
+      sourceFile: requireString(payload.source_file, "sessions.source_file"),
+      sessions: payload.sessions.map((entry, index) =>
+        parseAssistantSessionSummary(entry, `sessions.sessions[${index}]`),
+      ),
+    }
   })
 }
+
+export interface AssistantUndoResult {
+  changeId: string
+  /** The commit the undo's save made, or null when it was not captured in Git. */
+  gitSha: string | null
+  /** The session's build plan after the undo marked the change undone; null without one. */
+  buildPlan: AssistantBuildPlan | null
+}
+
+/** Undo one change card: the backend saves the version before that change. */
+export function undoAssistantChange(
+  sessionId: string,
+  changeId: string,
+  sourceFile: string,
+): Promise<AssistantUndoResult> {
+  return post<unknown>("/api/assistant/changes/undo", {
+    session_id: sessionId,
+    change_id: changeId,
+    source_file: sourceFile,
+  }).then((value) => {
+    const payload = requireRecord(value, "undo")
+    return {
+      changeId: requireString(payload.change_id, "undo.change_id"),
+      gitSha: requireNullableString(payload.git_sha, "undo.git_sha"),
+      buildPlan: parseNullableBuildPlan(payload.build_plan, "undo.build_plan"),
+    }
+  })
+}
+
+/** What the canvas adds to a message: the backend's closed message `context`. */
+export interface AssistantMessageContext {
+  /** Top-level node ids selected on the canvas, at most `MAX_CONTEXT_SELECTION`. */
+  selectedNodeIds: string[]
+  /** The node whose schema-resolution error the turn context reports. */
+  previewErrorNodeId: string | null
+}
+
+/** The most selected nodes one message carries; the backend refuses more. */
+export const MAX_CONTEXT_SELECTION = 20
 
 export interface StreamAssistantMessageOptions {
   signal: AbortSignal
   onEvent: (event: AssistantStreamEvent) => void
+  context: AssistantMessageContext
 }
 
 export async function streamAssistantMessage(
   sessionId: string,
   message: string,
+  sourceFile: string,
   options: StreamAssistantMessageOptions,
 ): Promise<void> {
   const response = await postRawStream(
     "/api/assistant/message",
-    { session_id: sessionId, message },
+    {
+      session_id: sessionId,
+      message,
+      source_file: sourceFile,
+      context: {
+        selected_node_ids: options.context.selectedNodeIds,
+        preview_error_node_id: options.context.previewErrorNodeId,
+      },
+    },
     { signal: options.signal },
   )
   if (response.body === null) {

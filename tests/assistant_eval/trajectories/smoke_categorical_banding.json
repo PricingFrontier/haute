@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "id": "smoke_categorical_banding",
+  "case": "smoke_categorical_banding",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "inspect",
+              "tool": "get_pipeline",
+              "arguments": {},
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Band region into region_group after quotes: north and south are core, east and west are other, and anything else is unknown.",
+                "ops": [
+                  {
+                    "op": "recipe",
+                    "recipe": "categorical_banding",
+                    "arguments": {
+                      "source": "quotes",
+                      "name": "region_band",
+                      "column": "region",
+                      "output_column": "region_group",
+                      "rules": [
+                        {
+                          "value": "north",
+                          "assignment": "core"
+                        },
+                        {
+                          "value": "south",
+                          "assignment": "core"
+                        },
+                        {
+                          "value": "east",
+                          "assignment": "other"
+                        },
+                        {
+                          "value": "west",
+                          "assignment": "other"
+                        }
+                      ],
+                      "default": "unknown"
+                    }
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved the change.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

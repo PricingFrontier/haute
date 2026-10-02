@@ -1,0 +1,5 @@
+{
+  "node_type": "submodelPort",
+  "authorable": false,
+  "note": "Not authorable by the assistant: assistant operations cannot create submodel boundaries, and an existing port cannot be updated, renamed, deleted or wired by them either. A port is the structural input or output of a submodel definition and has no configuration; the analyst edits it in the editor."
+}

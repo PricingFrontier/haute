@@ -111,6 +111,31 @@ class InteractiveWorkerStoppedError(InteractiveWorkerError):
         )
 
 
+class InteractiveWorkerBusyError(InteractiveWorkerError):
+    """A pre-emptible request was refused rather than waiting for its slot.
+
+    The slot was held, its worker was starting or not running, or an
+    interactive request was already waiting for it.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"The interactive worker is busy: {reason}", terminal_reason="superseded")
+
+
+class InteractiveWorkerPreemptedError(InteractiveWorkerError):
+    """A pre-emptible request was stopped because an interactive request needed its slot.
+
+    Raised only after its worker was terminated, confirmed dead and replaced,
+    so the waiting request runs next on the replacement.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Interactive execution was stopped because an editor request needed its worker",
+            terminal_reason="superseded",
+        )
+
+
 class InteractiveWorkerMemoryLimitError(InteractiveWorkerError, MemoryError):
     def __init__(self, *, rss_bytes: int, limit_bytes: int) -> None:
         super().__init__(
@@ -187,11 +212,17 @@ class _WorkerSlot:
     request_queue: Any
     result_queue: Any
     process: BaseProcess
-    lock: threading.Lock
     generation: int
     # The running job's step progress, written by the worker (see _step_progress).
     progress: ProgressCell
     closed: bool = False
+
+
+@dataclass(slots=True)
+class _PreemptibleJob:
+    """A pre-emptible request running on a slot index; a waiting request marks it."""
+
+    preempted: bool = False
 
 
 def _public_exception_payload(exc: BaseException) -> dict[str, object] | None:
@@ -357,8 +388,37 @@ def _interactive_worker_entrypoint(
         lease.close()
 
 
+def _validate_memory_limits(
+    *,
+    absolute_rss_limit_bytes: int | None,
+    memory_growth_limit_bytes: int | None,
+    require_memory_limit: bool,
+) -> None:
+    if absolute_rss_limit_bytes is not None and absolute_rss_limit_bytes <= 0:
+        raise ValueError("absolute_rss_limit_bytes must be positive")
+    if memory_growth_limit_bytes is not None and memory_growth_limit_bytes <= 0:
+        raise ValueError("memory_growth_limit_bytes must be positive")
+    if require_memory_limit and memory_growth_limit_bytes is None:
+        raise ValueError("required memory enforcement needs a native memory growth limit")
+    if (
+        require_memory_limit
+        and memory_growth_limit_bytes is not None
+        and not native_memory_caps_supported()
+    ):
+        raise RuntimeError("Interactive worker native memory caps are unavailable on this host")
+
+
 class InteractiveWorkerPool:
-    """Fixed-size affinity pool whose failed tasks kill their owning process."""
+    """Fixed-size affinity pool whose failed tasks kill their owning process.
+
+    Each slot index has one scheduling lock, created with the pool and kept
+    across worker generations: a request holds it while its job runs, and a
+    replacement happens while the job that ended the old worker still holds
+    it, so a request that waited through a replacement submits to the
+    replacement. Interactive requests wait for the lock and are counted while
+    they wait; a pre-emptible request (``run_preemptible``) never waits, is
+    refused while one is counted, and is stopped when one arrives.
+    """
 
     def __init__(
         self,
@@ -389,6 +449,12 @@ class InteractiveWorkerPool:
         self._slots: list[_WorkerSlot] = []
         self._closed = False
         self._shutdown_event = threading.Event()
+        # Per slot index, stable across worker generations (see the class docstring).
+        self._scheduling_locks = tuple(threading.Lock() for _ in range(size))
+        # Interactive requests waiting for each index's scheduling lock; read
+        # and written only under ``_state_lock``.
+        self._pending = [0] * size
+        self._preemptible: dict[int, _PreemptibleJob] = {}
 
     def start(self) -> None:
         with self._state_lock:
@@ -415,7 +481,7 @@ class InteractiveWorkerPool:
             slots, self._slots = self._slots, []
         errors: list[BaseException] = []
         for slot in slots:
-            with slot.lock:
+            with self._scheduling_locks[slot.index]:
                 try:
                     self._close_slot(slot, graceful=True)
                 except BaseException as exc:
@@ -441,65 +507,31 @@ class InteractiveWorkerPool:
     ) -> T:
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
-        if absolute_rss_limit_bytes is not None and absolute_rss_limit_bytes <= 0:
-            raise ValueError("absolute_rss_limit_bytes must be positive")
-        if memory_growth_limit_bytes is not None and memory_growth_limit_bytes <= 0:
-            raise ValueError("memory_growth_limit_bytes must be positive")
-        if require_memory_limit and memory_growth_limit_bytes is None:
-            raise ValueError("required memory enforcement needs a native memory growth limit")
-        if (
-            require_memory_limit
-            and memory_growth_limit_bytes is not None
-            and not native_memory_caps_supported()
-        ):
-            raise RuntimeError("Interactive worker native memory caps are unavailable on this host")
+        _validate_memory_limits(
+            absolute_rss_limit_bytes=absolute_rss_limit_bytes,
+            memory_growth_limit_bytes=memory_growth_limit_bytes,
+            require_memory_limit=require_memory_limit,
+        )
         self.start()
-        slot = self._slot_for_affinity(affinity_key)
-        while not slot.lock.acquire(timeout=self._poll_interval_seconds):
-            if stop_reason is not None:
-                reason = stop_reason()
-                if reason is not None:
-                    raise InteractiveWorkerStoppedError(reason)
+        index = self._index_for_affinity(affinity_key)
+        self._wait_for_scheduling_lock(index, stop_reason)
         try:
-            with self._state_lock:
-                if self._closed:
-                    raise RuntimeError("interactive worker pool is closed")
+            slot = self._current_slot(index)
             job_id = uuid.uuid4().hex
-            if memory_growth_limit_bytes is not None:
-                baseline_rss = process_rss_bytes(cast(int, slot.process.pid))
-                if baseline_rss is None:
-                    if require_memory_limit:
-                        # Native enforcement remains valid; RSS is only a
-                        # secondary watchdog and must not reject this request.
-                        absolute_rss_limit_bytes = None
-                    logger.warning(
-                        "interactive_worker_rss_baseline_unavailable",
-                        worker_index=slot.index,
-                    )
-                else:
-                    growth_cap = baseline_rss + memory_growth_limit_bytes
-                    absolute_rss_limit_bytes = (
-                        growth_cap
-                        if absolute_rss_limit_bytes is None
-                        else min(absolute_rss_limit_bytes, growth_cap)
-                    )
-            request = (
-                "run",
+            absolute_rss_limit_bytes = self._absolute_rss_limit(
+                slot,
+                absolute_rss_limit_bytes=absolute_rss_limit_bytes,
+                memory_growth_limit_bytes=memory_growth_limit_bytes,
+                require_memory_limit=require_memory_limit,
+            )
+            serialised = self._serialised_request(
                 job_id,
                 function,
                 args,
                 kwargs,
-                memory_growth_limit_bytes,
-                require_memory_limit,
-                current_streaming_chunk_size(),
+                memory_growth_limit_bytes=memory_growth_limit_bytes,
+                require_memory_limit=require_memory_limit,
             )
-            try:
-                serialised = pickle.dumps(request, protocol=pickle.HIGHEST_PROTOCOL)
-            except BaseException as exc:
-                raise InteractiveWorkerProtocolError(
-                    f"Interactive worker request is not serialisable: {exc}",
-                    terminal_reason="contract_error",
-                ) from exc
             slot.request_queue.put(serialised)
             return cast(
                 T,
@@ -515,23 +547,219 @@ class InteractiveWorkerPool:
                 ),
             )
         finally:
-            slot.lock.release()
+            self._scheduling_locks[index].release()
 
-    def _slot_for_affinity(self, affinity_key: Hashable) -> _WorkerSlot:
+    def run_preemptible(
+        self,
+        function: Callable[..., T],
+        *args: Any,
+        affinity_key: Hashable,
+        deadline: float,
+        stop_reason: Callable[[], WorkerTerminalReason | None] | None = None,
+        absolute_rss_limit_bytes: int | None = None,
+        memory_growth_limit_bytes: int | None = None,
+        require_memory_limit: bool = False,
+        **kwargs: Any,
+    ) -> T:
+        """Run one job only if its slot is free now, yielding it to any interactive request.
+
+        Never starts the pool and never waits: a pool that has not started,
+        a held or not-running slot, and a slot an interactive request is
+        waiting for all raise :class:`InteractiveWorkerBusyError`. While it
+        runs, an interactive request that asks for the slot stops it: its
+        worker is terminated, confirmed dead and replaced before the slot is
+        released, and :class:`InteractiveWorkerPreemptedError` is raised.
+        *deadline* is absolute (``time.monotonic()``); it bounds the
+        submission, the result wait and the release acknowledgement alike.
+        """
+        _validate_memory_limits(
+            absolute_rss_limit_bytes=absolute_rss_limit_bytes,
+            memory_growth_limit_bytes=memory_growth_limit_bytes,
+            require_memory_limit=require_memory_limit,
+        )
+        timeout_seconds = deadline - time.monotonic()
+        if timeout_seconds <= 0:
+            raise InteractiveWorkerTimeoutError(0.0)
+        index, slot, job = self._acquire_preemptible(affinity_key)
+        try:
+            job_id = uuid.uuid4().hex
+            absolute_rss_limit_bytes = self._absolute_rss_limit(
+                slot,
+                absolute_rss_limit_bytes=absolute_rss_limit_bytes,
+                memory_growth_limit_bytes=memory_growth_limit_bytes,
+                require_memory_limit=require_memory_limit,
+            )
+            serialised = self._serialised_request(
+                job_id,
+                function,
+                args,
+                kwargs,
+                memory_growth_limit_bytes=memory_growth_limit_bytes,
+                require_memory_limit=require_memory_limit,
+            )
+            self._submit_before(
+                slot, serialised, deadline=deadline, timeout_seconds=timeout_seconds
+            )
+            return cast(
+                T,
+                self._wait_for_result(
+                    slot,
+                    job_id=job_id,
+                    deadline=deadline,
+                    timeout_seconds=timeout_seconds,
+                    stop_reason=stop_reason,
+                    absolute_rss_limit_bytes=absolute_rss_limit_bytes,
+                    memory_growth_limit_bytes=memory_growth_limit_bytes,
+                    require_memory_limit=require_memory_limit,
+                    preempted=lambda: job.preempted,
+                ),
+            )
+        finally:
+            with self._state_lock:
+                if self._preemptible.get(index) is job:
+                    del self._preemptible[index]
+            self._scheduling_locks[index].release()
+
+    def _index_for_affinity(self, affinity_key: Hashable) -> int:
+        digest = hashlib.sha256(repr(affinity_key).encode("utf-8")).digest()
+        return int.from_bytes(digest[:8], "big") % self._size
+
+    def _wait_for_scheduling_lock(
+        self,
+        index: int,
+        stop_reason: Callable[[], WorkerTerminalReason | None] | None,
+    ) -> None:
+        """Wait for *index*'s scheduling lock, counted as pending until it is held.
+
+        Arriving marks a pre-emptible job running on the index, and the count
+        refuses any pre-emptible request until this one holds the lock, so it
+        runs next on the replacement worker.
+        """
+        lock = self._scheduling_locks[index]
+        with self._state_lock:
+            self._pending[index] += 1
+            running = self._preemptible.get(index)
+            if running is not None:
+                running.preempted = True
+        try:
+            while not lock.acquire(timeout=self._poll_interval_seconds):
+                if stop_reason is not None:
+                    reason = stop_reason()
+                    if reason is not None:
+                        raise InteractiveWorkerStoppedError(reason)
+        finally:
+            with self._state_lock:
+                self._pending[index] -= 1
+
+    def _acquire_preemptible(
+        self, affinity_key: Hashable
+    ) -> tuple[int, _WorkerSlot, _PreemptibleJob]:
+        """Take the affinity slot's scheduling lock without waiting, and register the job.
+
+        Acquisition and registration share one critical section, so an
+        interactive request arriving at any later moment finds the job to mark.
+        """
+        index = self._index_for_affinity(affinity_key)
+        lock = self._scheduling_locks[index]
+        with self._state_lock:
+            if self._closed or not self._slots:
+                raise InteractiveWorkerBusyError("the worker pool is not running")
+            if self._pending[index] > 0:
+                raise InteractiveWorkerBusyError("an editor request is waiting for the worker")
+            if not lock.acquire(blocking=False):
+                raise InteractiveWorkerBusyError("the worker is running another request")
+            slot = self._slots[index]
+            if slot.closed:
+                lock.release()
+                raise InteractiveWorkerBusyError("the worker is not running")
+            job = _PreemptibleJob()
+            self._preemptible[index] = job
+        return index, slot, job
+
+    def _current_slot(self, index: int) -> _WorkerSlot:
+        """The open slot at *index*, read once its scheduling lock is held."""
         with self._state_lock:
             if self._closed:
                 raise RuntimeError("interactive worker pool is closed")
             if not self._slots:
                 raise RuntimeError("interactive worker pool did not start")
-            digest = hashlib.sha256(repr(affinity_key).encode("utf-8")).digest()
-            index = int.from_bytes(digest[:8], "big") % len(self._slots)
-            return self._slots[index]
+            slot = self._slots[index]
+            if slot.closed:
+                raise InteractiveWorkerStartError(
+                    f"Interactive worker {index} is not running: its replacement did not start",
+                    terminal_reason="error",
+                )
+            return slot
+
+    @staticmethod
+    def _absolute_rss_limit(
+        slot: _WorkerSlot,
+        *,
+        absolute_rss_limit_bytes: int | None,
+        memory_growth_limit_bytes: int | None,
+        require_memory_limit: bool,
+    ) -> int | None:
+        if memory_growth_limit_bytes is None:
+            return absolute_rss_limit_bytes
+        baseline_rss = process_rss_bytes(cast(int, slot.process.pid))
+        if baseline_rss is None:
+            logger.warning(
+                "interactive_worker_rss_baseline_unavailable",
+                worker_index=slot.index,
+            )
+            # Native enforcement remains valid; RSS is only a secondary
+            # watchdog and must not reject this request.
+            return None if require_memory_limit else absolute_rss_limit_bytes
+        growth_cap = baseline_rss + memory_growth_limit_bytes
+        return (
+            growth_cap
+            if absolute_rss_limit_bytes is None
+            else min(absolute_rss_limit_bytes, growth_cap)
+        )
+
+    @staticmethod
+    def _serialised_request(
+        job_id: str,
+        function: Callable[..., Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        *,
+        memory_growth_limit_bytes: int | None,
+        require_memory_limit: bool,
+    ) -> bytes:
+        request = (
+            "run",
+            job_id,
+            function,
+            args,
+            kwargs,
+            memory_growth_limit_bytes,
+            require_memory_limit,
+            current_streaming_chunk_size(),
+        )
+        try:
+            return pickle.dumps(request, protocol=pickle.HIGHEST_PROTOCOL)
+        except BaseException as exc:
+            raise InteractiveWorkerProtocolError(
+                f"Interactive worker request is not serialisable: {exc}",
+                terminal_reason="contract_error",
+            ) from exc
+
+    def _submit_before(
+        self, slot: _WorkerSlot, serialised: bytes, *, deadline: float, timeout_seconds: float
+    ) -> None:
+        """Hand the request to the worker's queue, or replace the worker at the deadline."""
+        try:
+            slot.request_queue.put(serialised, timeout=max(deadline - time.monotonic(), 0.0))
+        except queue.Full:
+            self._stop_and_replace(slot)
+            raise InteractiveWorkerTimeoutError(timeout_seconds) from None
 
     def _start_slot(self, *, index: int, generation: int) -> _WorkerSlot:
         request_queue = create_worker_queue(self._ctx, 1)
         result_queue = create_worker_queue(self._ctx, 1)
-        # A replaced slot gets a fresh cell and lock: a worker killed while
-        # holding the old lock leaves it behind with the old process.
+        # A replaced slot gets a fresh progress cell: a worker killed while
+        # holding the old cell's lock leaves it behind with the old process.
         progress = ProgressCell(self._ctx)
         process = self._ctx.Process(
             target=_interactive_worker_entrypoint,
@@ -566,7 +794,6 @@ class InteractiveWorkerPool:
             request_queue=request_queue,
             result_queue=result_queue,
             process=process,
-            lock=threading.Lock(),
             generation=generation,
             progress=progress,
         )
@@ -632,8 +859,17 @@ class InteractiveWorkerPool:
         memory_growth_limit_bytes: int | None,
         require_memory_limit: bool,
         on_progress: Callable[[StepProgress], None] | None = None,
+        deadline: float | None = None,
+        preempted: Callable[[], bool] | None = None,
     ) -> Any:
-        deadline = time.monotonic() + timeout_seconds
+        """Wait for the job's result and release, until *deadline* (``time.monotonic()``).
+
+        Without a *deadline* the wait has *timeout_seconds* from now; with one,
+        *timeout_seconds* is the budget it was set from, for the timeout's
+        message. *preempted* stops a pre-emptible job.
+        """
+        if deadline is None:
+            deadline = time.monotonic() + timeout_seconds
         sampler_unavailable_logged = False
         progress_sequence = 0
         while True:
@@ -669,9 +905,18 @@ class InteractiveWorkerPool:
                     except InteractiveWorkerRemoteError as exc:
                         user_error = exc
                     try:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise InteractiveWorkerTimeoutError(timeout_seconds)
                         slot.request_queue.put(
-                            pickle.dumps(("ack", job_id), protocol=pickle.HIGHEST_PROTOCOL)
+                            pickle.dumps(("ack", job_id), protocol=pickle.HIGHEST_PROTOCOL),
+                            timeout=remaining,
                         )
+                    except InteractiveWorkerTimeoutError as timed_out:
+                        if user_error is not None:
+                            user_error.add_note(f"Worker release confirmation failed: {timed_out}")
+                            raise user_error from None
+                        raise
                     except BaseException as exc:
                         release_error = InteractiveWorkerProtocolError(
                             f"Interactive worker acknowledgement could not be sent: {exc}",
@@ -725,6 +970,10 @@ class InteractiveWorkerPool:
                 if reason is not None:
                     self._stop_and_replace(slot)
                     raise InteractiveWorkerStoppedError(reason)
+
+            if preempted is not None and preempted():
+                self._stop_and_replace(slot)
+                raise InteractiveWorkerPreemptedError()
 
             try:
                 sampler_unavailable_logged = self._enforce_rss_watchdog(
@@ -996,14 +1245,8 @@ async def run_in_interactive_worker(
     **kwargs: Any,
 ) -> T:
     """Run one pool call without allowing ASGI cancellation to orphan its thread."""
-    cancellation = threading.Event()
 
-    def combined_stop_reason() -> WorkerTerminalReason | None:
-        if cancellation.is_set():
-            return "cancelled"
-        return stop_reason() if stop_reason is not None else None
-
-    def _run() -> T:
+    def _run(combined_stop_reason: Callable[[], WorkerTerminalReason | None]) -> T:
         return interactive_worker_pool().run(
             function,
             *args,
@@ -1017,7 +1260,58 @@ async def run_in_interactive_worker(
             **kwargs,
         )
 
-    task = asyncio.create_task(asyncio.to_thread(_run))
+    return await _run_pool_call(_run, stop_reason)
+
+
+async def run_preemptible_in_interactive_worker(
+    function: Callable[..., T],
+    *args: Any,
+    affinity_key: Hashable,
+    deadline: float,
+    stop_reason: Callable[[], WorkerTerminalReason | None] | None = None,
+    absolute_rss_limit_bytes: int | None = None,
+    memory_growth_limit_bytes: int | None = None,
+    require_memory_limit: bool = False,
+    **kwargs: Any,
+) -> T:
+    """``InteractiveWorkerPool.run_preemptible`` on the shared pool, cancellation-safe.
+
+    The pool is never started here: a pool that has not started is busy.
+    """
+
+    def _run(combined_stop_reason: Callable[[], WorkerTerminalReason | None]) -> T:
+        return interactive_worker_pool().run_preemptible(
+            function,
+            *args,
+            affinity_key=affinity_key,
+            deadline=deadline,
+            stop_reason=combined_stop_reason,
+            absolute_rss_limit_bytes=absolute_rss_limit_bytes,
+            memory_growth_limit_bytes=memory_growth_limit_bytes,
+            require_memory_limit=require_memory_limit,
+            **kwargs,
+        )
+
+    return await _run_pool_call(_run, stop_reason)
+
+
+async def _run_pool_call(
+    call: Callable[[Callable[[], WorkerTerminalReason | None]], T],
+    stop_reason: Callable[[], WorkerTerminalReason | None] | None,
+) -> T:
+    """Run *call* in a thread; cancelling the awaiting task stops it as ``cancelled``.
+
+    The cancellation waits for the pool call to stop its worker before it
+    propagates, so no worker outlives the request that started it.
+    """
+    cancellation = threading.Event()
+
+    def combined_stop_reason() -> WorkerTerminalReason | None:
+        if cancellation.is_set():
+            return "cancelled"
+        return stop_reason() if stop_reason is not None else None
+
+    task = asyncio.create_task(asyncio.to_thread(call, combined_stop_reason))
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:

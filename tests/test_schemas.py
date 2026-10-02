@@ -289,21 +289,30 @@ class TestPipelineSettingsValues:
 
 
 class TestAssistantMessageRequest:
-    def test_accepts_session_and_message_only(self):
+    def test_accepts_session_message_and_source_file(self):
         from haute.schemas import AssistantMessageRequest
 
         request = AssistantMessageRequest(
             session_id="session-1",
             message="Author this pipeline",
+            source_file="main.py",
         )
         assert request.session_id == "session-1"
         assert request.message == "Author this pipeline"
+        assert request.source_file == "main.py"
 
     @pytest.mark.parametrize(
         "payload",
         [
-            {"session_id": "s", "message": "m", "unknown": True},
-            {"session_id": "s", "message": "m", "confirmation": {"plan_hash": "a" * 64}},
+            {"session_id": "s", "message": "m"},
+            {"session_id": "s", "message": "m", "source_file": ""},
+            {"session_id": "s", "message": "m", "source_file": "main.py", "unknown": True},
+            {
+                "session_id": "s",
+                "message": "m",
+                "source_file": "main.py",
+                "confirmation": {"plan_hash": "a" * 64},
+            },
         ],
     )
     def test_request_is_closed(self, payload):
@@ -329,3 +338,46 @@ class TestAssistantStatus:
                 mutations_enabled=True,
                 mutations_reason=None,
             )
+
+
+class TestAssistantTurnOutcome:
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"kind": "applied", "detail": None, "changes": ["a" * 64, "b" * 64]},
+            {"kind": "answered", "detail": None, "changes": []},
+            {"kind": "needs_input", "detail": "Which column?", "changes": []},
+            {"kind": "needs_input", "detail": "Which band edges?", "changes": ["a" * 64]},
+            {"kind": "blocked", "detail": "The file is missing.", "changes": ["a" * 64]},
+            {"kind": "committed_unverified", "detail": "Verification failed.", "changes": []},
+            {
+                "kind": "incomplete",
+                "detail": "A dry-run validated a plan that was never applied.",
+                "changes": [],
+            },
+        ],
+    )
+    def test_valid_outcomes(self, payload):
+        from haute.schemas import AssistantTurnOutcome
+
+        assert AssistantTurnOutcome.model_validate(payload).model_dump() == payload
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"kind": "applied", "detail": "extra", "changes": ["a" * 64]},
+            {"kind": "needs_input", "detail": None, "changes": []},
+            {"kind": "blocked", "detail": "  ", "changes": []},
+            {"kind": "committed_unverified", "changes": []},
+            {"kind": "incomplete", "detail": None, "changes": []},
+            {"kind": "finished", "detail": None, "changes": []},
+            {"kind": "applied", "detail": None, "changes": []},
+            {"kind": "answered", "detail": None, "changes": ["a" * 64]},
+            {"kind": "blocked", "detail": "The file is missing."},
+        ],
+    )
+    def test_detail_must_match_the_kind(self, payload):
+        from haute.schemas import AssistantTurnOutcome
+
+        with pytest.raises(ValidationError):
+            AssistantTurnOutcome.model_validate(payload)

@@ -1,0 +1,29 @@
+{
+  "schema_version": 5,
+  "id": "motor_premium_question",
+  "fixture_version": "2",
+  "project_fixture": "motor_pricing",
+  "area": "read_only",
+  "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
+  "turns": [
+    {
+      "request": "How is the premium in base_premium worked out? Don't change anything.",
+      "expectations": {
+        "outcome": "answered",
+        "saves": false,
+        "required_node_types": [],
+        "forbidden_node_types": [],
+        "required_edges": [],
+        "require_connected_graph": false,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [],
+        "node_configs": {},
+        "execution": [],
+        "efficiency": null,
+        "data_findings": null
+      }
+    }
+  ]
+}

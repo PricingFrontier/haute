@@ -10,6 +10,7 @@ import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -38,6 +39,7 @@ from haute._graph_utils import upstream_node_ids
 from haute._hashing import content_hash_bytes
 from haute._interactive_workers import (
     InteractiveWorkerCrashedError,
+    InteractiveWorkerError,
     InteractiveWorkerMemoryLimitError,
     InteractiveWorkerRemoteError,
     InteractiveWorkerStoppedError,
@@ -79,7 +81,13 @@ from haute._polars_io_registry import (
     format_group,
     validate_data_output_config,
 )
-from haute._polars_steps import PolarsStepError, render_polars_steps
+from haute._polars_steps import (
+    PolarsStepError,
+    RenderedSteps,
+    ResolvedFreeCode,
+    render_polars_steps,
+    resolve_free_code_columns,
+)
 from haute._sandbox import _get_project_root, contained_path
 from haute._seed_plans import (
     ListedSeed,
@@ -177,6 +185,7 @@ from haute.schemas import (
     EditorIdentitiesResponse,
     EditorIdentityResponseNode,
     ExecutionMetricsPayload,
+    FreeCodeColumns,
     NodeMemoryInfo,
     NodeTimingInfo,
     OutputDestinationRequest,
@@ -190,6 +199,8 @@ from haute.schemas import (
     PipelineSettingsResponse,
     PipelineSettingsValues,
     PipelineSummary,
+    PolarsFreeCodeColumnsRequest,
+    PolarsFreeCodeColumnsResponse,
     PolarsStepsRenderRequest,
     PolarsStepsRenderResponse,
     PreviewInputsRequest,
@@ -273,7 +284,11 @@ async def resolve_pipeline_editor_identities(
 async def render_polars_steps_endpoint(
     body: PolarsStepsRenderRequest,
 ) -> PolarsStepsRenderResponse:
-    """Render a step list to Polars code without reading or writing project state."""
+    """Render a step list to Polars code without reading or writing project state.
+
+    Rendering runs no authored code, so the code text never waits on a
+    snippet; the columns after each free-code step have their own endpoint.
+    """
     try:
         rendered = render_polars_steps(body.steps, body.input_names, start=body.start)
     except PolarsStepError as exc:
@@ -282,6 +297,167 @@ async def render_polars_steps_endpoint(
         ok=True,
         code=rendered.code,
         step_lines=[list(span) for span in rendered.step_lines],
+    )
+
+
+#: How long resolving a step list's free-code columns may run. The frames are
+#: empty, so ordinary code finishes well inside it; code still running at the
+#: deadline is stopped with its worker. Read per request.
+FREE_CODE_COLUMNS_TIMEOUT_SECONDS = 5.0
+
+# One running resolution per node: a newer request stops an older one.
+_free_code_supersession = SupersessionCoordinator()
+
+
+def _unresolved_free_code(steps: list[dict[str, Any]], message: str) -> list[ResolvedFreeCode]:
+    """The same reason for every free-code step of *steps*."""
+    return [
+        ResolvedFreeCode(index, None, message)
+        for index, step in enumerate(steps)
+        if step["kind"] == "free_code"
+    ]
+
+
+def _free_code_worker_failure(exc: InteractiveWorkerError, timeout: float) -> str:
+    """A parent-authored, data-free reason for a worker that did not answer."""
+    if isinstance(exc, InteractiveWorkerTimeoutError):
+        return f"The code did not finish within {timeout:g} seconds."
+    if exc.terminal_reason == "memory_limited":
+        return "Running it used more memory than a preview may."
+    logger.error(
+        "free_code_columns_worker_failed",
+        error_class=type(exc).__name__,
+        error_message=str(exc),
+    )
+    return "The preview worker stopped before it finished."
+
+
+async def _resolve_free_code_columns_isolated(
+    body: PolarsFreeCodeColumnsRequest,
+    rendered: RenderedSteps,
+    token: ExecutionCancellationToken,
+    affinity_key: tuple[str, str],
+    timeout: float,
+) -> list[ResolvedFreeCode]:
+    """Admit a preview, then resolve in the interactive worker under its budget.
+
+    A timeout, memory limit or worker failure becomes every free-code step's
+    reason; only a stop (a newer request, a disconnect) is raised. In thread
+    mode the deadline bounds the response, not the thread, which keeps the
+    admission until it ends.
+    """
+    resolve = partial(
+        resolve_free_code_columns,
+        body.steps,
+        rendered,
+        start=body.start,
+        input_names=body.input_names,
+        input_columns={
+            name: [(c.name, c.dtype) for c in columns]
+            for name, columns in body.input_columns.items()
+        },
+        frame_columns=[(c.name, c.dtype) for c in body.frame_columns],
+    )
+    try:
+        context = create_admitted_execution_context(
+            operation="polars_free_code_columns",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            cancellation_token=token,
+        )
+    except ExecutionAdmissionError:
+        return _unresolved_free_code(body.steps, "There is not enough free memory to run it now.")
+    release_on_exit = True
+    try:
+        if resolve_interactive_execution_mode() == "process":
+            budget = isolated_execution_budget(context)
+            try:
+                return await run_in_interactive_worker(
+                    resolve,
+                    affinity_key=affinity_key,
+                    timeout_seconds=timeout,
+                    stop_reason=(lambda: "superseded" if token.cancelled else None),
+                    absolute_rss_limit_bytes=budget.process_rss_limit_bytes,
+                    memory_growth_limit_bytes=budget.memory_limit_bytes,
+                    require_memory_limit=resolve_worker_memory_enforcement() == "required",
+                )
+            except InteractiveWorkerStoppedError:
+                raise
+            except InteractiveWorkerError as exc:
+                return _unresolved_free_code(body.steps, _free_code_worker_failure(exc, timeout))
+        try:
+            return await run_blocking_with_response_timeout(
+                resolve, timeout=timeout, operation="polars_free_code_columns"
+            )
+        except BlockingWorkTimeoutError as exc:
+            release_on_exit = False
+            exc.background_task.add_done_callback(lambda _done: context.release_admission())
+            return _unresolved_free_code(
+                body.steps, f"The code did not finish within {timeout:g} seconds."
+            )
+    finally:
+        if release_on_exit:
+            context.release_admission(preserve_primary_error=True)
+
+
+@router.post(
+    "/pipeline/polars-steps/free-code-columns",
+    response_model=PolarsFreeCodeColumnsResponse,
+)
+async def resolve_free_code_columns_endpoint(
+    body: PolarsFreeCodeColumnsRequest,
+    http_request: Request,
+) -> PolarsFreeCodeColumnsResponse:
+    """The columns of ``df`` after each free-code step, or why they are unknown.
+
+    Resolving them runs the authored code, so it runs where a preview does:
+    in the interactive worker, under the preview budget and a short deadline,
+    one request per node at a time.
+    """
+    try:
+        rendered = render_polars_steps(body.steps, body.input_names, start=body.start)
+    except PolarsStepError as exc:
+        raise HTTPException(status_code=422, detail=exc.message) from None
+    if not any(step["kind"] == "free_code" for step in body.steps):
+        return PolarsFreeCodeColumnsResponse(free_code_columns=[])
+    key = ("polars_free_code_columns", body.node_id)
+    token = ExecutionCancellationToken()
+    timeout = FREE_CODE_COLUMNS_TIMEOUT_SECONDS
+    started = False
+
+    async def _resolve() -> list[ResolvedFreeCode]:
+        nonlocal started
+        started = True
+        return await _resolve_free_code_columns_isolated(body, rendered, token, key, timeout)
+
+    try:
+        resolved = await await_until_disconnected(
+            http_request,
+            _free_code_supersession.run_latest(
+                key,
+                _resolve,
+                cancel_active=token.cancel,
+                superseded_message=(
+                    "A newer free-code column request for this node replaced this one."
+                ),
+            ),
+            cancel=token.cancel,
+            # Until it starts, a request waiting behind an older one holds nothing.
+            started=lambda: started,
+            detail="The client closed the free-code column request before it finished.",
+        )
+    except (SupersededRequestError, InteractiveWorkerStoppedError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return PolarsFreeCodeColumnsResponse(
+        free_code_columns=[
+            FreeCodeColumns(
+                step_index=entry.step_index,
+                columns=None
+                if entry.columns is None
+                else [ColumnInfo(name=name, dtype=dtype) for name, dtype in entry.columns],
+                message=entry.message,
+            )
+            for entry in resolved
+        ]
     )
 
 

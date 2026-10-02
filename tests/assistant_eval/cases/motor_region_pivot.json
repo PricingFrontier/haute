@@ -1,0 +1,67 @@
+{
+  "schema_version": 5,
+  "id": "motor_region_pivot",
+  "fixture_version": "2",
+  "project_fixture": "motor_pricing",
+  "area": "explore",
+  "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
+  "turns": [
+    {
+      "request": "In premium_explore, add a pivot 'Premium by region' showing total premium in pounds and the number of quotes for each region, regions in ascending order.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "explore"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [],
+        "require_connected_graph": false,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [
+          "premium_explore"
+        ],
+        "node_configs": {
+          "premium_explore": {
+            "pivots": [
+              {
+                "name": "Premium by region",
+                "enabled": true,
+                "filters": [],
+                "columns": [],
+                "rows": [
+                  {
+                    "field": "region",
+                    "sort": "ascending"
+                  }
+                ],
+                "values": [
+                  {
+                    "field": "premium",
+                    "aggregation": "sum",
+                    "sort_rows": "none",
+                    "number_format": "currency_gbp"
+                  },
+                  {
+                    "field": "quote_id",
+                    "aggregation": "count",
+                    "sort_rows": "none"
+                  }
+                ],
+                "formulas": [],
+                "options": {
+                  "sort_by": null
+                }
+              }
+            ]
+          }
+        },
+        "execution": [],
+        "efficiency": null,
+        "data_findings": null
+      }
+    }
+  ]
+}

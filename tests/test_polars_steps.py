@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import json
 import pickle
 import re
 import subprocess
 import sys
 import textwrap
+import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -3767,10 +3770,44 @@ def test_flatten_rewrites_internal_stepped_consumer_and_executes(tmp_path: Path)
 # ---------------------------------------------------------------------------
 
 
+def _render_body(
+    steps: list[dict[str, Any]], input_names: list[str], *, start: str = "input"
+) -> dict[str, Any]:
+    return {"steps": steps, "input_names": input_names, "start": start}
+
+
+FREE_CODE_COLUMNS = "/api/pipeline/polars-steps/free-code-columns"
+
+
+def _columns_body(
+    steps: list[dict[str, Any]],
+    input_names: list[str],
+    *,
+    start: str = "input",
+    input_columns: dict[str, list[dict[str, str]]] | None = None,
+    frame_columns: list[dict[str, str]] | None = None,
+    node_id: str = "rated",
+) -> dict[str, Any]:
+    return {
+        "node_id": node_id,
+        "steps": steps,
+        "input_names": input_names,
+        "start": start,
+        "input_columns": input_columns or {},
+        "frame_columns": frame_columns or [],
+    }
+
+
+QUOTE_COLUMNS = [
+    {"name": "premium", "dtype": "Float64"},
+    {"name": "inception", "dtype": "Datetime(time_unit='us', time_zone=None)"},
+]
+
+
 def test_render_endpoint_reports_invalid_step_as_data(client: TestClient) -> None:
     ok = client.post(
         "/api/pipeline/polars-steps/render",
-        json={"steps": GOLDEN_STEPS, "input_names": ["quotes", "rates"], "start": "input"},
+        json=_render_body(GOLDEN_STEPS, ["quotes", "rates"]),
     )
     assert ok.status_code == 200
     body = ok.json()
@@ -3780,11 +3817,7 @@ def test_render_endpoint_reports_invalid_step_as_data(client: TestClient) -> Non
 
     bad = client.post(
         "/api/pipeline/polars-steps/render",
-        json={
-            "steps": [source(), step("f", "filter", match="all", conditions=[])],
-            "input_names": ["quotes"],
-            "start": "input",
-        },
+        json=_render_body([source(), step("f", "filter", match="all", conditions=[])], ["quotes"]),
     )
     assert bad.status_code == 200
     assert bad.json() == {
@@ -3799,7 +3832,16 @@ def test_render_endpoint_reports_invalid_step_as_data(client: TestClient) -> Non
     assert malformed.status_code == 422
 
 
-def test_render_endpoint_returns_free_code_line_ranges_and_errors(client: TestClient) -> None:
+def test_render_endpoint_returns_free_code_line_ranges_and_errors(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rendering never runs the snippet, so its code text never waits on it."""
+    import haute._polars_steps as steps_module
+
+    def never(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("the render ran authored code")
+
+    monkeypatch.setattr(steps_module, "_exec_user_code", never)
     steps = [
         source(),
         step("c", "free_code", code="df = df.with_columns(\n    pl.lit(1).alias('x')\n)"),
@@ -3807,7 +3849,7 @@ def test_render_endpoint_returns_free_code_line_ranges_and_errors(client: TestCl
     ]
     response = client.post(
         "/api/pipeline/polars-steps/render",
-        json={"steps": steps, "input_names": ["quotes"], "start": "input"},
+        json=_render_body(steps, ["quotes"]),
     )
     assert response.status_code == 200
     assert response.json()["ok"] is True
@@ -3815,11 +3857,250 @@ def test_render_endpoint_returns_free_code_line_ranges_and_errors(client: TestCl
     steps[1]["code"] = "return df"
     invalid = client.post(
         "/api/pipeline/polars-steps/render",
-        json={"steps": steps, "input_names": ["quotes"], "start": "input"},
+        json=_render_body(steps, ["quotes"]),
     )
     assert invalid.status_code == 200
     assert invalid.json()["ok"] is False
     assert invalid.json()["step_index"] == 1
+
+
+def test_free_code_columns_endpoint_resolves_the_columns_after_each_free_code_step(
+    client: TestClient,
+) -> None:
+    steps = [
+        source(),
+        step(
+            "c",
+            "free_code",
+            code="df = df.with_columns(\n    pl.col('inception').dt.year().alias('year')\n)",
+        ),
+        step("d", "drop", columns=["premium"]),
+        step("e", "free_code", code="df = df.with_columns(band=pl.col('year') // 10)"),
+        step("w", "with_column", name="flag", expr={"type": "operand", "operand": num(1)}),
+    ]
+    response = client.post(
+        FREE_CODE_COLUMNS,
+        json=_columns_body(steps, ["quotes"], input_columns={"quotes": QUOTE_COLUMNS}),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    year = {"name": "year", "dtype": "Int32"}
+    assert body["free_code_columns"] == [
+        {"step_index": 1, "columns": [*QUOTE_COLUMNS, year], "message": ""},
+        {
+            "step_index": 3,
+            "columns": [QUOTE_COLUMNS[1], year, {"name": "band", "dtype": "Int32"}],
+            "message": "",
+        },
+    ]
+
+
+def test_free_code_columns_endpoint_says_why_columns_are_unknown(client: TestClient) -> None:
+    def resolve(code: str, **columns: list[dict[str, str]]) -> dict[str, Any]:
+        steps = [source(), step("c", "free_code", code=code)]
+        response = client.post(
+            FREE_CODE_COLUMNS,
+            json=_columns_body(steps, ["quotes", "rates"], input_columns=columns),
+        )
+        assert response.status_code == 200
+        [entry] = response.json()["free_code_columns"]
+        assert entry["step_index"] == 1
+        assert entry["columns"] is None
+        return entry
+
+    assert resolve("df = df")["message"] == "The columns of input 'quotes' are not known yet."
+    assert (
+        resolve("df = df.join(rates, on='k')", quotes=QUOTE_COLUMNS)["message"]
+        == "The columns of input 'rates' are not known yet."
+    )
+    assert resolve("df = df.select('missing')", quotes=QUOTE_COLUMNS)["message"].startswith(
+        'ColumnNotFoundError: unable to find column "missing"'
+    )
+    assert (
+        resolve("df = helper(df)", quotes=QUOTE_COLUMNS)["message"]
+        == "NameError: name 'helper' is not defined"
+    )
+    assert (
+        resolve("df = 3", quotes=QUOTE_COLUMNS)["message"]
+        == "The code must leave df as a Polars frame."
+    )
+    assert resolve("df = df", quotes=[{"name": "x", "dtype": "col"}])["message"] == (
+        "The type of column 'x' in input 'quotes' cannot be read: col."
+    )
+
+
+def test_free_code_columns_endpoint_resolves_free_code_on_a_frame_surface(
+    client: TestClient,
+) -> None:
+    steps = [step("c", "free_code", code="df = df.with_columns(gross=pl.col('premium') * 1.2)")]
+    resolved = client.post(
+        FREE_CODE_COLUMNS,
+        json=_columns_body(steps, [], start="frame", frame_columns=QUOTE_COLUMNS),
+    ).json()
+    assert resolved["free_code_columns"] == [
+        {
+            "step_index": 0,
+            "columns": [*QUOTE_COLUMNS, {"name": "gross", "dtype": "Float64"}],
+            "message": "",
+        }
+    ]
+
+    unknown = client.post(FREE_CODE_COLUMNS, json=_columns_body(steps, [], start="frame")).json()
+    assert unknown["free_code_columns"] == [
+        {
+            "step_index": 0,
+            "columns": None,
+            "message": "The columns of this node's data are not known yet.",
+        }
+    ]
+
+    stray = client.post(
+        FREE_CODE_COLUMNS,
+        json=_columns_body([source(), *steps], ["quotes"], frame_columns=QUOTE_COLUMNS),
+    )
+    assert stray.status_code == 422
+
+
+def test_free_code_columns_endpoint_runs_nothing_without_free_code(client: TestClient) -> None:
+    """A list without free code answers at once; one that does not render is a 422."""
+    plain = client.post(
+        FREE_CODE_COLUMNS,
+        json=_columns_body([source(), step("l", "limit", n=2)], ["quotes"]),
+    )
+    assert plain.status_code == 200
+    assert plain.json() == {"free_code_columns": []}
+
+    broken = client.post(
+        FREE_CODE_COLUMNS,
+        json=_columns_body([source(), step("f", "filter", match="all", conditions=[])], ["quotes"]),
+    )
+    assert broken.status_code == 422
+    assert broken.json()["detail"] == "Add at least one condition."
+
+    stray = client.post(
+        FREE_CODE_COLUMNS,
+        json={**_columns_body([source()], ["quotes"]), "input_columns": {"rates": QUOTE_COLUMNS}},
+    )
+    assert stray.status_code == 422
+
+
+class _ConnectedClient:
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+async def test_a_free_code_timeout_in_thread_mode_is_every_steps_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Thread mode cannot stop the snippet, but the response still keeps the
+    deadline, and the thread holds its admission only until it ends."""
+    import asyncio
+    import threading
+
+    import haute.routes.pipeline as pipeline_module
+    from haute.schemas import PolarsFreeCodeColumnsRequest
+
+    release = threading.Event()
+    admitted: list[ExecutionContext] = []
+    real_admit = pipeline_module.create_admitted_execution_context
+
+    def admit(**kwargs: Any) -> ExecutionContext:
+        admitted.append(real_admit(**kwargs))
+        return admitted[-1]
+
+    def stuck(*_args: object, **_kwargs: object) -> object:
+        assert release.wait(30)
+        return []
+
+    monkeypatch.setattr(pipeline_module, "FREE_CODE_COLUMNS_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(pipeline_module, "resolve_free_code_columns", stuck)
+    monkeypatch.setattr(pipeline_module, "create_admitted_execution_context", admit)
+    steps = [
+        source(),
+        step("a", "free_code", code="df = df"),
+        step("l", "limit", n=2),
+        step("b", "free_code", code="df = df"),
+    ]
+    body = PolarsFreeCodeColumnsRequest.model_validate(
+        _columns_body(steps, ["quotes"], input_columns={"quotes": QUOTE_COLUMNS})
+    )
+    try:
+        response = await pipeline_module.resolve_free_code_columns_endpoint(
+            body,
+            _ConnectedClient(),  # type: ignore[arg-type]
+        )
+        [context] = admitted
+        assert not context.lease.released
+    finally:
+        release.set()
+
+    note = "The code did not finish within 0.2 seconds."
+    assert response.model_dump() == {
+        "free_code_columns": [
+            {"step_index": 1, "columns": None, "message": note},
+            {"step_index": 3, "columns": None, "message": note},
+        ]
+    }
+    deadline = time.monotonic() + 30
+    while not context.lease.released:
+        assert time.monotonic() < deadline
+        await asyncio.sleep(0.01)
+
+
+async def test_a_newer_free_code_request_for_the_node_stops_the_older(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One resolution runs per node: the older request's worker is told to
+    stop and answers 409, and the newer one resolves."""
+    import asyncio
+    import threading
+
+    from fastapi import HTTPException
+
+    import haute._interactive_workers as workers_module
+    import haute.routes.pipeline as pipeline_module
+    from haute.schemas import PolarsFreeCodeColumnsRequest
+
+    monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "process")
+    running = threading.Event()
+    reasons: list[str] = []
+    affinities: list[object] = []
+
+    class _Pool:
+        def run(
+            self, function: Any, *_args: object, affinity_key: object, stop_reason: Any, **_kw: Any
+        ) -> object:
+            affinities.append(affinity_key)
+            if not running.is_set():
+                running.set()
+                deadline = time.monotonic() + 30
+                while (reason := stop_reason()) is None:
+                    assert time.monotonic() < deadline
+                    time.sleep(0.01)
+                reasons.append(reason)
+                raise workers_module.InteractiveWorkerStoppedError(reason)
+            return function()
+
+    monkeypatch.setattr(workers_module, "interactive_worker_pool", _Pool)
+    steps = [source(), step("c", "free_code", code="df = df.with_columns(x=pl.lit(1))")]
+    body = PolarsFreeCodeColumnsRequest.model_validate(
+        _columns_body(steps, ["quotes"], input_columns={"quotes": QUOTE_COLUMNS})
+    )
+    older = asyncio.ensure_future(
+        pipeline_module.resolve_free_code_columns_endpoint(body, _ConnectedClient())  # type: ignore[arg-type]
+    )
+    assert await asyncio.to_thread(running.wait, 30)
+    newer = await pipeline_module.resolve_free_code_columns_endpoint(body, _ConnectedClient())  # type: ignore[arg-type]
+
+    with pytest.raises(HTTPException) as stopped:
+        await older
+    assert stopped.value.status_code == 409
+    assert reasons == ["superseded"]
+    assert affinities == [("polars_free_code_columns", "rated")] * 2
+    [entry] = newer.free_code_columns
+    assert entry.columns is not None
+    assert entry.columns[-1].name == "x"
 
 
 # ---------------------------------------------------------------------------
@@ -4167,7 +4448,7 @@ def test_render_endpoint_requires_start_and_renders_frame_mode(client: TestClien
     assert missing.status_code == 422
 
     empty = client.post(
-        "/api/pipeline/polars-steps/render", json={"steps": [], "input_names": [], "start": "frame"}
+        "/api/pipeline/polars-steps/render", json=_render_body([], [], start="frame")
     )
     assert empty.status_code == 200
     assert empty.json() == {
@@ -4180,7 +4461,7 @@ def test_render_endpoint_requires_start_and_renders_frame_mode(client: TestClien
 
     limited = client.post(
         "/api/pipeline/polars-steps/render",
-        json={"steps": [step("l", "limit", n=2)], "input_names": [], "start": "frame"},
+        json=_render_body([step("l", "limit", n=2)], [], start="frame"),
     )
     assert limited.json() == {
         "ok": True,
@@ -4192,7 +4473,7 @@ def test_render_endpoint_requires_start_and_renders_frame_mode(client: TestClien
 
     refused = client.post(
         "/api/pipeline/polars-steps/render",
-        json={"steps": [source()], "input_names": [], "start": "frame"},
+        json=_render_body([source()], [], start="frame"),
     )
     assert refused.json() == {
         "ok": False,
@@ -4772,8 +5053,25 @@ def test_frame_surface_free_code_with_redundant_parentheses_reloads_in_step_mode
     assert "_steps_discarded" not in node.data.config, surface
 
 
-def test_model_score_steps_run_after_scoring(tmp_path: Path) -> None:
-    """A Model Score's steps apply to the scored frame, as its post-processing code does."""
+#: Every surface whose steps start from a frame the surface already bound to df.
+_FRAME_START_SURFACES = (*_RUNNABLE_FRAME_SURFACES, "modelScore", "explore")
+_COMMENT_FIRST_CODE = "# keep two rows\ndf = df.head(2)"
+
+
+def _frame_start_graph(
+    tmp_path: Path, surface: str, steps: list[dict[str, Any]]
+) -> tuple[PipelineGraph, str]:
+    """:func:`_surface_graph`, extended to the surfaces that need a model or cards."""
+    if surface not in ("modelScore", "explore"):
+        return _surface_graph(tmp_path, surface, steps)
+    quotes, _rates = _frames(tmp_path)
+    node = _model_score(steps) if surface == "modelScore" else _explore(steps)
+    return PipelineGraph(nodes=[quotes, node], edges=[make_edge("quotes", node.id)]), node.id
+
+
+@contextlib.contextmanager
+def _scoring_model_stub() -> Iterator[None]:
+    """Serve every registered model as a one-feature regressor, so Model Score resolves."""
     from unittest.mock import MagicMock, patch
 
     import numpy as np
@@ -4782,17 +5080,65 @@ def test_model_score_steps_run_after_scoring(tmp_path: Path) -> None:
 
     raw = MagicMock()
     raw.feature_names_ = ["premium"]
-    raw.predict.return_value = np.array([1.0, 2.0, 3.0, 4.0])
+    raw.predict.side_effect = lambda frame: np.ones(len(frame))
     raw.get_cat_feature_indices.return_value = []
     del raw.predict_proba
     model = ScoringModel(
         model=raw, feature_names=["premium"], cat_feature_names=frozenset(), flavor="catboost"
     )
+    with patch("haute._mlflow_io.load_mlflow_model", return_value=model):
+        yield
 
+
+def _assert_comment_first_steps_kept(main: Path, node_id: str, surface: str) -> None:
+    node = next(n for n in parse_pipeline_file(main).nodes if n.id == node_id)
+    assert node.data.config["steps"] == [step("c", "free_code", code=_COMMENT_FIRST_CODE)], surface
+    assert node.data.config["code"] == _COMMENT_FIRST_CODE, surface
+    assert "_steps_discarded" not in node.data.config, surface
+
+
+@pytest.mark.parametrize("surface", _FRAME_START_SURFACES)
+def test_comment_first_free_code_keeps_its_steps_through_the_editor_save(
+    project_root: Path, surface: str
+) -> None:
+    """The comment above the first statement is part of the body the steps must render."""
+    steps = [step("c", "free_code", code=_COMMENT_FIRST_CODE)]
+    graph, node_id = _frame_start_graph(project_root, surface, steps)
+    _save(project_root, graph)
+    _assert_comment_first_steps_kept(project_root / "main.py", node_id, surface)
+
+
+@pytest.mark.parametrize("surface", _FRAME_START_SURFACES)
+async def test_comment_first_free_code_keeps_its_steps_through_the_assistant_apply(
+    project_root: Path, surface: str
+) -> None:
+    from haute.assistant._application import PipelineApplicationService
+
+    graph, node_id = _frame_start_graph(project_root, surface, [])
+    _save(project_root, graph)
+    service = PipelineApplicationService(
+        project_root=project_root,
+        pipeline_root=project_root,
+        mutations_readiness=lambda _root: (True, None),
+        publish_document_update=lambda _source, _change: "f" * 64,
+    )
+    steps = [step("c", "free_code", code=_COMMENT_FIRST_CODE)]
+    with _scoring_model_stub():
+        plan = service.dry_run(
+            "main.py",
+            [{"op": "update_node", "node": node_id, "config": {"steps": steps}}],
+            summary="Test plan.",
+        ).plan
+        await service.apply("main.py", plan.plan_hash)
+    _assert_comment_first_steps_kept(project_root / "main.py", node_id, surface)
+
+
+def test_model_score_steps_run_after_scoring(tmp_path: Path) -> None:
+    """A Model Score's steps apply to the scored frame, as its post-processing code does."""
     quotes, _rates = _frames(tmp_path)
     scored = _model_score([step("l", "limit", n=2)])
     graph = PipelineGraph(nodes=[quotes, scored], edges=[make_edge("quotes", "scored")])
-    with patch("haute._mlflow_io.load_mlflow_model", return_value=model):
+    with _scoring_model_stub():
         result = execute_graph(graph, target_node_id="scored", execution_context=_capped_context())[
             "scored"
         ]

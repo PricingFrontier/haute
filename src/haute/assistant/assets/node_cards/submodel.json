@@ -1,0 +1,5 @@
+{
+  "node_type": "submodel",
+  "authorable": false,
+  "note": "Not authorable by the assistant: assistant operations cannot create submodel boundaries, and an existing submodel occurrence cannot be updated, renamed, deleted or wired by them either, nor can the nodes inside its definition. An occurrence (alias, definitionId) reuses a sub-pipeline defined in its own file; the analyst adds, wires and edits submodels in the editor."
+}

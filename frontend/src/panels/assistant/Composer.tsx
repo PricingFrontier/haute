@@ -1,21 +1,37 @@
-import { useState } from "react"
 import { Send, Square } from "lucide-react"
 
 import useGraphStore from "../../stores/useGraphStore"
 import useAssistantStore, { assistantSendDisabledReason } from "../../stores/useAssistantStore"
+import ContextChips from "./ContextChips"
 
 interface ComposerProps {
   isInsideSubmodel: boolean
   currentSourceFile: string | null
   readOnly: boolean
+  /** The draft, owned by the panel so a starter prompt or a fix request can fill it. */
+  text: string
+  setText: (text: string) => void
 }
 
-export default function Composer({ isInsideSubmodel, currentSourceFile, readOnly }: ComposerProps) {
-  const [text, setText] = useState("")
+export default function Composer({
+  isInsideSubmodel,
+  currentSourceFile,
+  readOnly,
+  text,
+  setText,
+}: ComposerProps) {
   const turnStatus = useAssistantStore((state) => state.turnStatus)
   const status = useAssistantStore((state) => state.status)
+  const chatSource = useAssistantStore((state) => state.pipelineSource)
   const dirty = useGraphStore((state) => state.dirty)
-  const reason = assistantSendDisabledReason(status, isInsideSubmodel, dirty, readOnly)
+  const reason = assistantSendDisabledReason({
+    status,
+    isInsideSubmodel,
+    dirty,
+    readOnly,
+    sourceFile: currentSourceFile,
+    chatSource,
+  })
   const streaming = turnStatus === "streaming"
   const disabled = streaming || reason !== null
 
@@ -24,7 +40,7 @@ export default function Composer({ isInsideSubmodel, currentSourceFile, readOnly
     setText("")
     void useAssistantStore.getState().sendMessage(text, {
       isInsideSubmodel,
-      currentSourceFile: currentSourceFile ?? "",
+      currentSourceFile,
       readOnly,
     })
   }
@@ -53,6 +69,7 @@ export default function Composer({ isInsideSubmodel, currentSourceFile, readOnly
           Assistant is responding…
         </p>
       )}
+      <ContextChips />
       <form
         className="flex items-end gap-2"
         onSubmit={(event) => { event.preventDefault(); send() }}

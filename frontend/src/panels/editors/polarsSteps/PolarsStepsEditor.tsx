@@ -15,7 +15,7 @@ import { STEP_ICONS } from "./stepIcons"
 import { schemaFor } from "./stepSchema"
 import { summaryParts, unfinishedPart } from "./summary"
 import { readSteps, type Step, type StepKind } from "./types"
-import { useRenderedSteps } from "./useRenderedSteps"
+import { useRenderedSteps, type KnownColumns } from "./useRenderedSteps"
 
 let stepCounter = 0
 function newStepId(): string {
@@ -107,6 +107,7 @@ export default function PolarsStepsEditor({
   runError,
   frameColumns,
   start,
+  nodeId,
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
@@ -122,6 +123,8 @@ export default function PolarsStepsEditor({
   /** The columns a frame-mode list starts its suggestions from: the pane's code columns. */
   frameColumns?: { name: string; dtype: string }[]
   start: StepStart
+  /** The node being edited: its free-code columns resolve one request at a time. */
+  nodeId: string
 }) {
   const isFrame = start === "frame"
   const steps = useMemo(() => readSteps(config) ?? [], [config])
@@ -134,20 +137,32 @@ export default function PolarsStepsEditor({
   const disclosures = useRef(new Map<number, HTMLElement>())
   const addButton = useRef<HTMLButtonElement | null>(null)
 
-  const source: ColumnSource = useMemo(
+  const known: KnownColumns = useMemo(
     () => ({
       inputs: Object.fromEntries(inputSources.flatMap((s) => (s.columns?.length ? [[s.name, s.columns]] : []))),
       frame: isFrame ? (frameColumns ?? []) : [],
     }),
     [inputSources, isFrame, frameColumns],
   )
+  const rendered = useRenderedSteps(steps, inputNames, start, known, nodeId, (code) => {
+    if (config.code !== code) onUpdate("code", code)
+  })
+  const source: ColumnSource = useMemo(
+    () => ({
+      ...known,
+      // In a Transform the render had every input the code reads, so its
+      // columns are the whole list; a frame surface's only seed suggestions.
+      freeCode: new Map(
+        [...rendered.freeCode].flatMap(([id, resolved]) =>
+          resolved.columns ? [[id, { columns: resolved.columns, complete: !isFrame }] as const] : [],
+        ),
+      ),
+    }),
+    [known, rendered.freeCode, isFrame],
+  )
   const columnStates = useMemo(() => columnsAtEachStep(source, steps), [source, steps])
 
   const setSteps = useCallback((next: Step[]) => onUpdate("steps", next), [onUpdate])
-
-  const rendered = useRenderedSteps(steps, inputNames, start, (code) => {
-    if (config.code !== code) onUpdate("code", code)
-  })
   const initialError = useMemo(() => parseStepsError(config._steps_error), [config._steps_error])
   const renderError = rendered.error ?? (rendered.status === "ok" || rendered.status === "empty" ? null : initialError)
   // A step being built is not an error yet: render problems are reported as
@@ -448,12 +463,18 @@ export default function PolarsStepsEditor({
                 const before = columnStates[index]
                 const unknown = open ? [] : unknownColumnsOf(step, before, source)
                 const need = needFor(index)
-                const notes = unknown.length > 0 || need ? (
+                const unresolved = open || step.kind !== "free_code" ? "" : rendered.freeCode.get(step.id)?.message ?? ""
+                const notes = unknown.length > 0 || need || unresolved ? (
                   <>
                     {unknown.length > 0 && <UnknownColumnsNote names={unknown} />}
                     {need && (
                       <p className="m-0 text-[11px] leading-snug" style={{ color: "var(--text-muted)" }}>
                         {need}
+                      </p>
+                    )}
+                    {unresolved && (
+                      <p className="m-0 text-[11px] leading-snug" style={{ color: "var(--text-muted)" }}>
+                        Columns after this code are not known: {unresolved}
                       </p>
                     )}
                   </>

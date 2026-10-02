@@ -24,6 +24,16 @@ from haute._types import _Frame
 from haute.errors import ExecutionError
 
 
+def user_code_line(exc: BaseException) -> int | None:
+    """The line of node code *exc* was raised from, or None when node code did not raise it.
+
+    ``_exec_user_code`` records the line from the traceback of any exception
+    that escapes the code it runs.
+    """
+    line = getattr(exc, "_user_code_line", None)
+    return None if line is None else int(line)
+
+
 def _exec_user_code(
     code: str,
     src_names: list[str],

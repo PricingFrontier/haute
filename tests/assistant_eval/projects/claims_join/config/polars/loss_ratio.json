@@ -1,0 +1,14 @@
+{
+  "steps": [
+    {
+      "id": "start",
+      "kind": "source",
+      "input": "quote_claims"
+    },
+    {
+      "id": "logic",
+      "kind": "free_code",
+      "code": "# Divide each quote's incurred claims by its premium\ndf = df.with_columns(loss_ratio=pl.col('total_incurred') / pl.col('premium'))"
+    }
+  ]
+}

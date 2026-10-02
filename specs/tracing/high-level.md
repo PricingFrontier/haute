@@ -404,7 +404,7 @@ Out of scope (owned elsewhere, linked where relevant):
   its own public facade from `sys.modules`, so importing the enrichment module
   independently cannot fail on a hidden import-order cycle.
 - Depends on [rating](../rating/high-level.md) for rating-table normalisation
-  (`normalise_rating_tables`, `_normalise_combined_outputs`) and the canonical
+  (`normalise_rating_tables`, `normalise_combined_outputs`) and the canonical
   rating-key comparison (`normalise_rating_key(value, dtype)`). The rating-step
   dispatch resolves each factor's originating dtype from the exact consumed
   parent frame and supplies it to the enricher, so JSON/Python scalar widening

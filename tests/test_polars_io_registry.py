@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import functools
 from decimal import Decimal
 from pathlib import Path
 
@@ -535,10 +536,12 @@ class TestWritePolarsOutput:
 class TestSnapshotBuildReads:
     """Build-only complete inspection and the scanner preference."""
 
+    @pytest.mark.parametrize("arguments", [{}, {"schema": None}], ids=["unset", "null-schema"])
     def test_a_csv_without_a_declared_schema_scans_with_whole_file_inference(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        arguments: dict[str, object],
     ) -> None:
         from haute._polars_io_registry import read_polars_input_for_snapshot
 
@@ -547,12 +550,14 @@ class TestSnapshotBuildReads:
         captured: dict[str, object] = {}
         real_scan = pl.scan_csv
 
+        # wraps keeps scan_csv's signature visible to argument validation.
+        @functools.wraps(real_scan)
         def recording_scan(*args: object, **kwargs: object) -> pl.LazyFrame:
             captured.update(kwargs)
             return real_scan(*args, **kwargs)
 
         monkeypatch.setattr(pl, "scan_csv", recording_scan)
-        config = {"inputType": "file", "format": "csv", "path": str(path)}
+        config = {"inputType": "file", "format": "csv", "path": str(path), "arguments": arguments}
 
         frame, warning_code = read_polars_input_for_snapshot(config)
 
@@ -560,15 +565,17 @@ class TestSnapshotBuildReads:
         assert warning_code is None
         assert frame.collect().height == 2
 
+    @pytest.mark.parametrize("arguments", [{}, {"schema": None}], ids=["unset", "null-schema"])
     def test_a_direct_bounded_read_still_refuses_an_undeclared_csv_schema(
         self,
         tmp_path: Path,
+        arguments: dict[str, object],
     ) -> None:
         from haute.errors import BoundedMemoryUnsupportedError
 
         path = tmp_path / "rows.csv"
         path.write_text("id\n1\n", encoding="utf-8")
-        config = {"inputType": "file", "format": "csv", "path": str(path)}
+        config = {"inputType": "file", "format": "csv", "path": str(path), "arguments": arguments}
 
         with pytest.raises(BoundedMemoryUnsupportedError, match="declared 'schema'"):
             read_polars_input(config, profile=ExecutionProfile.LAZY_SINK)

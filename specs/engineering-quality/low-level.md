@@ -71,11 +71,11 @@
 | `scripts/memory_smoke.py` | Runs the maintained memory-safety smoke path. |
 | `scripts/package_smoke_check.py` | Validates an installed distribution's package/runtime expectations. |
 | `scripts/update_assistant_example_manifests.py` | Checks or explicitly refreshes closed content-addressed assistant example inventories; unsafe, duplicate, missing, and undeclared paths fail in both modes. |
+| `scripts/update_assistant_prompt_golden.py` | Cross-component dependency owned by [assistant](../assistant/low-level.md); checks, or with `--write` refreshes, the golden snapshot of the assistant's system prompt and provider tool schemas, failing with a unified diff per changed file. |
 | `scripts/preflight.ps1` | Windows preflight entry point for selected backend/frontend/init-smoke checks. |
 | `scripts/preflight.sh` | POSIX preflight entry point for selected backend/frontend/init-smoke checks. |
 | `scripts/regen_sanitize_parity_fixture.py` | Regenerates the retained backend compatibility golden when deliberately requested. |
 | `scripts/run_frontend_e2e_server.py` | Generates the isolated browser fixture, then starts and readiness-signals its dedicated-port backend and Vite proxy for Playwright. |
-| `scripts/run_assistant_evaluation.py` | Cross-component dependency owned by [assistant](../assistant/low-level.md); the fail-closed credentialed assistant qualification command and its harness, which the installed package does not ship: loads a closed candidate/matrix/scenario set, invokes an explicit live runner repeatedly, writes a redacted atomic report, and succeeds only for an already-qualified configuration that still meets every threshold. |
 | `scripts/run_mutation_pytest.py` | Runs a mutation witness command from a fresh synthetic project while retaining repository pytest configuration and placing pytest inputs in a sibling temporary boundary, so relative Haute runtime state cannot leak between mutants or alter path-confinement semantics. |
 | `scripts/run_mutation_suite.py` | Implements mutation target selection, work planning, shard execution, merge, and survival-threshold reporting. |
 | `scripts/run_perf_suite.py` | Runs bounded Python performance tests and writes schema-4 workload, environment, resource, wall-time, and per-test evidence artifacts. |
@@ -293,9 +293,9 @@
    developer already has Haute running; the harness and Playwright config
    validate and share those values.
    `frontend/scripts/check-bundle-size.mjs` counts the production entry and
-   modulepreload chunks against default ceilings of 283 KiB initial and
-   1,385 KiB total JavaScript gzip. The measured bundle is approximately
-   280.4 KiB initial and 1,374.5 KiB total. The Polars step builder accounts
+   modulepreload chunks against default ceilings of 285 KiB initial and
+   1,581 KiB total JavaScript gzip. The measured bundle is approximately
+   283.8 KiB initial and 1,571.1 KiB total. The Polars step builder accounts
    for approximately 24.3 KiB of the aggregate total since the 1,350.2 KiB
    baseline, with the editor interface in the existing lazy TransformEditor
    chunk and no new dependency. Initial-path raises admit only
@@ -532,26 +532,6 @@
   policy/scanner/report failures. An acceptance is not a wildcard: an expired,
   duplicate, wrong-package, or no-longer-observed entry makes the policy fail
   so the registry cannot accumulate silent debt.
-
-## Assistant evaluation lane
-
-`tests/assistant_eval/support_matrix.json` is the closed, versioned threshold
-contract. Held-out fixtures under `tests/assistant_eval/held_out/` are excluded
-from package resources and checked against teaching-example IDs. The
-task IDs in every matrix entry must exactly cover the scenarios supplied to
-the runner: a missing threshold or an unexpected trial is a qualification
-failure, so adding a scenario cannot silently leave it outside the release
-gate. The
-credentialed lane writes one JSON trial record per run plus an aggregate report
-containing cold/warm p50 and p95 latency, tool/token/cost bounds, semantic task
-rates, and safety counts. Missing trials, attribution drift, unauthorized
-mutation, or leakage leaves a configuration unqualified.
-`scripts/run_assistant_evaluation.py` is the fail-closed command boundary: it
-loads one matrix configuration, held-out scenarios, and an explicit
-`module:attribute` async live runner; executes the configured repetitions;
-writes one atomic content-redacted v1 report; and exits non-zero unless every
-live threshold passes. Canary values are counted for zero-tolerance scoring but
-are never retained in the report artifact.
 
 ## Testing
 

@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "id": "breakpoint_age_banding",
+  "case": "breakpoint_age_banding",
+  "turns": [
+    {
+      "rounds": [
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "dry",
+              "tool": "dry_run_graph_edits",
+              "arguments": {
+                "summary": "Band driver_age into young and experienced after quotes as age_band.",
+                "ops": [
+                  {
+                    "op": "add_node",
+                    "node_type": "banding",
+                    "name": "age_band",
+                    "config": {
+                      "factors": [
+                        {
+                          "banding": "breakpoints",
+                          "column": "driver_age",
+                          "outputColumn": "driver_age_band",
+                          "rules": [
+                            {
+                              "boundary": "25",
+                              "label": "young"
+                            },
+                            {
+                              "boundary": "",
+                              "label": "experienced"
+                            }
+                          ],
+                          "default": "unknown"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "op": "add_edge",
+                    "source": "quotes",
+                    "target": "age_band"
+                  }
+                ]
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "",
+          "calls": [
+            {
+              "id": "apply",
+              "tool": "apply_graph_plan",
+              "arguments": {
+                "plan_hash": {
+                  "$result": "dry.plan_hash"
+                }
+              },
+              "result": {
+                "status": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "text": "Saved the change.",
+          "calls": []
+        }
+      ]
+    }
+  ]
+}

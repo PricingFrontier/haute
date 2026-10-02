@@ -1,0 +1,1 @@
+{"factors":[{"banding":"categorical","column":"area","outputColumn":"region","rules":[{"value":"NE","assignment":"North"},{"value":"SW","assignment":"South"},{"value":"EA","assignment":"East"}],"default":"Other"}]}

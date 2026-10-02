@@ -181,27 +181,274 @@ class AssistantStatusResponse(BaseModel):
 
 
 class AssistantSessionRequest(BaseModel):
-    pipeline: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    # The project-relative source file of the pipeline document the canvas
+    # shows. The session is bound to it; the server never picks a pipeline.
+    source_file: str = Field(min_length=1)
     # A previously issued session id the client wants to resume. Resume is an
     # offer: unknown/pruned ids or a different pipeline yield a fresh session.
     session_id: str | None = None
 
 
-class AssistantTranscriptEntry(BaseModel):
-    """One rehydratable transcript item from a resumed session's history."""
+AssistantTurnOutcomeKind = Literal[
+    "applied", "answered", "needs_input", "blocked", "committed_unverified", "incomplete"
+]
+_OUTCOME_KINDS_WITH_DETAIL = frozenset(
+    {"needs_input", "blocked", "committed_unverified", "incomplete"}
+)
 
-    kind: Literal["user", "assistant", "tool"]
+
+class AssistantTurnOutcome(BaseModel):
+    """How a completed assistant turn ended, and what it saved.
+
+    ``detail`` is the model's question (``needs_input``), the sanitized blocker
+    (``blocked``), the verification error of a save that committed
+    (``committed_unverified``) or the controller's reason the model stopped
+    with a dry-run unfinished (``incomplete``); ``applied`` and ``answered``
+    carry none. ``changes`` are the ids of the change records the turn saved,
+    in order, whatever the kind says about finishing the request: ``applied``
+    saved at least one and ``answered`` none, while any other kind may follow
+    saved changes.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: AssistantTurnOutcomeKind
+    detail: str | None
+    changes: list[str]
+
+    @model_validator(mode="after")
+    def _detail_matches_kind(self) -> AssistantTurnOutcome:
+        if self.kind in _OUTCOME_KINDS_WITH_DETAIL:
+            if self.detail is None or not self.detail.strip():
+                raise ValueError(f"a {self.kind} outcome requires a non-empty detail")
+        elif self.detail is not None:
+            raise ValueError(f"a {self.kind} outcome carries no detail")
+        if self.kind == "applied" and not self.changes:
+            raise ValueError("an applied outcome names the changes it saved")
+        if self.kind == "answered" and self.changes:
+            raise ValueError("an answered outcome saved no change")
+        return self
+
+
+#: The longest plan summary or assumption a dry-run accepts, in characters: room
+#: for one or two sentences. The receipt is presentation, never authority.
+ASSISTANT_RECEIPT_TEXT_LIMIT = 400
+#: The most assumptions one dry-run records.
+ASSISTANT_MAX_ASSUMPTIONS = 5
+
+
+class AssistantChangeEdge(BaseModel):
+    """One edge a saved plan added or removed, by its endpoint node ids."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source: str
+    target: str
+
+
+class AssistantChangeNode(BaseModel):
+    """One node chip on a change card: which node, its palette type and what happened.
+
+    ``fields`` names the configuration fields the plan changed in plain words,
+    never their values; ``steps`` lists a stepped node's step kinds after the
+    change (``None`` for a node without a step list) and ``steps_changed`` how
+    many steps the plan inserted, replaced, removed or rewired.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str
+    type: str
+    change: Literal["added", "changed", "removed", "renamed"]
+    renamed_from: str | None = None
+    fields: list[str] = []
+    steps: list[str] | None = None
+    steps_changed: int = Field(default=0, ge=0)
+
+
+class AssistantGraphChanges(BaseModel):
+    """A plan's node chips and edges, each list bounded; ``truncated`` when cut.
+
+    An empty list and a false flag are the defaults, which the compact tool
+    results the model reads leave out.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    nodes: list[AssistantChangeNode]
+    edges_added: list[AssistantChangeEdge] = []
+    edges_removed: list[AssistantChangeEdge] = []
+    preamble_changed: bool = False
+    truncated: bool = False
+
+
+#: The most data-check findings one change card lists.
+ASSISTANT_MAX_DATA_FINDINGS = 20
+
+
+class AssistantDataFinding(BaseModel):
+    """One data-check finding on a change card, worded from its counts and names.
+
+    ``text`` says what was measured in plain words ("All 1,204 rows fell into
+    the default band of age_band."): counts, shares, node, column and port
+    names, never a row value, a configuration value or an error's own text.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    severity: Literal["advisory", "informational"]
+    node: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+
+
+class AssistantChangeDataCheck(BaseModel):
+    """The data check of the dry-run whose plan a change saved, as its card shows it.
+
+    ``visibility`` compares the check's binding with the graph the apply
+    saved: ``current``; ``earlier_inputs`` when an input or a cached model it
+    read has changed since; ``other_scenario`` when the graph runs another
+    scenario, which keeps no findings, only the ``scenario`` they described.
+    A check bound to another graph is not carried at all. ``not_checked`` is
+    one line saying why the check, or some of the changed nodes, did not run.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    visibility: Literal["current", "earlier_inputs", "other_scenario"]
+    outcome: Literal["checked", "not_run"]
+    scenario: str = Field(min_length=1)
+    findings: list[AssistantDataFinding] = Field(max_length=ASSISTANT_MAX_DATA_FINDINGS)
+    findings_omitted: int = Field(ge=0)
+    not_checked: str | None
+
+
+class AssistantChangeRecord(BaseModel):
+    """The value-free change card of one saved plan.
+
+    ``id`` is the hash of the plan it saved; a plan applies once, so it names
+    this change. ``summary`` and ``assumptions`` are the model's own words from
+    the plan's dry-run; everything else is built from what was saved.
+    ``data_check`` is the plan's data check, or ``None`` when no check was
+    attempted or its findings describe another graph.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str = Field(min_length=1)
+    # Bounded where the model writes it (the dry-run receipt), not here: a
+    # persisted record redacts it, which can lengthen it.
+    summary: str = Field(min_length=1)
+    assumptions: list[str] = Field(default=[], max_length=ASSISTANT_MAX_ASSUMPTIONS)
+    changes: AssistantGraphChanges
+    warnings: list[str] = []
+    git_sha: str | None
+    parent_sha: str | None
+    # The editor document revision the save produced: Undo is allowed only while
+    # the pipeline is still at it.
+    revision: str = Field(min_length=1)
+    # A record saved before data checks existed has none.
+    data_check: AssistantChangeDataCheck | None = None
+
+
+#: The most items one build plan holds.
+ASSISTANT_MAX_BUILD_PLAN_ITEMS = 12
+#: The longest build-plan item title, in characters.
+ASSISTANT_BUILD_PLAN_TITLE_LIMIT = 80
+#: A build-plan item id: lower-case letters, digits and underscores, starting with a letter.
+ASSISTANT_BUILD_PLAN_ID_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
+
+
+class AssistantBuildPlanChange(BaseModel):
+    """One saved change recorded against a build-plan item, by its change card's id."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str = Field(min_length=1)
+    # The analyst undid the change; it stays listed, as its card stays in the chat.
+    undone: bool
+
+
+class AssistantBuildPlanItem(BaseModel):
+    """One stage of a build plan: the changes saved against it and whether it is complete.
+
+    The changes are Haute's record of the applies the model attributed to the
+    item; completion is the model's claim, which Haute accepts only while the
+    item has a change that is not undone.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str = Field(pattern=ASSISTANT_BUILD_PLAN_ID_PATTERN)
+    # Bounded where the model writes it (the tool schema), not here: a persisted
+    # plan redacts it, which can lengthen it.
+    title: str = Field(min_length=1)
+    complete: bool
+    changes: list[AssistantBuildPlanChange]
+
+    @model_validator(mode="after")
+    def _complete_has_a_live_change(self) -> AssistantBuildPlanItem:
+        if self.complete and all(change.undone for change in self.changes):
+            raise ValueError(
+                f"build plan item {self.id!r} is complete without a saved change that is not undone"
+            )
+        return self
+
+
+class AssistantBuildPlan(BaseModel):
+    """The stages a multi-stage request is built in, in order, as the chat's checklist."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    items: list[AssistantBuildPlanItem] = Field(
+        min_length=1, max_length=ASSISTANT_MAX_BUILD_PLAN_ITEMS
+    )
+
+    @model_validator(mode="after")
+    def _unique_item_ids(self) -> AssistantBuildPlan:
+        ids = [item.id for item in self.items]
+        if len(set(ids)) != len(ids):
+            raise ValueError("build plan item ids must be unique")
+        return self
+
+
+class AssistantTranscriptEntry(BaseModel):
+    """One rehydratable transcript item from a resumed session's history.
+
+    An ``outcome`` entry closes a completed turn with its stored outcome, a
+    ``change`` entry carries an apply's change record and an ``undo`` entry the
+    record of a change the analyst undid; only those kinds carry those fields.
+    """
+
+    kind: Literal["user", "assistant", "tool", "outcome", "change", "undo"]
     text: str = ""
     name: str = ""
+    # A tool entry's plain-words activity title.
+    title: str = ""
     summary: str = ""
     is_error: bool = False
+    outcome: AssistantTurnOutcome | None = None
+    change: AssistantChangeRecord | None = None
+
+    @model_validator(mode="after")
+    def _payload_only_on_its_entries(self) -> AssistantTranscriptEntry:
+        if (self.kind == "outcome") != (self.outcome is not None):
+            raise ValueError("exactly the outcome entry carries an outcome")
+        if (self.kind in {"change", "undo"}) != (self.change is not None):
+            raise ValueError("exactly the change and undo entries carry a change record")
+        return self
 
 
 class AssistantSessionResponse(BaseModel):
     session_id: str
+    # The canonical project-relative source file the session is bound to.
+    source_file: str
     # Non-empty only when the requested session was resumed: the stored turns
     # mapped to transcript entries for the panel to rehydrate.
     history: list[AssistantTranscriptEntry] = []
+    # The session's build plan for the checklist; None until the model sets one.
+    build_plan: AssistantBuildPlan | None
 
 
 class AssistantSessionSummary(BaseModel):
@@ -217,7 +464,46 @@ class AssistantSessionSummary(BaseModel):
 
 
 class AssistantSessionListResponse(BaseModel):
+    # The canonical project-relative source file the listed sessions are bound to.
+    source_file: str
     sessions: list[AssistantSessionSummary] = []
+
+
+class AssistantMessageContext(BaseModel):
+    """What the canvas adds to one message: its selection and an opt-in preview error."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Top-level node ids of the saved pipeline, in selection order.
+    selected_node_ids: list[str] = Field(max_length=20)
+    # The node whose schema-resolution error the turn context reports.
+    preview_error_node_id: str | None = None
+
+    @model_validator(mode="after")
+    def _unique_selection(self) -> AssistantMessageContext:
+        if len(set(self.selected_node_ids)) != len(self.selected_node_ids):
+            raise ValueError("selected_node_ids must not repeat a node")
+        return self
+
+
+class AssistantUndoRequest(BaseModel):
+    """Undo one change card: save the version before that change."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    # The change card's id, the hash of the plan that saved it.
+    change_id: str = Field(min_length=1)
+    # The canvas document's source file; one other than the session's is refused.
+    source_file: str = Field(min_length=1)
+
+
+class AssistantUndoResponse(BaseModel):
+    change_id: str
+    # The commit the undo's save made, or None when it was not captured in Git.
+    git_sha: str | None
+    # The session's build plan after the undo marked the change undone; None without one.
+    build_plan: AssistantBuildPlan | None
 
 
 class AssistantMessageRequest(BaseModel):
@@ -225,6 +511,9 @@ class AssistantMessageRequest(BaseModel):
 
     session_id: str
     message: str
+    # The canvas document's source file; one other than the session's is refused.
+    source_file: str = Field(min_length=1)
+    context: AssistantMessageContext | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -242,31 +531,58 @@ class AssistantTextDeltaEvent(BaseModel):
     text: str
 
 
+class AssistantThinkingEvent(BaseModel):
+    """The model is thinking: a status for the panel, carrying none of the thinking."""
+
+    type: Literal["thinking"] = "thinking"
+
+
 class AssistantToolStartedEvent(BaseModel):
     type: Literal["tool_started"] = "tool_started"
     id: str
     name: str
+    # The activity row's plain-words title, written beside the tool.
+    title: str
     # Compact rendering of the call's arguments for the chat activity row.
     summary: str = ""
+
+
+class AssistantToolProgressEvent(BaseModel):
+    """A running tool moved to a new stage: its activity row's title until it finishes."""
+
+    type: Literal["tool_progress"] = "tool_progress"
+    id: str
+    title: str
 
 
 class AssistantToolFinishedEvent(BaseModel):
     type: Literal["tool_finished"] = "tool_finished"
     id: str
     name: str
+    title: str
     is_error: bool
     # Compact rendering of the result (or the error message) for the row.
     summary: str = ""
 
 
-class AssistantGraphUpdatedEvent(BaseModel):
-    type: Literal["graph_updated"] = "graph_updated"
-    fingerprint: str
+class AssistantChangeAppliedEvent(BaseModel):
+    """A plan was saved: the change card built from what was saved."""
+
+    type: Literal["change_applied"] = "change_applied"
+    change: AssistantChangeRecord
+
+
+class AssistantBuildPlanUpdatedEvent(BaseModel):
+    """A tool call changed the session's build plan: the whole plan as it now stands."""
+
+    type: Literal["build_plan_updated"] = "build_plan_updated"
+    build_plan: AssistantBuildPlan
 
 
 class AssistantCompletedEvent(BaseModel):
     type: Literal["completed"] = "completed"
     usage: AssistantUsage
+    outcome: AssistantTurnOutcome
 
 
 class AssistantFailedEvent(BaseModel):
@@ -280,9 +596,12 @@ class AssistantCancelledEvent(BaseModel):
 
 AssistantStreamEvent = Annotated[
     AssistantTextDeltaEvent
+    | AssistantThinkingEvent
     | AssistantToolStartedEvent
+    | AssistantToolProgressEvent
     | AssistantToolFinishedEvent
-    | AssistantGraphUpdatedEvent
+    | AssistantChangeAppliedEvent
+    | AssistantBuildPlanUpdatedEvent
     | AssistantCompletedEvent
     | AssistantFailedEvent
     | AssistantCancelledEvent,
@@ -808,6 +1127,46 @@ class PolarsStepsRenderResponse(BaseModel):
     step_lines: list[list[int]] = Field(default_factory=list)
     step_index: int | None = None
     message: str = ""
+
+
+class PolarsFreeCodeColumnsRequest(BaseModel):
+    """Resolve the columns after each free-code step of a node's step list."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: The node the steps belong to: one resolution runs per node, a newer
+    #: request stopping an older one.
+    node_id: str = Field(min_length=1)
+    steps: list[dict[str, Any]]
+    input_names: list[str]
+    start: Literal["input", "frame"]
+    #: The columns the editor knows for each input, as a preview reported them.
+    input_columns: dict[str, list[ColumnInfo]]
+    #: The columns the editor knows for a frame-mode surface's ``df``.
+    frame_columns: list[ColumnInfo]
+
+    @model_validator(mode="after")
+    def _frame_columns_need_a_frame(self) -> PolarsFreeCodeColumnsRequest:
+        if self.start == "input" and self.frame_columns:
+            raise ValueError("frame_columns describe a frame-mode surface's df; send none here.")
+        stray = sorted(set(self.input_columns) - set(self.input_names))
+        if stray:
+            raise ValueError(f"input_columns name inputs outside input_names: {stray!r}.")
+        return self
+
+
+class FreeCodeColumns(BaseModel):
+    """The columns of ``df`` after one free-code step, or why they are unknown."""
+
+    step_index: int
+    columns: list[ColumnInfo] | None
+    message: str
+
+
+class PolarsFreeCodeColumnsResponse(BaseModel):
+    """One entry per free-code step, in step order."""
+
+    free_code_columns: list[FreeCodeColumns]
 
 
 PREVIEW_REQUEST_ID_PATTERN = r"^[A-Za-z0-9-]{1,64}$"

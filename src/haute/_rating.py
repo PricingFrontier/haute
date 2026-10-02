@@ -12,8 +12,9 @@ import math
 import operator
 import re
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from fractions import Fraction
 from os import PathLike
 from pathlib import Path
 from types import MappingProxyType
@@ -32,7 +33,7 @@ from haute._rating_step_config import (
     validate_unique_rating_table_outputs,
 )
 from haute._types import _Frame
-from haute._validation_error import HauteValidationError
+from haute._validation_error import ConfigSettingError, HauteValidationError
 from haute.errors import RatingExtremaUndefinedError, RatingFactorMissingError
 
 logger = get_logger(component="rating")
@@ -57,8 +58,10 @@ def require_banding_type(banding_type: str, *, subject: str = "Banding") -> None
     """Raise unless *banding_type* is one of the banding types; there is no default."""
     if banding_type not in SUPPORTED_BANDING_TYPES:
         allowed = ", ".join(sorted(SUPPORTED_BANDING_TYPES))
-        raise ValueError(
-            f"{subject} has unsupported banding type {banding_type!r}; expected one of: {allowed}"
+        raise ConfigSettingError(
+            f"{subject} has unsupported banding type {banding_type!r}; expected one of: {allowed}",
+            setting="factors",
+            values=(banding_type,),
         )
 
 
@@ -82,7 +85,11 @@ def parse_breakpoint_boundary(boundary: str) -> float | date | datetime:
         pass
     else:
         if not math.isfinite(number):
-            raise ValueError(f"Breakpoint has non-finite boundary '{boundary}'")
+            raise ConfigSettingError(
+                f"Breakpoint has non-finite boundary '{boundary}'",
+                setting="factors",
+                values=(boundary,),
+            )
         return number
     try:
         if _DATE_BOUNDARY.fullmatch(text):
@@ -91,9 +98,11 @@ def parse_breakpoint_boundary(boundary: str) -> float | date | datetime:
             return datetime.fromisoformat(text)
     except ValueError:
         pass
-    raise ValueError(
+    raise ConfigSettingError(
         f"Breakpoint has unreadable boundary '{boundary}'; expected a number, a date "
-        "(YYYY-MM-DD) or a date and time (YYYY-MM-DD HH:MM)"
+        "(YYYY-MM-DD) or a date and time (YYYY-MM-DD HH:MM)",
+        setting="factors",
+        values=(boundary,),
     )
 
 
@@ -113,8 +122,9 @@ def breakpoints_kind(breakpoints: list[dict[str, Any]] | dict[str, Any]) -> Boun
         if (boundary := str(bp.get("boundary", "") or "").strip())
     }
     if len(kinds) > 1:
-        raise ValueError(
-            "Breakpoints mix " + " and ".join(sorted(kinds)) + " boundaries; use one kind"
+        raise ConfigSettingError(
+            "Breakpoints mix " + " and ".join(sorted(kinds)) + " boundaries; use one kind",
+            setting="factors",
         )
     return kinds.pop() if kinds else "number"
 
@@ -131,7 +141,11 @@ def _banding_rule_comparators(
             continue
         evaluator = SUPPORTED_BANDING_OPERATORS.get(op)
         if evaluator is None:
-            raise ValueError(f"Banding rule has unsupported operator '{op}' for op{suffix}")
+            raise ConfigSettingError(
+                f"Banding rule has unsupported operator '{op}' for op{suffix}",
+                setting="factors",
+                values=(op,),
+            )
         if isinstance(val, date):
             # A date or date-and-time boundary, already read from the breakpoint.
             comparators.append((op, val))
@@ -139,9 +153,17 @@ def _banding_rule_comparators(
         try:
             num = float(val)
         except (ValueError, TypeError):
-            raise ValueError(f"Banding rule has non-numeric threshold '{val}' for op{suffix}")
+            raise ConfigSettingError(
+                f"Banding rule has non-numeric threshold '{val}' for op{suffix}",
+                setting="factors",
+                values=(val,),
+            )
         if not math.isfinite(num):
-            raise ValueError(f"Banding rule has non-finite threshold '{val}' for op{suffix}")
+            raise ConfigSettingError(
+                f"Banding rule has non-finite threshold '{val}' for op{suffix}",
+                setting="factors",
+                values=(val,),
+            )
         comparators.append((op, num))
     return comparators
 
@@ -158,6 +180,24 @@ def _banding_condition(col: pl.Expr, rule: dict[str, Any]) -> pl.Expr | None:
     for p in parts[1:]:
         result = result & p
     return result
+
+
+def _column_kind_fix(dtype: Any) -> str:
+    """The boundaries a column of *dtype* takes, for a breakpoint-kind mismatch."""
+
+    if isinstance(dtype, pl.Datetime) or dtype == pl.Datetime:
+        return (
+            "A Datetime column's boundaries are dates like 2024-12-31 or dates and times "
+            "like 2024-12-31 18:00."
+        )
+    if dtype == pl.Date:
+        return "A Date column's boundaries are dates like 2024-12-31."
+    if dtype is not None and dtype.is_numeric():
+        return "A number column's boundaries are numbers like 25."
+    return (
+        "Breakpoints band a number, Date or Datetime column; band this column with "
+        "categorical rules."
+    )
 
 
 def _is_temporal(dtype: Any) -> bool:
@@ -183,7 +223,11 @@ def banding_comparison_expr(
         return col
     if kind == "number":
         if _is_temporal(dtype) or (dtype is not None and not dtype.is_numeric()):
-            raise ValueError(f"{subject} has number breakpoints, but its column is {dtype}")
+            raise ConfigSettingError(
+                f"{subject} has number breakpoints, but its column is {dtype}",
+                setting="factors",
+                fix=_column_kind_fix(dtype),
+            )
         if dtype in (pl.Float32, pl.Float64):
             return pl.when(col.is_nan() | col.is_infinite()).then(pl.lit(None)).otherwise(col)
         return col
@@ -193,7 +237,11 @@ def banding_comparison_expr(
     if (dtype == pl.Date) and kind == "date":
         return col
     what = "date" if kind == "date" else "date-and-time"
-    raise ValueError(f"{subject} has {what} breakpoints, but its column is {dtype}")
+    raise ConfigSettingError(
+        f"{subject} has {what} breakpoints, but its column is {dtype}",
+        setting="factors",
+        fix=_column_kind_fix(dtype),
+    )
 
 
 def banding_temporal_ordinal_expr(col: pl.Expr, dtype: Any) -> pl.Expr:
@@ -277,7 +325,9 @@ def banding_rule_claim_expr(
     if mode == "categorical":
         claims = banding_categorical_claims(prepared)
         if not claims:
-            raise ValueError(_no_usable_rule_message(output_column, "categorical"))
+            raise ConfigSettingError(
+                _no_usable_rule_message(output_column, "categorical"), setting="factors"
+            )
         return (
             column_expr.cast(pl.Utf8)
             .replace_strict(
@@ -297,7 +347,9 @@ def banding_rule_claim_expr(
         claim = pl.lit(index, dtype=pl.Int32)
         chain = pl.when(cond).then(claim) if chain is None else chain.when(cond).then(claim)
     if chain is None:
-        raise ValueError(_no_usable_rule_message(output_column, "breakpoints"))
+        raise ConfigSettingError(
+            _no_usable_rule_message(output_column, "breakpoints"), setting="factors"
+        )
     claimed: pl.Expr = chain.otherwise(unclaimed).alias("claim")
     return claimed
 
@@ -342,7 +394,10 @@ def _apply_banding(
         }
         if not remap:
             if has_configured_rules:
-                raise ValueError(f"Banding output {output_column!r} has no usable categorical rule")
+                raise ConfigSettingError(
+                    f"Banding output {output_column!r} has no usable categorical rule",
+                    setting="factors",
+                )
             return lf
         cat_expr = col.cast(pl.Utf8).replace_strict(remap, default=default_lit).alias(output_column)
         return lf.with_columns(cat_expr)
@@ -372,7 +427,9 @@ def _apply_banding(
 
     if chain is None:
         if has_configured_rules:
-            raise ValueError(_no_usable_rule_message(output_column, "breakpoints"))
+            raise ConfigSettingError(
+                _no_usable_rule_message(output_column, "breakpoints"), setting="factors"
+            )
         return lf
     final_expr = chain.otherwise(default_lit).alias(output_column)
     return lf.with_columns(final_expr)
@@ -430,19 +487,21 @@ def _breakpoints_to_rules_with_sources(
     # Reject more than one open-ended boundary: only the last would ever win,
     # so extras would be silently dropped (fail loud instead).
     if open_ended_count > 1:
-        raise ValueError(
+        raise ConfigSettingError(
             "A breakpoints factor may have at most one open-ended boundary "
-            f"(empty boundary); found {open_ended_count}"
+            f"(empty boundary); found {open_ended_count}",
+            setting="factors",
         )
 
     # An open-ended boundary needs at least one bounded breakpoint to anchor
     # its lower edge.  A sole open-ended breakpoint would otherwise produce no
     # rules at all and silently emit no output column — fail loud instead.
     if open_ended is not None and not bounded:
-        raise ValueError(
+        raise ConfigSettingError(
             "A breakpoints factor with only an open-ended boundary (no bounded "
             "breakpoints) cannot define any interval; add at least one bounded "
-            "breakpoint"
+            "breakpoint",
+            setting="factors",
         )
 
     # Sort by boundary value
@@ -452,7 +511,11 @@ def _breakpoints_to_rules_with_sources(
     seen_boundaries: set[float | date] = set()
     for entry in bounded:
         if entry["boundary"] in seen_boundaries:
-            raise ValueError(f"Duplicate breakpoint boundary '{entry['boundary']}'")
+            raise ConfigSettingError(
+                f"Duplicate breakpoint boundary '{entry['boundary']}'",
+                setting="factors",
+                values=(entry["boundary"],),
+            )
         seen_boundaries.add(entry["boundary"])
 
     rules: list[tuple[dict[str, Any], int]] = []
@@ -530,7 +593,10 @@ def validate_banding_config(config: dict[str, Any]) -> list[dict[str, Any]]:
                 for rule in rules
             )
             if not usable:
-                raise ValueError(f"Banding output {output_column!r} has no usable categorical rule")
+                raise ConfigSettingError(
+                    f"Banding output {output_column!r} has no usable categorical rule",
+                    setting="factors",
+                )
             continue
 
         intervals = _breakpoints_to_rules(
@@ -542,7 +608,9 @@ def validate_banding_config(config: dict[str, Any]) -> list[dict[str, Any]]:
             for rule in intervals
         )
         if not usable:
-            raise ValueError(_no_usable_rule_message(output_column, "breakpoints"))
+            raise ConfigSettingError(
+                _no_usable_rule_message(output_column, "breakpoints"), setting="factors"
+            )
     return factors
 
 
@@ -556,7 +624,7 @@ def banding_factor_is_active(factor: dict[str, Any]) -> bool:
     return bool(factor.get("column") and factor.get("outputColumn") and factor.get("rules"))
 
 
-def _apply_banding_factors(lf: _Frame, factors: Iterable[dict[str, Any]]) -> _Frame:
+def apply_banding_factors(lf: _Frame, factors: Iterable[dict[str, Any]]) -> _Frame:
     """Apply normalised banding *factors* to a frame, in order.
 
     The single application loop shared by the executor's banding node
@@ -611,7 +679,7 @@ def apply_banding_from_config(
             config_path, base_dir=Path(base_dir) if base_dir else None
         )
 
-    return _apply_banding_factors(lf, _normalise_banding_factors(resolved_config))
+    return apply_banding_factors(lf, _normalise_banding_factors(resolved_config))
 
 
 # ---------------------------------------------------------------------------
@@ -637,11 +705,19 @@ _DURATION_KEY_RE = re.compile(
 )
 _DURATION_UNITS_PER_SECOND = MappingProxyType(
     {
-        "ms": Decimal(1_000),
-        "us": Decimal(1_000_000),
-        "ns": Decimal(1_000_000_000),
+        "ms": 1_000,
+        "us": 1_000_000,
+        "ns": 1_000_000_000,
     }
 )
+_DURATION_UNIT_NAMES = MappingProxyType(
+    {
+        "ms": "milliseconds",
+        "us": "microseconds",
+        "ns": "nanoseconds",
+    }
+)
+_DURATION_KEY_FIX = "A Duration factor's key is an ISO-8601 duration like PT1.5S, PT30M or P1DT2H."
 _RATING_PRIMITIVE_DESCRIPTOR_KINDS = frozenset(
     {
         "Int8",
@@ -697,7 +773,7 @@ def rating_dtype_descriptor(dtype: pl.DataType) -> dict[str, Any]:
         return {
             _RATING_DESCRIPTOR_KEY_BY_SPEC_KEY.get(key, key): value for key, value in spec.items()
         }
-    raise ValueError(f"unsupported rating factor dtype {dtype}")
+    raise ConfigSettingError(f"unsupported rating factor dtype {dtype}", setting="tables")
 
 
 def is_rating_dtype_descriptor(value: object) -> bool:
@@ -741,7 +817,11 @@ def is_rating_dtype_descriptor(value: object) -> bool:
 def rating_dtype_from_descriptor(descriptor: object) -> pl.DataType:
     """Reconstruct a supported rating-factor dtype from its JSON descriptor."""
     if not is_rating_dtype_descriptor(descriptor):
-        raise ValueError(f"invalid rating factor dtype descriptor {descriptor!r}")
+        raise ConfigSettingError(
+            f"invalid rating factor dtype descriptor {descriptor!r}",
+            setting="tables",
+            values=(descriptor,),
+        )
 
     # The predicate above checks the exact descriptor shape, so the shared
     # codec only has to parse a spec it already accepts.
@@ -758,28 +838,59 @@ def rating_dtype_from_descriptor(descriptor: object) -> pl.DataType:
 
 
 def _duration_key_to_physical(value: str, time_unit: str) -> int:
-    """Parse Polars' ISO-8601 duration display into an exact physical value."""
+    """Parse Polars' ISO-8601 duration display into an exact physical value.
+
+    The arithmetic is exact, so a key finer than *time_unit* is refused
+    however many digits it spells, never rounded onto a neighbouring key.
+    """
     match = _DURATION_KEY_RE.fullmatch(value)
     if match is None or not any(
         match.group(name) is not None for name in ("days", "hours", "minutes", "seconds")
     ):
-        raise ValueError(f"invalid ISO-8601 duration rating key {value!r}")
-    try:
-        seconds = (
-            Decimal(match.group("days") or 0) * 86_400
-            + Decimal(match.group("hours") or 0) * 3_600
-            + Decimal(match.group("minutes") or 0) * 60
-            + Decimal(match.group("seconds") or 0)
+        raise ConfigSettingError(
+            f"invalid ISO-8601 duration rating key {value!r}",
+            setting="tables",
+            fix=_DURATION_KEY_FIX,
+            values=(value,),
         )
-        physical = seconds * _DURATION_UNITS_PER_SECOND[time_unit]
-    except (InvalidOperation, KeyError) as exc:
-        raise ValueError(f"invalid {time_unit!r} duration rating key {value!r}") from exc
-    if physical != physical.to_integral_value():
-        raise ValueError(
-            f"duration rating key {value!r} is not exactly representable as {time_unit}"
+    whole_seconds = (
+        int(match.group("days") or 0) * 86_400
+        + int(match.group("hours") or 0) * 3_600
+        + int(match.group("minutes") or 0) * 60
+    )
+    seconds = whole_seconds + Fraction(match.group("seconds") or 0)
+    physical = seconds * _DURATION_UNITS_PER_SECOND[time_unit]
+    unit_name = _DURATION_UNIT_NAMES[time_unit]
+    if physical.denominator != 1:
+        raise ConfigSettingError(
+            f"duration rating key {value!r} is not exactly representable as {time_unit}",
+            setting="tables",
+            fix=f"Round the key to whole {unit_name}.",
+            values=(value,),
         )
-    result = int(physical)
-    return -result if match.group("sign") else result
+    result = -physical.numerator if match.group("sign") else physical.numerator
+    if not _INT64_MIN <= result < _INT64_MAX_EXCL:
+        raise ConfigSettingError(
+            f"duration rating key {value!r} is out of range for {time_unit}",
+            setting="tables",
+            fix=f"A Duration({time_unit}) column holds between -2**63 and 2**63 - 1 {unit_name}.",
+            values=(value,),
+        )
+    return result
+
+
+def _duration_key_series(name: str, keys: pl.Series, dtype: pl.Duration) -> pl.Series:
+    """Parse String duration *keys* into *dtype* in Python, before any expression runs.
+
+    A key that names no exact duration of *dtype* is refused here as a
+    ``ConfigSettingError``. Raised inside a Polars callback, the error would be
+    recreated from its message alone and surface as a ``TypeError`` instead.
+    """
+    physical = [
+        None if key is None else _duration_key_to_physical(key, dtype.time_unit)
+        for key in keys.to_list()
+    ]
+    return pl.Series(name, physical, dtype=pl.Int64).cast(dtype)
 
 
 # Date entry strings are ISO calendar dates; surrounding whitespace is
@@ -793,7 +904,11 @@ def _coerce_rating_lookup_expr(
     source_dtype: pl.DataType,
     target_dtype: pl.DataType,
 ) -> pl.Expr:
-    """Strictly coerce a sidecar factor column through its input-frame dtype."""
+    """Strictly coerce a sidecar factor column through its input-frame dtype.
+
+    A Duration factor's String keys arrive already parsed by
+    :func:`_duration_key_series`, so this expression only ever casts them.
+    """
     rating_dtype_descriptor(target_dtype)
     col = pl.col(name)
     if target_dtype == pl.Null:
@@ -813,16 +928,6 @@ def _coerce_rating_lookup_expr(
             time_zone=target_dtype.time_zone,
             strict=True,
         ).alias(name)
-    if isinstance(target_dtype, pl.Duration) and source_dtype == pl.String:
-        time_unit = target_dtype.time_unit
-        return (
-            col.map_elements(
-                lambda value: _duration_key_to_physical(value, time_unit),
-                return_dtype=pl.Int64,
-            )
-            .cast(target_dtype)
-            .alias(name)
-        )
     return col.cast(target_dtype, strict=True).alias(name)
 
 
@@ -858,10 +963,7 @@ def normalise_rating_key(
             strict=True,
         )
     elif isinstance(dtype, pl.Duration) and source_dtype == pl.String:
-        typed = raw.map_elements(
-            lambda item: _duration_key_to_physical(item, dtype.time_unit),
-            return_dtype=pl.Int64,
-        ).cast(dtype)
+        typed = _duration_key_series(raw.name, raw, dtype)
     else:
         typed = raw.cast(dtype, strict=True)
 
@@ -954,12 +1056,13 @@ def _validate_supported_factor_dtypes(
 ) -> None:
     for factor, dtype in original_dtypes.items():
         if _is_unsupported_factor_dtype(dtype):
-            raise ValueError(
+            raise ConfigSettingError(
                 f"Rating table {table_label!r} factor {factor!r} has unsupported dtype {dtype}. "
                 "Supported scalar dtypes are Int8, Int16, Int32, Int64, Int128, "
                 "UInt8, UInt16, UInt32, UInt64, Float32, Float64, Boolean, String, "
                 "Categorical, Enum, Date, Time, Datetime, Duration, Decimal, and Null. "
-                "Cast this factor upstream to a supported scalar dtype."
+                "Cast this factor upstream to a supported scalar dtype.",
+                setting="tables",
             )
 
 
@@ -971,9 +1074,11 @@ def _normalise_on_missing(value: object) -> str:
     if not normalised:
         return "error"
     if normalised not in _SUPPORTED_ON_MISSING:
-        raise ValueError(
+        raise ConfigSettingError(
             f"Unsupported rating table onMissing {normalised!r}; "
-            f"expected one of {sorted(_SUPPORTED_ON_MISSING)!r}"
+            f"expected one of {sorted(_SUPPORTED_ON_MISSING)!r}",
+            setting="tables",
+            values=(normalised,),
         )
     return normalised
 
@@ -1058,9 +1163,11 @@ def _normalise_combine_operation(operation: object) -> str:
     """Return a validated rating combine operation."""
     normalised = str(operation or "multiply")
     if normalised not in _SUPPORTED_COMBINE_OPERATIONS:
-        raise ValueError(
+        raise ConfigSettingError(
             f"Unsupported rating combine operation {normalised!r}; "
-            f"expected one of {sorted(_SUPPORTED_COMBINE_OPERATIONS)!r}"
+            f"expected one of {sorted(_SUPPORTED_COMBINE_OPERATIONS)!r}",
+            setting="combinedOutputs",
+            values=(normalised,),
         )
     return normalised
 
@@ -1074,52 +1181,68 @@ def _rating_internal_column(occupied: set[str], stem: str) -> str:
     return candidate
 
 
-def _apply_rating_table(
-    lf: _Frame,
-    table: dict[str, Any],
-    *,
-    input_schema: Any | None = None,
-) -> _Frame:
-    """Apply a single rating table lookup via a Polars left join.
+@dataclass(frozen=True, slots=True)
+class RatingTableLookup:
+    """One rating table's lookup, built exactly as execution builds it.
 
-    *table* must contain ``factors`` (list of column names to join on),
-    ``outputColumn``, ``entries`` (list of dicts with one key per factor
-    plus a ``value`` key), and optionally ``defaultValue`` and
-    ``onMissing``.
+    ``keyed_entries`` holds every authored entry's canonical key columns and
+    value, in authored order; ``lookup`` is what execution joins: deduplicated
+    by key with the last-authored entry kept, its value under
+    ``lookup_value_column``. ``default_value`` is the usable finite default, or
+    ``None``, in which case execution guards the lookup against misses.
+    """
 
-    Both join sides are canonicalised with :func:`_rating_key_expr`, so
-    int-like float keys (``25.0``) match string-keyed entries (``"25"``)
-    deterministically.
+    factors: tuple[str, ...]
+    output_column: str
+    original_dtypes: Mapping[str, pl.DataType]
+    key_columns: tuple[str, ...]
+    lookup_value_column: str
+    keyed_entries: pl.DataFrame
+    lookup: pl.DataFrame
+    default_value: float | None
+    default_note: str
+    on_missing: str
 
-    Miss policy (3a.3 — breaking change, release-noted): a lookup miss
-    with no usable ``defaultValue`` raises :class:`RatingTableMissError`
-    at materialisation.  ``"onMissing": "neutral"`` opts back in to the
-    old behaviour explicitly — the table output stays null (combined
-    outputs fill the operation's neutral element) and every miss is
-    counted and logged at WARNING.  A usable ``defaultValue`` always
-    fills misses with no error or warning.
+    def frame_key_exprs(self) -> list[pl.Expr]:
+        """The canonical key of each factor of the frame a lookup reads."""
+        return [
+            _rating_key_expr(factor, self.original_dtypes[factor]).alias(key_column)
+            for factor, key_column in zip(self.factors, self.key_columns, strict=True)
+        ]
+
+
+def rating_table_lookup(table: dict[str, Any], frame_schema: Any) -> RatingTableLookup | None:
+    """Build *table*'s lookup against a frame of *frame_schema*, or ``None`` for a no-op table.
+
+    Raises exactly what :func:`_apply_rating_table` raises for the table: a
+    malformed table, an absent factor, an unsupported factor dtype, or an
+    entry its factor dtype refuses. ``None`` is a table execution passes
+    through (no factors, output column or entries, or no entry at all with a
+    ``value`` or with some factor's key). Once any entry has a key, every
+    entry is read for it: an entry without a ``value`` is a null value.
     """
     raw_factors = table.get("factors")
     raw_entries = table.get("entries")
     factors = [] if raw_factors is None else raw_factors
     entries = [] if raw_entries is None else raw_entries
     if not isinstance(factors, list):
-        raise ValueError("rating table factors must be a list")
+        raise ConfigSettingError("rating table factors must be a list", setting="tables")
     if not isinstance(entries, list):
-        raise ValueError("rating table entries must be a list")
+        raise ConfigSettingError("rating table entries must be a list", setting="tables")
     if entries and not factors:
-        raise ValueError("rating table entries require a non-empty factors list")
+        raise ConfigSettingError(
+            "rating table entries require a non-empty factors list", setting="tables"
+        )
     output_col: str = table.get("outputColumn", "")
     default_raw = table.get("defaultValue")
     on_missing = _normalise_on_missing(table.get("onMissing"))
 
     if not factors or not output_col:
-        return lf
+        return None
 
     # Validate the declared input contract before every incomplete-table guard.
     # An entry-less lookup is still a no-op, but it must never hide a typo in a
     # required factor name.
-    frame_schema = input_schema if input_schema is not None else _frame_schema(lf)
     existing_cols = set(_schema_names(frame_schema))
     table_label = output_col
     for factor in factors:
@@ -1132,7 +1255,7 @@ def _apply_rating_table(
             )
 
     if not entries:
-        return lf
+        return None
 
     # These are cheap structural passthrough checks.  They intentionally
     # precede lookup construction: a malformed lookup entry remains a
@@ -1142,7 +1265,7 @@ def _apply_rating_table(
         if isinstance(entry, dict):
             entry_cols.update(entry.keys())
     if "value" not in entry_cols or any(factor not in entry_cols for factor in factors):
-        return lf
+        return None
 
     # Parse the default up front (B13: tolerate non-numeric/non-finite
     # values) — whether a usable default exists decides if the miss guard
@@ -1171,17 +1294,18 @@ def _apply_rating_table(
 
     # Build the lookup eagerly: rating tables are small configuration data,
     # and strict factor/value conversion should fail before the lazy input
-    # plan is returned to a caller.
-    lookup = pl.DataFrame(entries)
-    if "value" not in lookup.columns:
-        return lf
+    # plan is returned to a caller.  The frame reads every entry, so each key
+    # the check above found in any entry is a column: an entry without a value
+    # is a null value, refused below, wherever it sits in the table.
+    lookup = pl.DataFrame(entries, infer_schema_length=None)
     lookup = lookup.with_columns(pl.col("value").cast(pl.Float64, strict=True))
 
     # Reject NaN/Inf in rating table entries — they corrupt pricing silently
     _bad_count = lookup.filter(pl.col("value").is_nan() | pl.col("value").is_infinite()).height
     if _bad_count:
-        raise ValueError(
-            f"Rating table for '{output_col}' contains {_bad_count} NaN or Inf entries"
+        raise ConfigSettingError(
+            f"Rating table for '{output_col}' contains {_bad_count} NaN or Inf entries",
+            setting="tables",
         )
     # Reject null entry values too (3a.3): sidecar validation has always
     # required a value per entry, and a null rate would neutral-fill in
@@ -1190,18 +1314,24 @@ def _apply_rating_table(
     # keeps the miss guard's "no matching entry" diagnosis always true.
     _null_count = lookup.get_column("value").null_count()
     if _null_count:
-        raise ValueError(
+        raise ConfigSettingError(
             f"Rating table for '{output_col}' contains {_null_count} null entry "
-            "value(s); every entry requires a finite numeric value"
+            "value(s); every entry requires a finite numeric value",
+            setting="tables",
         )
 
     # B15: Select only factor columns + "value" to avoid polluting the main
     # frame with extra keys that may be present in the entries dicts.
-    # Guard: if any factor column is missing from entries, config is invalid.
-    missing = [f for f in factors if f not in lookup.columns]
-    if missing:
-        return lf
     lookup = lookup.select([*factors, "value"])
+    # A Duration factor's ISO-8601 string keys are parsed in Python, so a key
+    # naming no exact duration is refused here as configuration.
+    lookup = lookup.with_columns(
+        [
+            _duration_key_series(factor, lookup.get_column(factor), dtype)
+            for factor, dtype in original_dtypes.items()
+            if isinstance(dtype, pl.Duration) and lookup.schema[factor] == pl.String
+        ]
+    )
 
     occupied = existing_cols | entry_cols | {output_col}
     key_columns = [
@@ -1214,7 +1344,7 @@ def _apply_rating_table(
     # dtype.  Canonical keys are then built from that typed value on both
     # sides of the join; JSON scalar widening therefore cannot change a key.
     lookup_schema = lookup.schema
-    lookup = lookup.with_columns(
+    keyed_entries = lookup.with_columns(
         [
             _coerce_rating_lookup_expr(
                 factor,
@@ -1239,59 +1369,112 @@ def _apply_rating_table(
     # report the same winning row. Deduplication happens after strict
     # originating-dtype coercion and key generation, so representational
     # aliases such as Float64 entry strings "25.0" and "25.00" form one group.
-    lookup = lookup.unique(subset=key_columns, keep="last")
-
     # Rename "value" to an internal name to avoid collision with any
     # input "value" column in the input frame (Bug #1/#2).
-    lookup = lookup.rename({"value": lookup_value_column})
+    deduplicated = keyed_entries.unique(subset=key_columns, keep="last").rename(
+        {"value": lookup_value_column}
+    )
+    return RatingTableLookup(
+        factors=tuple(factors),
+        output_column=output_col,
+        original_dtypes=original_dtypes,
+        key_columns=tuple(key_columns),
+        lookup_value_column=lookup_value_column,
+        keyed_entries=keyed_entries,
+        lookup=deduplicated,
+        default_value=default_val,
+        default_note=default_note,
+        on_missing=on_missing,
+    )
 
+
+def apply_rating_table_lookup(
+    lf: _Frame,
+    built: RatingTableLookup,
+    *,
+    frame_schema: Any,
+    guard_misses: bool = True,
+) -> _Frame:
+    """Join *built* onto *lf* and write its output column, as execution does.
+
+    Without *guard_misses* a lookup without a usable default leaves its
+    misses null instead of guarding them: a measurement reads the misses
+    itself and must not raise on them.
+    """
+    key_columns = list(built.key_columns)
+    lookup_value_column = built.lookup_value_column
     # Source factors stay untouched.  Temporary keys are collision-free and
     # removed after the lookup.
-    lf = lf.with_columns(
-        [
-            _rating_key_expr(factor, original_dtypes[factor]).alias(key_column)
-            for factor, key_column in zip(factors, key_columns)
-        ]
-    )
+    lf = lf.with_columns(built.frame_key_exprs())
 
     # Left join.  Preserve the input row order explicitly because Polars
     # streaming joins may otherwise emit hash-partition order.
-    lf = lf.join(lookup.lazy(), on=key_columns, how="left", maintain_order="left")
+    lf = lf.join(built.lookup.lazy(), on=key_columns, how="left", maintain_order="left")
 
     # Miss guard (3a.3): only when no usable default exists — a usable
     # defaultValue fills every miss below, so nothing can be silent.
     # Diagnostics relabel temporary keys with the public factor names.
-    if default_val is None:
+    if built.default_value is None and guard_misses:
         joined_schema = pl.Schema(
             {
                 **dict(zip(_schema_names(frame_schema), frame_schema.values(), strict=True)),
                 **dict.fromkeys(key_columns, pl.String()),
-                lookup_value_column: lookup.schema[lookup_value_column],
+                lookup_value_column: built.lookup.schema[lookup_value_column],
             }
         )
         lf = _apply_rating_miss_guard(
             lf,
-            factors,
+            list(built.factors),
             key_columns=key_columns,
             lookup_value_column=lookup_value_column,
-            table_label=table_label,
-            output_col=output_col,
-            on_missing=on_missing,
-            default_note=default_note,
+            table_label=built.output_column,
+            output_col=built.output_column,
+            on_missing=built.on_missing,
+            default_note=built.default_note,
             input_schema=joined_schema,
         )
 
     # Rename value → outputColumn, apply default
-    if default_val is not None:
+    if built.default_value is not None:
         lf = lf.with_columns(
-            pl.col(lookup_value_column).fill_null(default_val).alias(output_col),
+            pl.col(lookup_value_column).fill_null(built.default_value).alias(built.output_column),
         )
     else:
-        lf = lf.with_columns(pl.col(lookup_value_column).alias(output_col))
+        lf = lf.with_columns(pl.col(lookup_value_column).alias(built.output_column))
 
-    lf = lf.drop([*key_columns, lookup_value_column])
+    return lf.drop([*key_columns, lookup_value_column])
 
-    return lf
+
+def _apply_rating_table(
+    lf: _Frame,
+    table: dict[str, Any],
+    *,
+    input_schema: Any | None = None,
+) -> _Frame:
+    """Apply a single rating table lookup via a Polars left join.
+
+    *table* must contain ``factors`` (list of column names to join on),
+    ``outputColumn``, ``entries`` (list of dicts with one key per factor
+    plus a ``value`` key), and optionally ``defaultValue`` and
+    ``onMissing``.
+
+    Both join sides are canonicalised with :func:`_rating_key_expr`, so
+    int-like float keys (``25.0``) match string-keyed entries (``"25"``)
+    deterministically.
+
+    Miss policy (3a.3 — breaking change, release-noted): a lookup miss
+    with no usable ``defaultValue`` raises :class:`RatingTableMissError`
+    at materialisation.  ``"onMissing": "neutral"`` opts back in to the
+    old behaviour explicitly — the table output stays null (combined
+    outputs fill the operation's neutral element) and every miss is
+    counted and logged at WARNING.  A usable ``defaultValue`` always
+    fills misses with no error or warning.
+    """
+    frame_schema = input_schema if input_schema is not None else _frame_schema(lf)
+    built = rating_table_lookup(table, frame_schema)
+    if built is None:
+        return lf
+    return apply_rating_table_lookup(lf, built, frame_schema=frame_schema)
 
 
 def _combine_rating_columns(
@@ -1319,13 +1502,15 @@ def _combine_rating_columns(
             duplicate_columns.append(column)
         seen_columns.add(column)
     if duplicate_columns:
-        raise ValueError(
+        raise ConfigSettingError(
             f"Rating output {output_col!r} cannot combine duplicate participant "
-            f"column(s) {duplicate_columns!r}"
+            f"column(s) {duplicate_columns!r}",
+            setting="combinedOutputs",
         )
     if output_col in seen_columns:
-        raise ValueError(
-            f"Rating output column {output_col!r} cannot overwrite a participant column"
+        raise ConfigSettingError(
+            f"Rating output column {output_col!r} cannot overwrite a participant column",
+            setting="combinedOutputs",
         )
     if not columns:
         return lf
@@ -1409,13 +1594,15 @@ def _rating_extrema_expr(
     return pl.when(guard).then(pl.lit(None)).otherwise(extrema).alias(output_col)
 
 
-def _normalise_combined_outputs(config: dict[str, Any]) -> list[dict[str, Any]]:
+def normalise_combined_outputs(config: dict[str, Any]) -> list[dict[str, Any]]:
     """Return strictly validated canonical combined-output definitions."""
     raw_outputs = config.get("combinedOutputs")
     if raw_outputs is None or raw_outputs == []:
         return []
     if not isinstance(raw_outputs, list):
-        raise ValueError("ratingStep combinedOutputs must be a list")
+        raise ConfigSettingError(
+            "ratingStep combinedOutputs must be a list", setting="combinedOutputs"
+        )
 
     outputs: list[dict[str, Any]] = []
     seen_output_cols: set[str] = {
@@ -1425,14 +1612,20 @@ def _normalise_combined_outputs(config: dict[str, Any]) -> list[dict[str, Any]]:
     }
     for idx, item in enumerate(raw_outputs):
         if not isinstance(item, dict):
-            raise ValueError(f"ratingStep combinedOutputs[{idx}] must be an object")
+            raise ConfigSettingError(
+                f"ratingStep combinedOutputs[{idx}] must be an object", setting="combinedOutputs"
+            )
         output_col = str(item.get("outputColumn", "") or "").strip()
         if not output_col:
-            raise ValueError(f"ratingStep combinedOutputs[{idx}] requires outputColumn")
+            raise ConfigSettingError(
+                f"ratingStep combinedOutputs[{idx}] requires outputColumn",
+                setting="combinedOutputs",
+            )
         if output_col in seen_output_cols:
-            raise ValueError(
+            raise ConfigSettingError(
                 f"ratingStep combinedOutputs[{idx}].outputColumn {output_col!r} "
-                "duplicates another rating output column"
+                "duplicates another rating output column",
+                setting="combinedOutputs",
             )
         seen_output_cols.add(output_col)
         operation = _normalise_combine_operation(item.get("operation", "multiply"))
@@ -1443,15 +1636,21 @@ def _normalise_combined_outputs(config: dict[str, Any]) -> list[dict[str, Any]]:
             or isinstance(base_raw, bool)
             or (isinstance(base_raw, str) and not base_raw.strip())
         ):
-            raise ValueError(f"ratingStep combinedOutputs[{idx}] requires baseValue")
+            raise ConfigSettingError(
+                f"ratingStep combinedOutputs[{idx}] requires baseValue", setting="combinedOutputs"
+            )
         try:
             base_value = float(base_raw)
         except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"ratingStep combinedOutputs[{idx}].baseValue must be numeric"
+            raise ConfigSettingError(
+                f"ratingStep combinedOutputs[{idx}].baseValue must be numeric",
+                setting="combinedOutputs",
             ) from exc
         if not math.isfinite(base_value):
-            raise ValueError(f"ratingStep combinedOutputs[{idx}].baseValue must be finite")
+            raise ConfigSettingError(
+                f"ratingStep combinedOutputs[{idx}].baseValue must be finite",
+                setting="combinedOutputs",
+            )
         outputs.append(
             {
                 "outputColumn": output_col,
@@ -1608,5 +1807,5 @@ def apply_rating_step_from_config(
     return _apply_rating_step_outputs(
         lf,
         normalise_rating_tables(resolved_config),
-        _normalise_combined_outputs(resolved_config),
+        normalise_combined_outputs(resolved_config),
     )

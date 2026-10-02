@@ -286,6 +286,10 @@ function resetAllStores(): void {
     utilityOpen: false,
     importsOpen: false,
     gitOpen: false,
+    assistantOpen: false,
+    assistantTurn: null,
+    assistantUnseenOutcome: false,
+    assistantPreviewErrorNodeId: null,
     shortcutsOpen: false,
     submodelDialog: null,
     renameDialog: null,
@@ -2485,6 +2489,77 @@ describe("App integration - read-only submodel instance", () => {
     expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(nodeIdsBeforeDelete)
     fireEvent.contextMenu(childNode)
     expect(screen.queryByTestId("context-menu")).not.toBeInTheDocument()
+  })
+})
+
+describe("App integration - a running assistant turn", () => {
+  it("makes the canvas read-only with a Stop pill until the turn ends", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [makeNode("polars_0", "Premium Calc")],
+      edges: [],
+      preamble: "",
+      preserved_blocks: [],
+      source_revision: "revision-test",
+    }))
+    render(<App />)
+    await waitForAppReady()
+    const node = await screen.findByTestId("node-Premium Calc", {}, { timeout: 10000 })
+    expect(document.querySelector('nav[aria-label="Node palette"]')).not.toHaveAttribute("inert")
+
+    const stop = vi.fn()
+    act(() => { useUIStore.getState().startAssistantTurn(stop) })
+
+    expect(document.querySelector('nav[aria-label="Node palette"]')).toHaveAttribute("inert")
+    expect(screen.getByTestId("toolbar-undo")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-save")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-assistant")).toBeEnabled()
+    fireEvent.click(node)
+    fireEvent.keyDown(window, { key: "Delete" })
+    expect(useGraphStore.getState().nodes.map((item) => item.id)).toEqual(["polars_0"])
+    fireEvent.click(screen.getByTestId("assistant-working-stop"))
+    expect(stop).toHaveBeenCalledTimes(1)
+
+    act(() => { useUIStore.getState().endAssistantTurn() })
+    expect(screen.queryByTestId("assistant-working-pill")).not.toBeInTheDocument()
+    expect(document.querySelector('nav[aria-label="Node palette"]')).not.toHaveAttribute("inert")
+    expect(screen.getByTestId("toolbar-save")).toBeEnabled()
+  })
+
+  it("hands a failed top-level preview to the assistant with that node selected", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(makeLoadedPipeline({
+      nodes: [makeNode("polars_0", "Premium Calc"), makeNode("polars_1", "Other Calc")],
+      edges: [],
+      preamble: "",
+      preserved_blocks: [],
+      source_revision: "revision-test",
+    }))
+    vi.mocked(api.previewNode).mockResolvedValue({
+      node_id: "polars_0",
+      status: "error",
+      error: "ColumnNotFoundError: premium",
+      columns: [],
+      preview: [],
+      row_count: 0,
+      column_count: 0,
+    })
+    render(<App />)
+    await waitForAppReady()
+    act(() => {
+      useGraphStore.setState({
+        nodes: useGraphStore.getState().nodes.map((item) => ({ ...item, selected: item.id === "polars_1" })),
+      })
+    })
+    fireEvent.click(await screen.findByTestId("node-Premium Calc", {}, { timeout: 10000 }))
+
+    fireEvent.click(await screen.findByTestId("ask-assistant-to-fix", {}, { timeout: 10000 }))
+
+    expect(useUIStore.getState().assistantPreviewErrorNodeId).toBe("polars_0")
+    expect(useUIStore.getState().assistantOpen).toBe(true)
+    await waitFor(() => {
+      expect(
+        useGraphStore.getState().nodes.filter((item) => item.selected).map((item) => item.id),
+      ).toEqual(["polars_0"])
+    })
   })
 })
 

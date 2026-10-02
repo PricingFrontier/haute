@@ -442,6 +442,38 @@ describe("Toolbar", () => {
     expect(props.onOpenImports).not.toHaveBeenCalled()
   })
 
+  describe("assistant progress", () => {
+    afterEach(() => {
+      useUIStore.setState({ assistantOpen: false, assistantTurn: null, assistantUnseenOutcome: false })
+    })
+
+    it("shows a running turn and stays reachable under the editing fence it causes", () => {
+      useUIStore.setState({ assistantTurn: { stop: vi.fn() } })
+      render(<Toolbar {...makeProps({ editingDisabled: true })} />)
+
+      const assistant = screen.getByTestId("toolbar-assistant")
+      expect(assistant).toBeEnabled()
+      expect(assistant).toHaveAttribute("title", "The assistant is working")
+      expect(screen.getByTestId("toolbar-assistant-working")).toBeInTheDocument()
+      expect(screen.getByTestId("toolbar-save")).toBeDisabled()
+      expect(screen.queryByTestId("toolbar-assistant-unseen")).not.toBeInTheDocument()
+    })
+
+    it("marks an outcome the closed panel has not shown, until the panel opens", () => {
+      useUIStore.setState({ assistantUnseenOutcome: true })
+      render(<Toolbar {...makeProps()} />)
+
+      const assistant = screen.getByTestId("toolbar-assistant")
+      expect(screen.getByTestId("toolbar-assistant-unseen")).toBeInTheDocument()
+      expect(assistant).toHaveAttribute("title", "The assistant finished while the panel was closed")
+      expect(screen.queryByTestId("toolbar-assistant-working")).not.toBeInTheDocument()
+
+      fireEvent.click(assistant)
+      expect(useUIStore.getState().assistantOpen).toBe(true)
+      expect(screen.queryByTestId("toolbar-assistant-unseen")).not.toBeInTheDocument()
+    })
+  })
+
   it("Centre button is disabled when nodeCount is 0", () => {
     render(<Toolbar {...makeProps({ nodeCount: 0 })} />)
     const centreBtn = screen.getByText("Centre")

@@ -34,6 +34,7 @@ training, deploy scoring and MLflow signatures.
 
 from __future__ import annotations
 
+import ast
 import re
 from collections.abc import Mapping
 from typing import Any, Literal, cast
@@ -240,6 +241,63 @@ def dtype_to_spec(dtype: Any) -> Any:
     if isinstance(dtype, pl.Categorical):
         return {"type": "Categorical"}
     return str(dtype)
+
+
+def parse_rendered_dtype(rendered: str, *, column: str | None = None) -> pl.DataType:
+    """Rebuild a polars dtype from polars' own rendering, ``str(dtype)``.
+
+    A preview reports each column's type that way (``Int64``,
+    ``Datetime(time_unit='us', time_zone=None)``, ``Struct({'a': Int64})``).
+    The text is read as a Python expression tree and never evaluated: every
+    name must be a polars dtype, a call's callee must be one, and every
+    argument a literal, list, tuple, dict or nested dtype.
+    """
+
+    def unsupported() -> SchemaMismatchError:
+        return SchemaMismatchError("Unsupported rendered dtype.", column=column, dtype=rendered)
+
+    def value(node: ast.expr) -> Any:
+        if isinstance(node, ast.Constant) and (
+            node.value is None or isinstance(node.value, str | int | bool)
+        ):
+            return node.value
+        if isinstance(node, ast.List | ast.Tuple):
+            items = [value(item) for item in node.elts]
+            return items if isinstance(node, ast.List) else tuple(items)
+        if isinstance(node, ast.Dict):
+            keys = [key for key in node.keys if key is not None]
+            if len(keys) != len(node.keys):
+                raise unsupported()
+            return {value(key): value(item) for key, item in zip(keys, node.values, strict=True)}
+        if isinstance(node, ast.Name):
+            return dtype_class(node.id)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            args = [value(arg) for arg in node.args]
+            kwargs = {kw.arg: value(kw.value) for kw in node.keywords if kw.arg is not None}
+            if len(kwargs) != len(node.keywords):
+                raise unsupported()
+            try:
+                return dtype_class(node.func.id)(*args, **kwargs)
+            except (TypeError, ValueError) as exc:
+                raise unsupported() from exc
+        raise unsupported()
+
+    def dtype_class(name: str) -> type[pl.DataType]:
+        candidate = getattr(pl, name, None)
+        if isinstance(candidate, type) and issubclass(candidate, pl.DataType):
+            return candidate
+        raise unsupported()
+
+    try:
+        tree = ast.parse(rendered, mode="eval")
+    except SyntaxError as exc:
+        raise unsupported() from exc
+    dtype = value(tree.body)
+    if isinstance(dtype, type) and issubclass(dtype, pl.DataType):
+        return dtype()
+    if isinstance(dtype, pl.DataType):
+        return dtype
+    raise unsupported()
 
 
 def parse_schema_mapping(raw: Any, *, argument: str) -> dict[str, Any]:

@@ -11,5 +11,5 @@
   "cd_tolerance": 0.001,
   "factor_columns": [["region"]],
   "data_input": "scored",
-  "banding_source": "factors"
+  "banding_source": "rating_factors"
 }

@@ -1,12 +1,12 @@
-"""Ordinary held-out pricing project; no assistant-specific context artifact."""
-
-import polars as pl
+"""Pipeline: heldout_pricing"""
 
 import haute
+import polars as pl
 
 pipeline = haute.Pipeline("heldout_pricing")
 
 
 @pipeline.polars
 def quotes() -> pl.LazyFrame:
-    return pl.scan_csv("data/quotes.csv")
+    df = pl.scan_csv("data/quotes.csv")
+    return df

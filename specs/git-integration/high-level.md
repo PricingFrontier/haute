@@ -121,7 +121,9 @@ operations perform prompt-proof, time-bounded network refreshes. Remote URLs ret
 (`user:password@`) while leaving scp-style `git@host:path` and local paths unchanged.
 
 **History as read-only.** Viewing a historical commit's pipeline (`GET /show/{sha}`) never
-touches HEAD or the working tree. The view extracts only pipeline artifacts required for
+touches HEAD or the working tree. The request names the pipeline file being compared, and
+the view parses that file as it stood at the commit, never another pipeline in the same
+project. The view extracts only pipeline artifacts required for
 parsing, not unrelated datasets or build outputs. Extraction rejects unsafe member types and
 paths, more than 10,000 members, or more than 64 MiB of regular-file content; malformed,
 oversized, or unparseable historical pipelines fail explicitly instead of returning a

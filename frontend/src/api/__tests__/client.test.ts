@@ -1296,17 +1296,19 @@ describe("git remote catch-up + history endpoints", () => {
     expect(result.set_aside_as).toBe("dev-2026-06-21")
   })
 
-  it("getCommitPipeline GETs /api/git/show/{sha} and parses the graph", async () => {
+  it("getCommitPipeline GETs /api/git/show/{sha} for the source file and parses the graph", async () => {
     mockFetch.mockReturnValue(jsonResponse(dummyGraph))
-    const result = await getCommitPipeline("abc123")
-    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/show/abc123")
+    const result = await getCommitPipeline("abc123", "pipelines/rating.py")
+    expect(mockFetch.mock.calls[0][0]).toBe(
+      "/api/git/show/abc123?source_file=pipelines%2Frating.py",
+    )
     expect(result.nodes).toHaveLength(1)
   })
 
   it("getCommitPipeline URL-encodes the sha path segment", async () => {
     mockFetch.mockReturnValue(jsonResponse(dummyGraph))
-    await getCommitPipeline("weird/ sha")
-    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/show/weird%2F%20sha")
+    await getCommitPipeline("weird/ sha", "rating.py")
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/git/show/weird%2F%20sha?source_file=rating.py")
   })
 
   it("getCommitContext GETs /api/git/commit-context/{sha} without a base", async () => {

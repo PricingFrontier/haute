@@ -27,6 +27,8 @@ export type SteppedCodePaneProps = {
   nodeColumns?: ColumnInfo[]
   /** `input` for a Transform (the first step chooses an input), `frame` when `df` is already bound. */
   start: StepStart
+  /** The node being edited. */
+  nodeId: string
   /** The code box's hint (code mode). */
   codeHint: ReactNode
   /** Selectable, non-persisted initial text for an empty code box (code mode). */
@@ -50,6 +52,7 @@ export default function SteppedCodePane({
   upstreamColumns,
   nodeColumns,
   start,
+  nodeId,
   codeHint,
   starterCode,
 }: SteppedCodePaneProps) {
@@ -68,6 +71,7 @@ export default function SteppedCodePane({
         runError={runError}
         frameColumns={codeColumns}
         start={start}
+        nodeId={nodeId}
       />
     )
   }

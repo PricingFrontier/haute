@@ -134,14 +134,21 @@ _REMOVED_EXAMPLES: dict[str, str] = {"joined_reference": "reference_join"}
 
 @cache
 def _example_resources() -> tuple[tuple[str, Traversable], ...]:
-    """Return every example bundle's pipeline source, in stable name order."""
+    """Return every teaching bundle's pipeline source, in stable name order.
+
+    A bundle whose manifest sets ``teaching: false`` is a test fixture and is
+    never offered to the model.
+    """
 
     examples = tuple(
-        sorted(
-            (bundle.name, bundle.joinpath("pipeline.py"))
-            for bundle in _examples_root().iterdir()
-            if bundle.is_dir() and bundle.joinpath("manifest.json").is_file()
+        (
+            str(manifest["id"]),
+            _examples_root()
+            .joinpath(str(manifest["id"]))
+            .joinpath(*_safe_relative_path(manifest["source"]).split("/")),
         )
+        for manifest in example_bundle_manifests()
+        if manifest["teaching"] is True
     )
     if not examples:
         raise RuntimeError("No assistant exemplar pipeline assets were found.")
@@ -213,6 +220,7 @@ def _read_bundle_manifest(bundle: Traversable) -> dict[str, object]:
         "source",
         "assertion_tier",
         "review_class",
+        "teaching",
         "resources",
     }
     if (
@@ -231,6 +239,7 @@ def _read_bundle_manifest(bundle: Traversable) -> dict[str, object]:
         or not manifest["summary"].strip()
         or manifest["assertion_tier"] not in _ASSERTION_TIERS
         or manifest["review_class"] not in _REVIEW_CLASSES
+        or not isinstance(manifest["teaching"], bool)
         or not isinstance(manifest["resources"], list)
     ):
         raise RuntimeError(
@@ -697,9 +706,11 @@ def _verify_fast_dry_run(bundle: Traversable, destination: Path) -> None:
         project_root=destination,
         pipeline_root=destination,
         mutations_readiness=lambda _root: (True, None),
-        publish_document_update=lambda _source: "f" * 64,
+        publish_document_update=lambda _source, _change: "f" * 64,
     )
-    plan = service.dry_run("pipeline.py", operations)
+    plan = service.dry_run(
+        "pipeline.py", operations, summary=f"Check example {bundle.name}'s dry-run evidence."
+    ).plan
     if (
         source.read_bytes() != before
         or list(plan.diff.nodes_removed) != removed
@@ -797,7 +808,7 @@ def _load_bundle(bundle: Traversable, manifest: dict[str, object]) -> dict[str, 
             review_class=str(manifest["review_class"]),
         ),
         "narrative": notes,
-        "graph": render_pipeline_graph(graph),
+        "graph": render_pipeline_graph(graph, config_values=True),
     }
 
 
@@ -861,7 +872,9 @@ def _unknown_example_error(name: str) -> dict[str, object]:
 
 
 def load_example(name: str) -> dict[str, object]:
-    """Return an example bundle's notes and parser-produced graph rendering.
+    """Return a teaching bundle's notes and parser-produced graph rendering.
+
+    A test-fixture bundle (``teaching: false``) is refused like an unknown name.
 
     Bundle sources are parsed, never imported. The bundle's resource tree is
     materialised together so parser-relative config sidecars work for both
@@ -872,6 +885,8 @@ def load_example(name: str) -> dict[str, object]:
     if bundle is None:
         return _unknown_example_error(name)
     manifest = _read_bundle_manifest(bundle)
+    if manifest["teaching"] is not True:
+        return _unknown_example_error(name)
     _validate_bundle(bundle, manifest)
     return _load_bundle(bundle, manifest)
 

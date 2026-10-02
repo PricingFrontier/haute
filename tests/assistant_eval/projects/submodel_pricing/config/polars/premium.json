@@ -1,0 +1,14 @@
+{
+  "steps": [
+    {
+      "id": "start",
+      "kind": "source",
+      "input": "factored"
+    },
+    {
+      "id": "logic",
+      "kind": "free_code",
+      "code": "# Apply the vehicle factor to the base rate\ndf = df.with_columns(premium=(pl.col('base_rate') * pl.col('vehicle_factor')).round(2))"
+    }
+  ]
+}

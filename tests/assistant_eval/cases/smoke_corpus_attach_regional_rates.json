@@ -1,0 +1,49 @@
+{
+  "schema_version": 5,
+  "id": "smoke_corpus_attach_regional_rates",
+  "fixture_version": "1",
+  "project_fixture": "polars_corpus",
+  "area": "steps",
+  "split": "development",
+  "egress": "project",
+  "inapplicable_variants": [],
+  "turns": [
+    {
+      "request": "Add a Transform named attach_regional_rates that starts from quotes, left-joins rates on region (each quote matches at most one rate, and the quotes keep their row order), then adds regional_benchmark as base_rate times factor. Connect quotes and rates to attach_regional_rates.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "polars"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [
+          {
+            "source": "quotes",
+            "target": "attach_regional_rates",
+            "target_handle": null
+          },
+          {
+            "source": "rates",
+            "target": "attach_regional_rates",
+            "target_handle": null
+          }
+        ],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [],
+        "node_configs": {},
+        "execution": [
+          {
+            "node": "attach_regional_rates",
+            "scenario": "live",
+            "golden": "quotes = pl.scan_parquet('data/quotes.parquet')\nrates = pl.scan_parquet('data/rates.parquet')\ndf = quotes.join(rates, on='region', how='left', validate='m:1', maintain_order='left')\ndf = df.with_columns((pl.col('base_rate') * pl.col('factor')).alias('regional_benchmark'))\n",
+            "order_free": false
+          }
+        ],
+        "efficiency": null,
+        "data_findings": null
+      }
+    }
+  ]
+}

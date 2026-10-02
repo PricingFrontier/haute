@@ -1,0 +1,47 @@
+{
+  "schema_version": 5,
+  "id": "submodel_high_risk_flag",
+  "fixture_version": "1",
+  "project_fixture": "submodel_pricing",
+  "area": "submodels",
+  "split": "holdout",
+  "egress": "project",
+  "inapplicable_variants": [],
+  "turns": [
+    {
+      "request": "In premium, also flag high-risk vehicles: a boolean high_risk_vehicle, true when vehicle_factor is above 1. Keep the premium step as it is.",
+      "expectations": {
+        "outcome": "applied",
+        "saves": true,
+        "required_node_types": [
+          "polars",
+          "submodel"
+        ],
+        "forbidden_node_types": [],
+        "required_edges": [
+          {
+            "source": "vehicle_factors",
+            "target": "premium",
+            "target_handle": null
+          }
+        ],
+        "require_connected_graph": true,
+        "forbidden_assistant_text": [],
+        "modified_nodes": [
+          "premium"
+        ],
+        "node_configs": {},
+        "execution": [
+          {
+            "node": "premium",
+            "scenario": "live",
+            "golden": "df = pl.scan_parquet('data/policies.parquet').with_columns(\n    vehicle_age=2025 - pl.col('vehicle_year'),\n).with_columns(\n    vehicle_factor=pl.when(pl.col('vehicle_age') > 10).then(1.2).otherwise(1.0),\n).with_columns(\n    premium=(pl.col('base_rate') * pl.col('vehicle_factor')).round(2),\n).with_columns(high_risk_vehicle=pl.col('vehicle_factor') > 1)\n",
+            "order_free": false
+          }
+        ],
+        "efficiency": null,
+        "data_findings": null
+      }
+    }
+  ]
+}

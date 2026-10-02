@@ -35,14 +35,14 @@ afterEach(cleanup)
 describe("TransformEditor", () => {
   it("renders Polars Code label", () => {
     render(
-      <TransformEditor config={{}} onUpdate={vi.fn()} inputSources={[]} />,
+      <TransformEditor nodeId="node-1" config={{}} onUpdate={vi.fn()} inputSources={[]} />,
     )
     expect(screen.getByText("Polars Code")).toBeTruthy()
   })
 
   it('shows "assign to df" hint when no input sources', () => {
     render(
-      <TransformEditor config={{}} onUpdate={vi.fn()} inputSources={[]} />,
+      <TransformEditor nodeId="node-1" config={{}} onUpdate={vi.fn()} inputSources={[]} />,
     )
     expect(screen.getByText("assign to df")).toBeTruthy()
   })
@@ -52,7 +52,7 @@ describe("TransformEditor", () => {
       { sourceNodeId: "test-source", name: "claims", sourceLabel: "Claims Data", edgeId: "e1" },
     ]
     render(
-      <TransformEditor config={{}} onUpdate={vi.fn()} inputSources={inputs} />,
+      <TransformEditor nodeId="node-1" config={{}} onUpdate={vi.fn()} inputSources={inputs} />,
     )
     expect(screen.getByText("use input names, assign to df")).toBeTruthy()
   })
@@ -63,7 +63,7 @@ describe("TransformEditor", () => {
       { sourceNodeId: "test-source", name: "policies", sourceLabel: "Policy Data", edgeId: "e2" },
     ]
     render(
-      <TransformEditor config={{}} onUpdate={vi.fn()} inputSources={inputs} />,
+      <TransformEditor nodeId="node-1" config={{}} onUpdate={vi.fn()} inputSources={inputs} />,
     )
     expect(screen.getByText("claims")).toBeTruthy()
     expect(screen.getByText("policies")).toBeTruthy()
@@ -77,6 +77,7 @@ describe("TransformEditor", () => {
     ]
     render(
       <TransformEditor
+        nodeId="node-1"
         config={{ code: "df = claims.filter(pl.col('amount') > 0)" }}
         onUpdate={vi.fn()}
         inputSources={inputs}
@@ -92,6 +93,7 @@ describe("TransformEditor", () => {
     ]
     render(
       <TransformEditor
+        nodeId="node-1"
         config={{ code: "df = claims.with_columns(severity=pl.col('amount') / pl.col('count'))" }}
         onUpdate={vi.fn()}
         inputSources={inputs}
@@ -112,14 +114,14 @@ describe("TransformEditor", () => {
 
   it("shows return df hint below code editor", () => {
     render(
-      <TransformEditor config={{}} onUpdate={vi.fn()} inputSources={[]} />,
+      <TransformEditor nodeId="node-1" config={{}} onUpdate={vi.fn()} inputSources={[]} />,
     )
     expect(screen.getByText("return df")).toBeTruthy()
   })
 
   it("passes empty string as default value when config.code is absent", () => {
     render(
-      <TransformEditor config={{}} onUpdate={vi.fn()} inputSources={[]} />,
+      <TransformEditor nodeId="node-1" config={{}} onUpdate={vi.fn()} inputSources={[]} />,
     )
     const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
     expect(editor.defaultValue).toBe("")
@@ -133,7 +135,7 @@ describe("TransformEditor", () => {
       { sourceNodeId: "other-source", name: "policies", sourceLabel: "Policy Data", edgeId: "e2" },
     ]
     render(
-      <TransformEditor config={{}} onUpdate={onUpdate} inputSources={inputs} />,
+      <TransformEditor nodeId="node-1" config={{}} onUpdate={onUpdate} inputSources={inputs} />,
     )
     const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
     expect(editor.defaultValue).toBe("# df = claims")
@@ -147,7 +149,7 @@ describe("TransformEditor", () => {
       { sourceNodeId: "test-source", name: "claims", sourceLabel: "Claims Data", edgeId: "e1" },
     ]
     render(
-      <TransformEditor config={{}} onUpdate={onUpdate} inputSources={inputs} />,
+      <TransformEditor nodeId="node-1" config={{}} onUpdate={onUpdate} inputSources={inputs} />,
     )
     const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
 
@@ -162,7 +164,7 @@ describe("TransformEditor", () => {
       { sourceNodeId: "test-source", name: "claims", sourceLabel: "Claims Data", edgeId: "e1" },
     ]
     render(
-      <TransformEditor config={{ code: "" }} onUpdate={vi.fn()} inputSources={inputs} />,
+      <TransformEditor nodeId="node-1" config={{ code: "" }} onUpdate={vi.fn()} inputSources={inputs} />,
     )
     const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
     expect(editor.defaultValue).toBe("")
@@ -181,7 +183,7 @@ describe("TransformEditor", () => {
       { sourceNodeId: "other-source", name: "policies", sourceLabel: "Policy Data", edgeId: "e2" },
     ]
     render(
-      <TransformEditor config={{}} onUpdate={vi.fn()} inputSources={inputs} />,
+      <TransformEditor nodeId="node-1" config={{}} onUpdate={vi.fn()} inputSources={inputs} />,
     )
     const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
     expect(editor.defaultValue).toBe("")
@@ -192,7 +194,7 @@ describe("TransformEditor", () => {
       { sourceNodeId: "df-source", name: "df", sourceLabel: "df", edgeId: "e1" },
     ]
     render(
-      <TransformEditor config={{}} onUpdate={vi.fn()} inputSources={inputs} />,
+      <TransformEditor nodeId="node-1" config={{}} onUpdate={vi.fn()} inputSources={inputs} />,
     )
     const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
     expect(editor.defaultValue).toBe("")
@@ -203,7 +205,7 @@ describe("TransformEditor", () => {
       { sourceNodeId: "test-source", name: "quotes", sourceLabel: "Quotes Data", edgeId: "e1" },
     ]
     render(
-      <TransformEditor config={{}} onUpdate={vi.fn()} inputSources={inputs} />,
+      <TransformEditor nodeId="node-1" config={{}} onUpdate={vi.fn()} inputSources={inputs} />,
     )
     expect(screen.getByText("quotes")).toBeTruthy()
     expect(screen.getByText("Input")).toBeTruthy()
@@ -212,7 +214,7 @@ describe("TransformEditor", () => {
 
 describe("TransformEditor mode selection", () => {
   it("selects step mode when config.steps is a list", () => {
-    render(<TransformEditor config={{ steps: [] }} onUpdate={vi.fn()} inputSources={[]} />)
+    render(<TransformEditor nodeId="node-1" config={{ steps: [] }} onUpdate={vi.fn()} inputSources={[]} />)
     expect(screen.getByTestId("polars-steps-editor")).toBeInTheDocument()
     expect(screen.queryByText("Polars Code")).not.toBeInTheDocument()
   })
@@ -220,6 +222,7 @@ describe("TransformEditor mode selection", () => {
   it("keeps code mode without steps and shows the discard notice", () => {
     render(
       <TransformEditor
+        nodeId="node-1"
         config={{ code: "df = quotes", _steps_discarded: "Steps were discarded because the body changed." }}
         onUpdate={vi.fn()}
         inputSources={[]}

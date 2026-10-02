@@ -1,0 +1,8 @@
+{
+  "inputType": "file",
+  "format": "parquet",
+  "mode": "scan",
+  "path": "data/batch_quotes.parquet",
+  "arguments": {},
+  "steps": []
+}

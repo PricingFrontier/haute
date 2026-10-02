@@ -25,7 +25,7 @@ def enriched(quotes: pl.LazyFrame) -> pl.LazyFrame:
     """Add a transparent feature for downstream pricing steps."""
 
     return quotes.with_columns(
-        vehicle_age=pl.col("vehicle_year").cast(pl.Int64),
+        vehicle_age=(2026 - pl.col("vehicle_year")).cast(pl.Int64),
         driver_band=pl.col("driver_age").cut([25, 40, 65]),
     )
 

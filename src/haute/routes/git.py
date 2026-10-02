@@ -416,10 +416,10 @@ def git_remotes() -> GitRemotesResponse:
 
 
 @router.get("/show/{sha}", response_model=PipelineGraph)
-def git_show(sha: str) -> PipelineGraph:
-    """Parse the active pipeline as it was at commit *sha* — a read-only view
-    (view ≠ move): no checkout, no HEAD change, any number of visits (S11)."""
-    return commit_pipeline_graph(sha)
+def git_show(sha: str, source_file: str = Query(min_length=1)) -> PipelineGraph:
+    """Parse the pipeline *source_file* as it was at commit *sha* — a read-only
+    view (view ≠ move): no checkout, no HEAD change, any number of visits (S11)."""
+    return commit_pipeline_graph(sha, source_file)
 
 
 # ---------------------------------------------------------------------------

@@ -65,6 +65,7 @@ only the node's declaration.
 """
 
 __all__ = [
+    "check_function_name_collisions",
     "graph_to_code",
     "graph_to_code_multi",
 ]
@@ -462,6 +463,30 @@ def _error_on_name_collisions(labels: list[str]) -> None:
         f"{bullets}",
         collisions={k: list(v) for k, v in collisions.items()},
     )
+
+
+def check_function_name_collisions(graph: PipelineGraph) -> None:
+    """Raise :class:`ParseError` if codegen would emit two functions of one name.
+
+    Checks every label :func:`graph_to_code_multi` turns into a function
+    name: every node label for a graph without submodels; otherwise each
+    root node that is not a submodel occurrence, each occurrence alias, and
+    the nodes of each referenced definition once. Save validation runs it so
+    a graph codegen would refuse fails before anything is written.
+    """
+    has_occurrences = any(node.data.nodeType == NodeType.SUBMODEL for node in graph.nodes)
+    if not graph.submodels and not has_occurrences:
+        _error_on_name_collisions([node.data.label for node in graph.nodes])
+        return
+    instances = resolve_submodel_instances(graph)
+    definitions = graph.submodels or {}
+    labels = [node.data.label for node in graph.nodes if node.id not in instances]
+    labels.extend(instance.config.alias for instance in instances.values())
+    for definition_id in dict.fromkeys(
+        instance.config.definition_id for instance in instances.values()
+    ):
+        labels.extend(node.data.label for node in definitions[definition_id].graph.nodes)
+    _error_on_name_collisions(labels)
 
 
 def _edge_input_name_for_codegen(
@@ -960,12 +985,7 @@ def _graph_to_code_multi_instances(
     root_nodes = [node for node in graph.nodes if node.id not in instances]
     root_node_ids = {node.id for node in root_nodes}
     validate_graph_shape_contracts(graph, graph_label=pipeline_name)
-
-    collision_labels = [node.data.label for node in root_nodes]
-    collision_labels.extend(instance.config.alias for instance in instances.values())
-    for definition_id in definition_order:
-        collision_labels.extend(node.data.label for node in definitions[definition_id].graph.nodes)
-    _error_on_name_collisions(collision_labels)
+    check_function_name_collisions(graph)
 
     files: dict[str, str] = {}
     for definition_id in definition_order:
@@ -1235,7 +1255,7 @@ def graph_to_code_multi(
         )
 
     validate_pipeline_graph_shape_contracts(graph, graph_label=pipeline_name)
-    _error_on_name_collisions([node.data.label for node in graph.nodes])
+    check_function_name_collisions(graph)
 
     main_key = source_file or f"{pipeline_name}.py"
     node_map = {node.id: node for node in graph.nodes}

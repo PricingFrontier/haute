@@ -8,16 +8,15 @@ It makes an editable candidate and explains every value it could not retain.
 from __future__ import annotations
 
 import ast
-import json
 import math
 from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import dataclass
-from pathlib import Path
 from types import UnionType
-from typing import Any, Literal, cast, get_args, get_origin, get_type_hints
+from typing import Any, Literal, get_args, get_origin, get_type_hints
 
 from haute._api_input_schema import ApiInputSchemaError, validate_v2_schema
+from haute._config_io import palette_default_config
 from haute._config_validation import _TYPED_DICT_BY_NODE_TYPE, validate_optimiser_input_selectors
 from haute._contracts import Contract
 from haute._explore_charts import validate_explore_charts
@@ -79,13 +78,6 @@ _DISCRIMINANTS = {
     NodeType.OPTIMISER: ("mode", {"online", "ratebook"}),
     NodeType.OPTIMISER_APPLY: ("sourceType", {"file", "run", "registered"}),
 }
-
-
-def _defaults() -> dict[str, dict[str, Any]]:
-    return cast(
-        dict[str, dict[str, Any]],
-        json.loads(Path(__file__).with_name("node_defaults.json").read_text(encoding="utf-8")),
-    )
 
 
 def _typed_dicts(node_type: NodeType) -> tuple[type, ...]:
@@ -684,7 +676,7 @@ def reconcile_config(
                 )
             ],
         )
-    defaults = deepcopy(_defaults().get(node_type.value, {}))
+    defaults = palette_default_config(node_type)
     source = {} if reset else deepcopy(raw)
     default_discriminant = _DISCRIMINANTS.get(node_type)
     if (
