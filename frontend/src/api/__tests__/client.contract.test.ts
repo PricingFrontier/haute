@@ -380,6 +380,9 @@ describe("client runtime contracts", () => {
         start: "input",
         inputColumns: { quotes: [{ name: "premium", dtype: "Float64" }] },
         frameColumns: [],
+        globalConstants: [{ name: "rate", type: "float", value: 1.5 }],
+        globalConstantsError: null,
+        source: "nb_batch",
       }),
     ).resolves.toEqual(columns)
     const [url, init] = mockFetch.mock.calls[0]
@@ -391,11 +394,14 @@ describe("client runtime contracts", () => {
       start: "input",
       input_columns: { quotes: [{ name: "premium", dtype: "Float64" }] },
       frame_columns: [],
+      global_constants: [{ name: "rate", type: "float", value: 1.5 }],
+      global_constants_error: null,
+      source: "nb_batch",
     })
 
     mockFetch.mockReturnValue(jsonResponse({ free_code_columns: [{ step_index: "1", columns: null, message: "" }] }))
     await expect(
-      resolveFreeCodeColumns({ nodeId: "rated", steps: [], inputNames: [], start: "frame", inputColumns: {}, frameColumns: [] }),
+      resolveFreeCodeColumns({ nodeId: "rated", steps: [], inputNames: [], start: "frame", inputColumns: {}, frameColumns: [], globalConstantsError: null, source: "live" }),
     ).rejects.toThrow("PolarsFreeCodeColumnsResponse: invalid contract at /free_code_columns/0/step_index: type")
   })
 

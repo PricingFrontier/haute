@@ -34,6 +34,7 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
+from haute._global_constants import reference_problem
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._graph_utils import upstream_node_ids
 from haute._hashing import content_hash_bytes
@@ -293,6 +294,14 @@ async def render_polars_steps_endpoint(
         rendered = render_polars_steps(body.steps, body.input_names, start=body.start)
     except PolarsStepError as exc:
         return PolarsStepsRenderResponse(ok=False, step_index=exc.step_index, message=exc.message)
+    if body.global_constants is not None:
+        constants = {constant.name: constant for constant in body.global_constants}
+        for reference in rendered.constant_references:
+            problem = reference_problem(reference, constants)
+            if problem is not None:
+                return PolarsStepsRenderResponse(
+                    ok=False, step_index=reference.step_index, message=problem
+                )
     return PolarsStepsRenderResponse(
         ok=True,
         code=rendered.code,

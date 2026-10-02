@@ -36,6 +36,7 @@ from haute._global_constants import (
     code_binds_global_constants,
     node_code_sources,
     node_constant_reads,
+    node_step_constant_problems,
     preamble_binds_global_constants,
 )
 from haute._logging import get_logger
@@ -921,7 +922,8 @@ class SavePipelineService:
             SavePipelineService._refuse_preamble_global_constants_binding(
                 definition.graph.preamble, label=f"Submodel {definition_id!r}'s preamble"
             )
-        defined = {constant.name for constant in graph.global_constants}
+        constants_by_name = {constant.name: constant for constant in graph.global_constants}
+        defined = set(constants_by_name)
         check_reads = graph.global_constants_error is None
         for node in SavePipelineService._iter_nodes_recursive(graph):
             label = node.data.label
@@ -944,6 +946,13 @@ class SavePipelineService:
                 )
             if not check_reads:
                 continue
+            step_problems = node_step_constant_problems(node, constants_by_name)
+            if step_problems:
+                step_index, reason = step_problems[0]
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Node {label!r}, step {step_index + 1}: {reason}",
+                )
             reads = node_constant_reads(config)
             undefined = sorted(reads - defined) if isinstance(reads, frozenset) else []
             if undefined:

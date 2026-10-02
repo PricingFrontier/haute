@@ -12,6 +12,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Reac
 import { ConfigCheckbox } from "../../../components/form"
 import { CodeEditor } from "../CodeEditor"
 import { INPUT_STYLE } from "../_shared"
+import type { GlobalConstantType } from "../../../utils/globalConstants"
 import { completionMatches } from "./completion"
 import { exprColumns, type ColumnInfo } from "./derivedColumns"
 import { FormulaError, callAtCaret, displayFormula, formulaText, functionNamed, parseFormula, renameColumnInFormula, typedAsFormula } from "./formula"
@@ -38,6 +39,7 @@ import {
   exprProblem,
   literal,
   suggestedAggregationName,
+  type FunctionArg,
 } from "./catalogue"
 import {
   AddRow,
@@ -53,6 +55,7 @@ import {
   LiteralValueInput,
   MoreOptions,
   NumberField,
+  ArgumentField,
   OperandField,
   QuantileField,
   RowGroup,
@@ -85,6 +88,7 @@ import type {
   JoinStep,
   JoinValidate,
   LimitStep,
+  FunctionArgValue,
   LiteralOperand,
   LiteralType,
   Operand,
@@ -119,7 +123,16 @@ export type StepFormContext = {
 
 type FormProps<S extends Step> = { step: S; onChange: (next: S) => void; ctx: StepFormContext }
 
-const ALL_SOURCES: readonly OperandSource[] = ["literal", "column", "variable"]
+const ALL_SOURCES: readonly OperandSource[] = ["literal", "column", "variable", "constant"]
+/** The constant types each typed function argument takes; a type argument takes none. */
+const ARG_CONSTANT_TYPES: Record<FunctionArg, readonly GlobalConstantType[]> = {
+  integer: ["integer"],
+  int: ["integer"],
+  number: ["integer", "float"],
+  text: ["text"],
+  scalar: ["integer", "float", "text", "boolean"],
+  dtype: [],
+}
 /** Literal types a stored value may take (fills, concat parts). */
 const VALUE_TYPES: readonly LiteralType[] = ["number", "text", "boolean", "date"]
 /** Literal types an expression operand may take: also `null`, for a missing result. */
@@ -467,8 +480,9 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
   return (
     <>
       {spec.args.map((arg, index) => {
-        const value: LiteralOperand = expr.args[index] ?? defaultArgFor(arg)
-        const set = (next: LiteralOperand) => {
+        const value: FunctionArgValue = expr.args[index] ?? defaultArgFor(arg)
+        const plain: LiteralOperand = value.kind === "literal" ? value : defaultArgFor(arg)
+        const set = (next: FunctionArgValue) => {
           const args = spec.args.map((a, i) => (i === index ? next : (expr.args[i] ?? defaultArgFor(a))))
           onChange({ ...expr, args })
         }
@@ -476,7 +490,7 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
         if (arg === "dtype") {
           return (
             <Field key={index} label={label}>
-              <SelectField value={String(value.value) as CastDtype} options={DTYPE_OPTIONS} onChange={(dtype) => set(literal("text", dtype))} ariaLabel={label} />
+              <SelectField value={String(plain.value) as CastDtype} options={DTYPE_OPTIONS} onChange={(dtype) => set(literal("text", dtype))} ariaLabel={label} />
             </Field>
           )
         }
@@ -485,9 +499,10 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
             <Field key={index} label={label}>
               <OperandField
                 value={value}
-                onChange={(next) => next.kind === "literal" && set(next)}
-                sources={["literal"]}
+                onChange={(next) => (next.kind === "literal" || next.kind === "constant") && set(next)}
+                sources={["literal", "constant"]}
                 literalTypes={["number", "text", "boolean"]}
+                constantTypes={ARG_CONSTANT_TYPES.scalar}
                 columns={ctx.columns}
                 variables={[]}
                 ariaLabel={label}
@@ -498,18 +513,22 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
         if (arg === "text") {
           return (
             <Field key={index} label={label}>
-              <TextField value={value.type === "text" ? String(value.value) : ""} onCommit={(text) => set(literal("text", text))} ariaLabel={label} mono />
+              <ArgumentField value={value} onChange={set} constantTypes={ARG_CONSTANT_TYPES.text} plainValue={literal("text", "")} plainLabel="text" ariaLabel={label}>
+                <TextField value={plain.type === "text" ? String(plain.value) : ""} onCommit={(text) => set(literal("text", text))} ariaLabel={label} mono />
+              </ArgumentField>
             </Field>
           )
         }
         return (
           <Field key={index} label={label}>
-            <LiteralValueInput
-              value={value.type === "number" ? value : literal("number", 0)}
-              onChange={set}
-              ariaLabel={label}
-              integer={arg === "integer" || arg === "int"}
-            />
+            <ArgumentField value={value} onChange={set} constantTypes={ARG_CONSTANT_TYPES[arg]} plainValue={defaultArgFor(arg)} plainLabel="number" ariaLabel={label}>
+              <LiteralValueInput
+                value={plain.type === "number" ? plain : literal("number", 0)}
+                onChange={set}
+                ariaLabel={label}
+                integer={arg === "integer" || arg === "int"}
+              />
+            </ArgumentField>
           </Field>
         )
       })}

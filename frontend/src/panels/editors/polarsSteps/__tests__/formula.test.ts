@@ -183,3 +183,24 @@ describe("callAtCaret", () => {
     expect(callAtCaret("nope(premium, ", 14)).toBeNull()
   })
 })
+
+describe("global constants in formulas", () => {
+  it("parses global_constants.<name> as a constant operand and prints it back", () => {
+    const expr = parseFormula("premium * global_constants.rate + round(cost, global_constants.digits)")
+    expect(withoutFormulaText(expr)).toEqual({
+      type: "binary",
+      left: { kind: "expr", expr: { type: "binary", left: { kind: "column", name: "premium" }, op: "*", right: { kind: "constant", name: "rate" } } },
+      op: "+",
+      right: {
+        kind: "expr",
+        expr: { type: "function", fn: "round", operand: { kind: "column", name: "cost" }, args: [{ kind: "constant", name: "digits" }] },
+      },
+    })
+    expect(formulaText(withoutFormulaText(expr))).toBe("premium * global_constants.rate + round(cost, global_constants.digits)")
+  })
+
+  it("refuses a constant where a type is expected", () => {
+    expect(() => parseFormula("cast(premium, global_constants.kind)")).toThrow(FormulaError)
+  })
+})
+

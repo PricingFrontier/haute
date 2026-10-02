@@ -9,7 +9,7 @@ against the code, and from the review of that documentation on 28 September
 (`BUG-10`, `BUG-11`): each one is a place where the code, not only the page, is
 wrong. `BUG-12` to `BUG-17` came from reading the parser, the code generator,
 the executors, the deploy scorer and the editor's request builders for the
-[global constants](global-constants.md) specification and its review on
+[global constants](../pipeline-config/high-level.md#behaviour) specification and its review on
 2 October 2026.
 Current rating behaviour is specified in
 [the rating specification](../rating/high-level.md).

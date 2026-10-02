@@ -193,6 +193,9 @@ export const LITERAL_TYPES: Array<{ value: LiteralType; label: string }> = [
   { value: "null", label: "missing (null)" },
 ]
 /** How deep expressions may nest as operands; a step's expression is depth 1 (mirrors the renderer). */
+/** What an operand may be (the renderer's `OPERAND_KINDS`). */
+export const OPERAND_KINDS = ["column", "literal", "expr", "variable", "constant"] as const
+
 export const MAX_EXPR_DEPTH = 12
 /** Literal types a membership list accepts: the renderer refuses null members. */
 export const LIST_LITERAL_TYPES = LITERAL_TYPES.filter((t) => t.value !== "null")

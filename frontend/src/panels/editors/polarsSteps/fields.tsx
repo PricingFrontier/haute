@@ -20,6 +20,7 @@ import {
   SquareFunction,
   ToggleRight,
   Variable as VariableIcon,
+  Pi,
   X,
   type LucideIcon,
 } from "lucide-react"
@@ -28,11 +29,13 @@ import { useId, useState, type ReactNode } from "react"
 import { CommittedTextField } from "../../../components/form"
 import { getDtypeColor } from "../../../utils/dtypeColors"
 import { INPUT_STYLE } from "../_shared"
+import type { GlobalConstantType } from "../../../utils/globalConstants"
+import { ALL_CONSTANT_TYPES, useFittingConstants } from "./useFittingConstants"
 import { CONDITION_OPERATORS, LIST_LITERAL_TYPES, LITERAL_TYPES, defaultCondition, defaultExpr, defaultLiteral, literal } from "./catalogue"
 import { completionMatches } from "./completion"
 import { useStepSchema } from "./stepSchema"
 import { namesAsCompletions, useCompletionList, type Completion } from "./useCompletionList"
-import type { Condition, Expr, LiteralOperand, LiteralType, MatchMode, Operand } from "./types"
+import type { Condition, ConstantOperand, Expr, LiteralOperand, LiteralType, MatchMode, Operand } from "./types"
 
 export const CONTROL_CLASS = "focus-ring w-full min-w-0 px-2 py-1.5 text-xs rounded-md"
 const CHIP_STYLE = { background: "var(--chrome-hover)", color: "var(--text-primary)", border: "1px solid var(--border)" }
@@ -811,10 +814,11 @@ export function LiteralValueInput({
   }
 }
 
-export type OperandSource = "literal" | "column" | "variable" | "expr"
+export type OperandSource = "literal" | "column" | "variable" | "constant" | "expr"
 
-/** What a value is: one of the literal types, or a column, a variable or an expression. */
+/** What a value is: one of the literal types, or a column, a variable, a constant or an expression. */
 type OperandKind = LiteralType | Exclude<OperandSource, "literal">
+
 
 const KIND_LABELS: Record<OperandKind, string> = {
   number: "Number",
@@ -824,6 +828,7 @@ const KIND_LABELS: Record<OperandKind, string> = {
   null: "Missing (null)",
   column: "Column",
   variable: "Variable",
+  constant: "Constant",
   expr: "Expression",
 }
 
@@ -835,6 +840,7 @@ const KIND_ICONS: Record<OperandKind, LucideIcon> = {
   null: Ban,
   column: Columns2,
   variable: VariableIcon,
+  constant: Pi,
   expr: SquareFunction,
 }
 
@@ -889,6 +895,7 @@ export function OperandField({
   variables,
   ariaLabel,
   renderExpression,
+  constantTypes = ALL_CONSTANT_TYPES,
 }: {
   value: Operand
   onChange: (next: Operand) => void
@@ -898,10 +905,16 @@ export function OperandField({
   variables: string[]
   ariaLabel: string
   renderExpression?: RenderExpression
+  /** The constant types this slot takes, when `sources` offers constants. */
+  constantTypes?: readonly GlobalConstantType[]
 }) {
+  const constants = useFittingConstants(constantTypes)
   const kinds: OperandKind[] = [
     ...(sources.includes("literal") ? LITERAL_TYPES.map((t) => t.value).filter((t) => literalTypes.includes(t)) : []),
-    ...sources.filter((s): s is "column" | "variable" => s === "column" || (s === "variable" && (variables.length > 0 || value.kind === "variable"))),
+    ...sources.filter((s): s is "column" | "variable" | "constant" =>
+      s === "column"
+      || (s === "variable" && (variables.length > 0 || value.kind === "variable"))
+      || (s === "constant" && (constants.length > 0 || value.kind === "constant"))),
     ...(renderExpression ? (["expr"] as const) : []),
   ]
   const kind = operandKind(value)
@@ -910,6 +923,7 @@ export function OperandField({
     if (next === "column") onChange({ kind: "column", name: "" })
     else if (next === "expr") onChange({ kind: "expr", expr: defaultExpr("binary") })
     else if (next === "variable") onChange({ kind: "variable", name: variables[0] ?? "" })
+    else if (next === "constant") onChange({ kind: "constant", name: constants[0] ?? "" })
     else onChange(defaultLiteral(next))
   }
   return (
@@ -936,12 +950,76 @@ export function OperandField({
             ariaLabel={`${ariaLabel} variable`}
           />
         )}
+        {value.kind === "constant" && (
+          <ConstantSelect value={value.name} constants={constants} onChange={(name) => onChange({ kind: "constant", name })} ariaLabel={`${ariaLabel} constant`} />
+        )}
       </div>
       {value.kind === "expr" && renderExpression && (
         <div className="basis-full grid gap-1.5 pl-2 ml-0.5" style={{ borderLeft: "2px solid var(--border)" }} role="group" aria-label={`${ariaLabel} expression`}>
           {renderExpression(value.expr, (expr) => onChange({ kind: "expr", expr }), `${ariaLabel} expression`)}
         </div>
       )}
+    </div>
+  )
+}
+
+/** A choice among the fitting constants; a name that no longer fits reads as unchosen. */
+function ConstantSelect({ value, constants, onChange, ariaLabel }: { value: string; constants: string[]; onChange: (name: string) => void; ariaLabel: string }) {
+  return (
+    <SelectField
+      value={constants.includes(value) ? value : ""}
+      placeholder="choose a constant"
+      options={constants.map((name) => ({ value: name, label: name }))}
+      onChange={onChange}
+      ariaLabel={ariaLabel}
+    />
+  )
+}
+
+/**
+ * A typed function argument: its plain-value editor, or a constant of a type
+ * it takes. The kind marker appears only when a fitting constant exists or
+ * the argument already reads one.
+ */
+export function ArgumentField({
+  value,
+  onChange,
+  constantTypes,
+  plainValue,
+  plainLabel,
+  ariaLabel,
+  children,
+}: {
+  value: LiteralOperand | ConstantOperand
+  onChange: (next: LiteralOperand | ConstantOperand) => void
+  constantTypes: readonly GlobalConstantType[]
+  /** The plain value switching back from a constant starts from. */
+  plainValue: LiteralOperand
+  /** The plain kind's marker, matching the editor in `children`. */
+  plainLabel: LiteralType
+  ariaLabel: string
+  /** The plain-value editor, shown while the argument is a plain value. */
+  children: ReactNode
+}) {
+  const constants = useFittingConstants(constantTypes)
+  if (value.kind !== "constant" && constants.length === 0) return <>{children}</>
+  const kind: OperandKind = value.kind === "constant" ? "constant" : plainLabel
+  return (
+    <div className="flex flex-wrap items-center gap-1" role="group" aria-label={ariaLabel}>
+      <KindMarker
+        kind={kind}
+        kinds={[plainLabel, "constant"]}
+        onChange={(next) => {
+          if (next === kind) return
+          onChange(next === "constant" ? { kind: "constant", name: constants[0] ?? "" } : plainValue)
+        }}
+        ariaLabel={`${ariaLabel} kind`}
+      />
+      <div className="flex-1 basis-28 min-w-0">
+        {value.kind === "constant"
+          ? <ConstantSelect value={value.name} constants={constants} onChange={(name) => onChange({ kind: "constant", name })} ariaLabel={`${ariaLabel} constant`} />
+          : children}
+      </div>
     </div>
   )
 }
@@ -1002,6 +1080,7 @@ export function LiteralListField({
 }
 
 const OPERATOR_OPTIONS = CONDITION_OPERATORS.map((o) => ({ value: o.value, label: o.label }))
+const TEXT_CONSTANT: readonly GlobalConstantType[] = ["text"]
 const STRING_OPERATORS = new Set<Condition["operator"]>(["contains", "starts_with", "ends_with", "matches"])
 const isStringOperator = (operator: Condition["operator"]) => STRING_OPERATORS.has(operator)
 
@@ -1087,8 +1166,9 @@ export function ConditionRow({
         <OperandField
           value={condition.value ?? literal("number", 0)}
           onChange={(value) => onChange({ ...condition, value })}
-          sources={["literal", "column", "variable"]}
+          sources={["literal", "column", "variable", "constant"]}
           literalTypes={textOnly ? ["text"] : ["number", "text", "boolean", "date"]}
+          constantTypes={textOnly ? TEXT_CONSTANT : ALL_CONSTANT_TYPES}
           columns={columns}
           variables={variables}
           ariaLabel={`${ariaLabel} value`}

@@ -8,9 +8,9 @@
 | `src/haute/_standalone_nodes.py` | What each configured node type does in a standalone run or score: `run_configured_node(node_type, kind, name, config, fn, frames, pipeline_dir)` performs the node's work through the same shared helpers canvas execution uses (`resolve_api_input_from_config`, `resolve_data_input_from_config`, `constant_frame`, `select_live_switch_input`, `execute_edge_join`, `apply_banding_from_config`, `apply_rating_step_from_config`, `expand_scenarios_from_config`, `score_from_config`, `apply_optimiser_apply_from_config`, `assemble_output_from_config`, `resolve_optimiser_data_input`, `load_external_object_from_config`); `function_kind` classifies a function as a declaration or hook; `has_empty_body` recognises a body that does nothing from its bytecode; `pipeline_directory` finds the directory a function's `config=` paths resolve against (the defining file's directory joined with its registry's `pipeline_dir`). |
 | `src/haute/_config_builder.py` | Per-node-type config dict construction from decorator kwargs + function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). For Live Switch nodes, `config["inputs"]` records only positional edge parameters (frame labels for apiInput edges, sanitised source labels otherwise), the same strings referenced by the input-to-scenario mapping; keyword-only configuration parameters are excluded. It consumes the per-type user-code extractors from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
 | `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers, `collect_node_configs` (graph → sidecar files), per-type validation/normalisation of canonical configs, and the Windows-reserved-filename guard. It also owns the global constants file: `parse_global_constants` validates its strict UTF-8 bytes, `load_global_constants` reads it, and `global_constants_json` writes it canonically. |
-| `src/haute/_global_constants.py` | Global constants analysis and the standalone sentinel: `code_constant_reads`, `step_constant_reads`, `node_code_sources` and `node_constant_reads` (what a node reads, from its steps' Constant operands and the AST of its code, or `EVERY_CONSTANT`), `code_binds_global_constants`, `preamble_binds_global_constants`, `module_binding_lines` and `is_generated_binding` (what would shadow the reserved name), `STANDALONE_GLOBAL_CONSTANTS`, the sentinel every registry's global-constants property returns, and the run-time table: `GlobalConstantsNamespace` (one source's values and its per-code views), `node_code_globals`, `bind_code_view`, `function_constant_reads` and `bind_function_view`. |
+| `src/haute/_global_constants.py` | Global constants analysis and the standalone sentinel: `code_constant_reads`, `step_constant_reads`, `node_code_sources` and `node_constant_reads` (what a node reads, from its steps' Constant operands and the AST of its code, or `EVERY_CONSTANT`), `code_binds_global_constants`, `preamble_binds_global_constants`, `module_binding_lines` and `is_generated_binding` (what would shadow the reserved name), `STANDALONE_GLOBAL_CONSTANTS`, the sentinel every registry's global-constants property returns, `reference_problem` and `node_step_constant_problems` (whether a step's Constant operand can read its constant: defined, of a type its slot takes, and at least zero for every source where required), and the run-time table: `GlobalConstantsNamespace` (one source's values and its per-code views), `node_code_globals`, `bind_code_view`, `function_constant_reads` and `bind_function_view`. |
 | `src/haute/_config_validation.py` | `VALID_KEYS` registry derived from each node type's TypedDict definition, `unrecognized_config_keys`, and `reject_unrecognized_config_keys`. |
-| `src/haute/_polars_steps.py` | Low-code Polars step schema: `validate_polars_steps`, `render_polars_steps` (a `spelling` of `current` or, only to recognise bodies it saved before, `earlier`; one statement per structured step, laid out over several lines by `src/haute/_polars_steps_layout.py` when its single-line form does not fit in 88 columns at the function body's indentation, optional input-name validation, a required `start` mode of `input` or `frame`, `PolarsStepError` with the step index), `STEPPED_NODE_TYPES` (each stepped node type's `SteppedSurface`: start mode plus input eligibility `edges`/`none`), `STEPPED_SURFACE_LABELS` (the name each stepped node type goes by in messages about its steps), `stepped_surface_for`, `step_input_names`, `is_stepped_config`, `stepped_surface_allows_input_references` (the gate for rewriting step references on a rename), `referenced_step_inputs`, `rename_step_inputs` for boundary renames, and `resolve_free_code_columns` (the schema of `df` after each free-code step, for the free-code columns endpoint, which runs it in the interactive preview worker: the rendered prefix run through `_exec_user_code` over empty frames of the columns the editor supplied and only its schema read, or a one-line reason when it cannot be resolved). Consumed by the node data model, the parser, the executor builder, codegen, the save service, the assistant's authoring checks, the deploy interceptors, submodel flattening, and the render endpoint. |
+| `src/haute/_polars_steps.py` | Low-code Polars step schema: `validate_polars_steps`, `render_polars_steps` (a `spelling` of `current` or, only to recognise bodies it saved before, `earlier`; one statement per structured step, laid out over several lines by `src/haute/_polars_steps_layout.py` when its single-line form does not fit in 88 columns at the function body's indentation, optional input-name validation, a required `start` mode of `input` or `frame`, `PolarsStepError` with the step index), `STEPPED_NODE_TYPES` (each stepped node type's `SteppedSurface`: start mode plus input eligibility `edges`/`none`), `STEPPED_SURFACE_LABELS` (the name each stepped node type goes by in messages about its steps), `stepped_surface_for`, `step_input_names`, `is_stepped_config`, `stepped_surface_allows_input_references` (the gate for rewriting step references on a rename), `referenced_step_inputs`, `rename_step_inputs` for boundary renames, `OPERAND_KINDS` (a column, a literal, a nested expression, a step variable or a global constant; a Constant operand renders as the bare `global_constants.<name>` in value position and `pl.lit(global_constants.<name>)` in expression position, checks only the name rule, and is reported in `RenderedSteps.constant_references` as a `ConstantReference` with its step, the `CONSTANT_TYPES` its slot takes, a string operator's value taking `text` and a typed function argument following its expected type, and whether every value must be at least zero), and `resolve_free_code_columns` (the schema of `df` after each free-code step, for the free-code columns endpoint, which runs it in the interactive preview worker: the rendered prefix run through `_exec_user_code` over empty frames of the columns the editor supplied and only its schema read, or a one-line reason when it cannot be resolved). Consumed by the node data model, the parser, the executor builder, codegen, the save service, the assistant's authoring checks, the deploy interceptors, submodel flattening, and the render endpoint. |
 | `src/haute/_polars_steps_layout.py` | `restyle_statement` rewrites one rendered structured-step statement in common Python style on one line: `ast.unparse` keeps exactly the brackets operator precedence needs, and every string takes double quotes unless single ones need fewer escapes; the rewrite must parse to the same syntax tree or it is refused. `layout_statement` restyles, then lays out the statement through the document printer shared with codegen (`src/haute/_source_layout.py`) as `ruff format` lays it out inside a function body at its default 88 columns: the last call's brackets break first, a list or dict that still does not fit puts one entry per line with a trailing comma, a call chain with two or more links after a call or parentheses breaks before each such link (ruff's fluent layout), a binary expression breaks before its weakest operators, a long name or literal on the right of `=` is parenthesised only when that makes it fit, and doubled parentheses collapse to one pair. One choice is the renderer's own: a broken call always puts one argument per line with a trailing comma, where ruff would keep arguments that fit on one indented line together, and ruff keeps that layout because it reads the trailing comma as a magic trailing comma. The rendered body, indented as a function body, is therefore a fixed point of `ruff format --line-length 88` with its default quote style. It parses only the renderer's closed vocabulary and refuses anything else with a value error; free-code steps never pass through it. |
 | `src/haute/_builders.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration consumes its `NODE_REGISTRY` registration contracts. |
 | `src/haute/_node_builder.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration documents its builder-interception seam. |
@@ -495,6 +495,13 @@ it on the reading node instead of aborting the walk, and every other run propaga
 - `PolarsFreeCodeColumnsRequest` in `src/haute/schemas.py` carries `global_constants`,
   `global_constants_error` and `source`, and
   `src/haute/_polars_steps.py::resolve_free_code_columns` builds the table from them.
+- Save validation checks every node's Constant operands with
+  `node_step_constant_problems`, unless the constants file failed to load, and refuses the first
+  that cannot read with HTTP 400 `Node 'n', step k: <reason>`; the reason is `Global constant 'x'
+  is not defined.`, `Global constant 'x' is float; this value takes integer.` or `Global constant
+  'x' must be zero or more; it is -1 for source 'nb_batch'.`. The render request
+  (`PolarsStepsRenderRequest`) takes optional `global_constants`; given them, the first failing
+  reference is the response's step problem.
 - `Pipeline.run` takes a keyword-only `source` (default `"batch"`); it and `Pipeline.score`
   (which uses `live`) set `_scenario_ctx` to that source for the run and build the table with
   `Pipeline._run_constants`, which loads a declared file through
@@ -734,6 +741,12 @@ Property/round-trip style coverage (`TestRoundTripDrift` in `test_graph_shape_co
 `test_codegen_roundtrip_property.py`) asserts that parse → build → save → parse is stable for
 generated graphs.
 
+- `tests/test_polars_steps.py` covers Constant operands: both positions' golden renders and
+  references, each slot's constant types (comparison, string operator, fill, branch and every
+  typed function argument), the refusal of a type argument and of an invalid name,
+  `reference_problem` on an undefined constant, a wrong type and a negative source value, and the
+  render route's and save's refusals; `tests/test_polars_steps_catalogue.py` holds the editor's
+  `OPERAND_KINDS` equal to the renderer's.
 - `tests/test_global_constants_runs.py` verifies that one graph run under `live` and `nb_batch`
   reads each source's value in Transform, Data Input and External File code; that `getattr` and
   f-string reads resolve while an `eval` of a string fails with the untracked-read message; that
@@ -746,78 +759,3 @@ generated graphs.
   with a grouped lazy callback each read their own values, a missing source value and a file
   that fails to load fail the reading node, and a module-level read says where constants are
   read.
-
-## Approved change contract — global constants
-
-This section names the seams, shapes and tests for the parts of the
-[high-level contract](high-level.md#approved-change-contract--global-constants) still to be
-built; that section owns the behaviour and this one does not restate it. The model, the file,
-parsing, generation, the runtime sentinel, the reads analysis, save, every run's binding and
-the editor's Constants pane are present behaviour,
-described in the sections above and in the codegen, expression-parsing and server-api
-specifications. New modules are named in plain text because they do not exist yet. Every
-record is unresolved until its roadmap package lands.
-
-- **Current limitation.** Every run binds `global_constants` for its source (see "Global
-  constants at run time" above) and the editor edits, saves and sends the constants
-  ([frontend-shared](../frontend-shared/low-level.md)), but the step renderer has no Constant
-  operand.
-- **Unresolved target.** The seams below, built by
-  [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor).
-- **Non-goals.** No new HTTP route: constants travel in the graph of the existing load, save,
-  execution and step routes. No constant reaches a `utility` module, a pivot formula or a
-  non-step config field. The recovery-draft store is unchanged.
-- **Failure and compatibility semantics.** Save refusals are HTTP 400 with the messages
-  below. No migration or fallback exists.
-- **Acceptance evidence.** The testing scenarios at the end of this section, each extending the
-  named module.
-- **Roadmap package.** [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor).
-
-**Step editor (GCONST-05).** `src/haute/_polars_steps.py` accepts the operand
-`{"kind": "constant", "name": <name>}` wherever its operand rendering accepts a `variable`: as
-the bare `global_constants.<name>` in value position, and as `pl.lit(global_constants.<name>)` in
-expression position. It also accepts the operand in a typed function argument. It checks only the
-name rule, because the renderer does not see the pipeline's constants. The rendered steps gain
-`constant_references`: one record per operand with the step index, the name, the types its slot
-takes and whether the slot requires a value of at least zero.
-
-- Comparison and fill values, formula operands and conditional branches take every type.
-- A string operator's condition value takes `text`.
-- A function argument follows its expected type: `integer` takes an `integer` whose every value
-  is at least zero, `int` takes an `integer`, `number` an `integer` or a `float`, `text` a
-  `text`, `scalar` any type but `date`, and `dtype` takes none.
-
-The graph-level check in `src/haute/_global_constants.py` renders each stepped node and verifies
-every reference: the constant exists, its type is taken, and every value it holds is at least
-zero where required. Save validation runs it (HTTP 400 naming the node, the step number, the
-constant and the reason), except while the constants file fails to load, when the definitions
-are unavailable, as for code reads. The render request in `src/haute/routes/pipeline.py` gains an optional
-`global_constants`; when it is present, each failed reference is reported as its step's problem.
-
-In the editor, `frontend/src/panels/editors/polarsSteps/types.ts` gains the constant operand.
-`frontend/src/panels/editors/polarsSteps/fields.tsx::OperandField` offers a Constant kind when
-the slot takes constants and a fitting constant exists (or the value is already a constant),
-listing only fitting constants, and the function-argument fields accept constants of the
-argument's type. `frontend/src/panels/editors/polarsSteps/catalogue.ts` lists the operand kind,
-which `tests/test_polars_steps_catalogue.py` holds equal to the renderer's.
-`frontend/src/panels/editors/polarsSteps/formula.ts::parseFormula` parses
-`global_constants.<name>` into a constant operand, and the formula text prints it back.
-`frontend/src/panels/editors/CodeMirrorEditor.tsx` completes constant names after
-`global_constants.`, showing each one's type and its value for the active source.
-`frontend/src/panels/editors/polarsSteps/useRenderedSteps.ts` keys its free-code column results
-on the active source and on the values of the constants the steps read, as well as the steps
-and the known columns, and discards a response for a key that is no longer current.
-
-**Testing scenarios.**
-
-- GCONST-05. `tests/test_polars_steps.py`: golden renders in both positions, every slot's type
-  rule, the non-negative argument checked against every value, the name rule, and save and
-  render-route refusals. `tests/test_polars_steps_catalogue.py`: the operand kind is in both
-  vocabularies. `frontend/src/panels/editors/polarsSteps/__tests__/fields.test.tsx` and
-  `frontend/src/panels/editors/polarsSteps/__tests__/formula.test.ts`: the Constant kind,
-  type filtering and the formula round trip.
-  `frontend/src/panels/editors/polarsSteps/__tests__/useRenderedSteps.test.ts`: free code whose
-  output column depends on a split constant refreshes its columns after a source switch and after
-  a constant edit, and a late response for the old key is discarded.
-  `frontend/e2e/polars-steps.spec.ts`: a filter on a
-  split constant previews a different row count under each source.

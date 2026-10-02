@@ -511,3 +511,67 @@ def bind_function_view(
     copy.__annotations__ = fn.__annotations__
     copy.__dict__.update(fn.__dict__)
     return copy
+
+
+# ---------------------------------------------------------------------------
+# Step references
+# ---------------------------------------------------------------------------
+
+
+def reference_problem(reference: Any, constants: Mapping[str, GlobalConstant]) -> str | None:
+    """Why a step's Constant operand cannot read its constant, or None when it can.
+
+    *reference* is a :class:`haute._polars_steps.ConstantReference`; the
+    constant must exist, have a type its slot takes, and hold no value below
+    zero where the slot needs one of at least zero.
+    """
+    constant = constants.get(reference.name)
+    if constant is None:
+        return f"Global constant {reference.name!r} is not defined."
+    if constant.type not in reference.types:
+        return (
+            f"Global constant {reference.name!r} is {constant.type}; this value takes "
+            f"{' or '.join(reference.types)}."
+        )
+    if reference.non_negative:
+        values = (
+            {"every source": constant.value}
+            if constant.by_source is None
+            else dict(constant.by_source)
+        )
+        for source, value in values.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value < 0:
+                where = source if constant.by_source is None else f"source {source!r}"
+                return (
+                    f"Global constant {reference.name!r} must be zero or more; it is {value} "
+                    f"for {where}."
+                )
+    return None
+
+
+def node_step_constant_problems(
+    node: GraphNode,
+    constants: Mapping[str, GlobalConstant],
+) -> list[tuple[int, str]]:
+    """``(step_index, reason)`` for each Constant operand of *node*'s steps that cannot read.
+
+    A node without steps, or whose steps do not render, has none: an invalid
+    step list is refused by its own validation.
+    """
+    from haute._polars_steps import PolarsStepError, render_polars_steps, stepped_surface_for
+    from haute._types import NodeType
+
+    steps = node.data.config.get("steps")
+    if not isinstance(steps, list):
+        return []
+    try:
+        surface = stepped_surface_for(NodeType(node.data.nodeType))
+        rendered = render_polars_steps(steps, start=surface.start)
+    except (ValueError, PolarsStepError):
+        return []
+    problems: list[tuple[int, str]] = []
+    for reference in rendered.constant_references:
+        problem = reference_problem(reference, constants)
+        if problem is not None:
+            problems.append((reference.step_index, problem))
+    return problems

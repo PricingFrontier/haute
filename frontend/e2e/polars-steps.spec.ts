@@ -315,6 +315,84 @@ test.describe("Transform step builder journey", () => {
     await expect(panel.getByTestId("polars-generated-code")).toContainText("df = df.head(2)")
   })
 
+  test("filters on a split global constant and previews a different row count under each source", async ({ page }) => {
+    test.slow()
+    await openApp(page)
+
+    // A stepped Data Input over the 30 sample rows, filtering on value > 0.
+    await seedGraph(page, (nodes) => {
+      nodes.push({
+        id: "constant_filter",
+        type: "custom",
+        position: { x: 60, y: 520 },
+        data: {
+          label: "constant_filter",
+          nodeType: "dataInput",
+          config: {
+            inputType: "file",
+            format: "parquet",
+            mode: "scan",
+            path: "data/sample.parquet",
+            arguments: {},
+            steps: [
+              {
+                id: "f",
+                kind: "filter",
+                match: "all",
+                conditions: [{ column: "value", operator: "gt", value: { kind: "literal", type: "number", value: 0 } }],
+              },
+            ],
+          },
+        },
+      })
+    })
+
+    // A second source and a threshold split by source: 8 sample values exceed 100, 20 exceed 50.
+    await page.getByTitle("Data source").click()
+    await page.getByRole("button", { name: /Add source/i }).click()
+    const sourceInput = page.getByPlaceholder("name")
+    await sourceInput.fill("nb_batch")
+    await sourceInput.press("Enter")
+    await expect(page.getByTitle("Data source")).toContainText("nb_batch")
+    await page.getByTestId("toolbar-constants").click()
+    await page.getByTestId("constants-add").click()
+    const name = page.getByTestId("constant-name-0")
+    await name.fill("threshold")
+    await name.press("Enter")
+    await page.getByTestId("constant-split-0").click()
+    await page.getByTestId("constant-value-0-live").fill("100")
+    await page.getByTestId("constant-value-0-nb_batch").fill("50")
+
+    // The filter's value reads the constant.
+    await page.getByRole("button", { name: /Data Input node: constant_filter/i }).click()
+    const panel = page.getByTestId("node-panel")
+    await expect(panel).toBeVisible()
+    await panel.getByRole("button", { name: /^transform$/i }).click()
+    const editor = panel.getByTestId("polars-steps-editor")
+    await expect(editor).toBeVisible()
+    await editor.getByRole("button", { name: /^Step 1:/ }).click()
+    await editor.getByLabel("Filter condition 1 value kind").selectOption("constant")
+    await expect(editor.getByLabel("Filter condition 1 value constant")).toHaveValue("threshold")
+    await expect(editor.getByTestId("polars-generated-code")).toContainText("global_constants.threshold")
+
+    const previewTable = page.getByRole("table").first()
+    await page.getByRole("button", { name: "Refresh" }).click()
+    await expect(previewTable.locator("tbody tr")).toHaveCount(20)
+
+    await page.getByTitle("Data source").click()
+    await page.getByRole("button", { name: "live", exact: true }).last().click()
+    await page.getByRole("button", { name: "Refresh" }).click()
+    await expect(previewTable.locator("tbody tr")).toHaveCount(8)
+
+    // Saving keeps the operand in the sidecar and writes the constants file.
+    await save(page)
+    const inputSidecarPath = resolve(e2eProjectRoot, "rating", "config", "data_input", "constant_filter.json")
+    await expect.poll(() => existsSync(inputSidecarPath)).toBe(true)
+    const sidecar = JSON.parse(readFileSync(inputSidecarPath, "utf8")) as { steps: Array<{ conditions: Array<{ value: unknown }> }> }
+    expect(sidecar.steps[0].conditions[0].value).toEqual({ kind: "constant", name: "threshold" })
+    expect(readFileSync(mainPath, "utf8")).toContain("global_constants.threshold")
+  })
+
   test("authors a Rating Step's post-rating steps on its Polars tab and saves them to its sidecar", async ({ page }) => {
     test.slow()
     await openApp(page)

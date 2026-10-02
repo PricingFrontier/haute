@@ -452,7 +452,15 @@ a global-constant error saying that constants are read in node code while the pi
 
 Code reads a constant as `global_constants.<name>` in the code box and the free-code steps of
 every stepped node type (Transform, Data Input, External File, Rating Step, Model Score,
-Scenario Expander and Explore), and in a pipeline file's node functions.
+Scenario Expander and Explore), and in a pipeline file's node functions. A structured step
+reads one through a Constant operand, offered wherever the step editor offers a variable, and
+in a typed function argument; the step renders as `global_constants.<name>`. A comparison,
+fill, formula or branch value takes a constant of any type, a string operator's value a `text`
+one, and a function argument a constant of its type (a whole number of zero or more takes an
+`integer` whose every value is at least zero; a number takes an `integer` or a `float`; a type
+argument takes none). Save refuses a step operand naming an undefined constant, or one whose
+type or value its slot does not take, naming the node, the step and the constant, except while
+the constants file fails to load, when the definitions are unavailable.
 A node reads the constants its code names as `global_constants.<name>` (in an f-string's
 expressions too) and its steps reference.
 Code that uses the name `global_constants` any other way (passing it to a function, `getattr`
@@ -498,9 +506,8 @@ value.
 
 The editor edits constants in the Constants pane
 ([frontend-shared](../frontend-shared/high-level.md)), whose every execution request and save
-carries them. How structured steps read them is the
-[approved change contract](#approved-change-contract--global-constants) below until its
-package lands.
+carries them, and the step editor offers them as operands
+([frontend-node-editors](../frontend-node-editors/high-level.md)).
 
 ## Design rationale
 
@@ -605,44 +612,3 @@ a bad or duplicate name, a value that does not fit its type, both or neither of 
 graph warning, and no save rewrites or deletes the file. A constructor keyword naming any other
 path, a submodel constructor that names one, and any other binding of `global_constants` are
 parse errors naming the line.
-
-## Approved change contract — global constants
-
-This section specifies the parts of global constants still to be built. Declaring, storing,
-generating, saving, editing and reading them in code is present behaviour, described under
-[Global constants](#behaviour) above and in [codegen](../codegen/high-level.md),
-[expression-parsing](../expression-parsing/high-level.md) and
-[server-api](../server-api/high-level.md). Every record here is unresolved until its roadmap
-package lands. Each package folds its part into the present-tense specification of the
-component that owns it (this one and
-[frontend-node-editors](../frontend-node-editors/high-level.md)), and the last package to land
-removes this section. The [low-level contract](low-level.md#approved-change-contract--global-constants)
-names the seams, shapes and tests.
-
-- **Current limitation.** Code reads constants, and the Constants pane edits them
-  ([frontend-shared](../frontend-shared/high-level.md)), but the step editor has no Constant
-  operand.
-- **Unresolved target.** Every structured step reads a constant as `global_constants.<name>`
-  through a Constant operand.
-  [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor) builds
-  it.
-- **Non-goals.** The Constant node keeps its behaviour. Config fields outside the step editor
-  (banding edges, rating tables, optimiser bounds, file paths) and Explore pivot formulas do
-  not read constants. A constant holds one scalar value: no lists, maps or frames. A `utility`
-  module cannot read constants; its functions take them as arguments. The preamble stays
-  editable, from the Utility pane, until automatic imports replace it. Constants edits are not
-  on the canvas undo stack, as preamble edits are not. The assistant neither reads nor writes
-  constants. `haute run` keeps running the `live` source, and recovery drafts do not cover the
-  constants file.
-- **Failure and compatibility semantics.** Save refuses a step operand naming an undefined
-  constant (unless the file failed to load, when the definitions are unavailable) and one whose
-  constant has a type its slot does not take. A step's constant read fails at run time as a
-  code read does. Nothing migrates.
-- **Acceptance evidence.** The roadmap package's acceptance tests, extending the modules the
-  low-level contract names, and one browser test that filters on a split constant and previews
-  a different row count under each source.
-- **Roadmap package.** [GCONST-05](../roadmap/global-constants.md#gconst-05--constants-in-the-step-editor).
-
-**Reading a constant in a step.** A structured step reads a constant through a Constant
-operand, offered wherever the step editor offers a variable, and in a typed function argument,
-where the constant's type must fit the argument; the step renders as `global_constants.<name>`.

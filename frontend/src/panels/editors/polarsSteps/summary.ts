@@ -41,6 +41,7 @@ function operandParts(operand: Operand | undefined): SummaryPart[] {
   if (operand.kind === "literal") return [valuePart(operand)]
   if (operand.kind === "column") return [column(operand.name)]
   if (operand.kind === "variable") return [operand.name ? code(operand.name) : missing("variable")]
+  if (operand.kind === "constant") return [operand.name ? code(`global_constants.${operand.name}`) : missing("constant")]
   const inner = exprParts(operand.expr)
   return operand.expr.type === "binary" && inner.length === 1 && inner[0].kind === "code" ? [code(`(${inner[0].text})`)] : inner
 }

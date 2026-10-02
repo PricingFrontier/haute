@@ -9,13 +9,14 @@
  * names too, text is quoted, `true`/`false`/`null` are keywords, dates are
  * written `date('2024-01-01')`, and functions take the catalogue's names in
  * any case (the kept text spells them as the catalogue does) with their extra
- * arguments as plain values. Operators follow Python: `+ - * / // % **`,
+ * arguments as plain values. A pipeline global constant is
+ * `global_constants.<name>`, also as an extra argument. Operators follow Python: `+ - * / // % **`,
  * with `**` binding tightest and right-associative, and brackets group.
  * Expression types text cannot express (windows, conditionals, text joins)
  * make `formulaText` return null, and the structured editor takes over.
  */
 import { CAST_DTYPES, FUNCTIONS, literal, type FunctionArg } from "./catalogue"
-import type { BinaryOperator, CastDtype, Expr, FunctionName, LiteralOperand, Operand } from "./types"
+import type { BinaryOperator, CastDtype, Expr, FunctionArgValue, FunctionName, LiteralOperand, Operand } from "./types"
 
 const PRECEDENCE: Record<BinaryOperator, number> = { "+": 1, "-": 1, "*": 2, "/": 2, "//": 2, "%": 2, "**": 3 }
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -26,6 +27,7 @@ type Token = (
   | { kind: "number"; value: number; text: string }
   | { kind: "string"; value: string }
   | { kind: "name"; value: string; quoted: boolean }
+  | { kind: "constant"; value: string }
   | { kind: "op"; value: BinaryOperator }
   | { kind: "punct"; value: "(" | ")" | "," }
 ) & { start: number; end: number }
@@ -103,6 +105,12 @@ function tokenize(text: string): Token[] {
       if (!name) throw new FormulaError("Empty backticks in the formula.", i)
       tokens.push({ kind: "name", value: name, quoted: true, start: i, end: end + 1 })
       i = end + 1
+      continue
+    }
+    const constant = /^global_constants\s*\.\s*([A-Za-z][A-Za-z0-9_]*)/.exec(text.slice(i))
+    if (constant) {
+      tokens.push({ kind: "constant", value: constant[1], start: i, end: i + constant[0].length })
+      i += constant[0].length
       continue
     }
     const name = /^[A-Za-z_][A-Za-z0-9_]*/.exec(text.slice(i))
@@ -230,6 +238,7 @@ class Parser {
     const token = this.take()
     if (token.kind === "number") return { type: "operand", operand: literal("number", token.value) }
     if (token.kind === "string") return { type: "operand", operand: literal("text", token.value) }
+    if (token.kind === "constant") return { type: "operand", operand: { kind: "constant", name: token.value } }
     if (token.kind === "punct" && token.value === "(") {
       const inner = this.additive()
       this.expect(")", `Expected ")" after ${this.previous()}.`)
@@ -260,7 +269,7 @@ class Parser {
     if (!spec) throw new FormulaError(`Unknown function "${name}". Functions: ${FUNCTIONS.map((f) => f.value).join(", ")}.`, token.start)
     this.calls.push({ start: token.start, end: token.end, name: spec.value })
     const operand = asOperand(this.additive())
-    const args: LiteralOperand[] = []
+    const args: FunctionArgValue[] = []
     const count = `${spec.value}() takes ${spec.args.length + 1} arguments.`
     for (const arg of spec.args) {
       this.expect(",", count)
@@ -270,8 +279,12 @@ class Parser {
     return { type: "function", fn: spec.value as FunctionName, operand, args }
   }
 
-  private literalArg(fn: string, arg: FunctionArg): LiteralOperand {
+  private literalArg(fn: string, arg: FunctionArg): FunctionArgValue {
     const token = this.take()
+    if (token.kind === "constant") {
+      if (arg === "dtype") throw new FormulaError(`${fn}() expects a type here, not a constant.`, token.start)
+      return { kind: "constant", name: token.value }
+    }
     const negative = this.isOp(token, "-")
     const value = negative ? this.take() : token
     switch (arg) {
@@ -305,6 +318,8 @@ function describe(token: Token): string {
       return `text '${token.value}'`
     case "name":
       return `"${token.value}"`
+    case "constant":
+      return `global_constants.${token.value}`
     case "op":
       return `operator ${token.value}`
     case "punct":
@@ -419,6 +434,8 @@ function operandText(operand: Operand, variables: ReadonlySet<string>, parent: {
       return nameText(operand.name, variables, false)
     case "variable":
       return nameText(operand.name, variables, true)
+    case "constant":
+      return operand.name ? `global_constants.${operand.name}` : null
     case "expr": {
       if (operand.expr.type === "operand") return operandText(operand.expr.operand, variables, parent)
       const inner = exprText(operand.expr, variables)
@@ -451,7 +468,11 @@ function exprText(expr: Expr, variables: ReadonlySet<string>): string | null {
       const receiver = expr.operand.kind === "expr" ? exprText(expr.operand.expr, variables) : operandText(expr.operand, variables, null)
       if (receiver === null) return null
       const spec = FUNCTIONS.find((f) => f.value === expr.fn)
-      const args = expr.args.map((arg, index) => (spec?.args[index] === "dtype" ? String(arg.value) : literalText(arg)))
+      const args = expr.args.map((arg, index) => {
+        if (arg.kind === "constant") return arg.name ? `global_constants.${arg.name}` : null
+        return spec?.args[index] === "dtype" ? String(arg.value) : literalText(arg)
+      })
+      if (args.some((arg) => arg === null)) return null
       return `${expr.fn}(${[receiver, ...args].join(", ")})`
     }
     default:

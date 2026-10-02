@@ -1117,6 +1117,8 @@ class PolarsStepsRenderRequest(BaseModel):
     #: Where ``df`` comes from: ``input`` for a Transform (the first step
     #: chooses an input), ``frame`` for a surface whose ``df`` is already bound.
     start: Literal["input", "frame"]
+    #: The pipeline's constants; given, each Constant operand is checked against them.
+    global_constants: list[GlobalConstant] | None = None
 
 
 class PolarsStepsRenderResponse(BaseModel):
