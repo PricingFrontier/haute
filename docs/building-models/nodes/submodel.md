@@ -30,7 +30,7 @@ An instance opens as a read-only view of the shared definition, and it can only 
 
 ## Dissolving a submodel
 
-To ungroup a submodel and expand its nodes back into the parent pipeline, right-click the submodel node and choose **Dissolve Submodel**. The occurrence that owns the definition cannot be dissolved while instances still reference it: delete or dissolve the instances first.
+To ungroup a submodel and expand its nodes back into the parent pipeline, select the submodel node on its own and click **Dissolve** in the toolbar (the **Submodel** button reads **Dissolve** while a single submodel is selected), or right-click the submodel node and choose **Dissolve Submodel**. The occurrence that owns the definition cannot be dissolved while instances still reference it: delete or dissolve the instances first.
 
 ## Reuse across pipelines
 
