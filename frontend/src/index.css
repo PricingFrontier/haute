@@ -297,6 +297,12 @@
   --chart-impact-muted: #626262;
   --chart-impact-grid: #d7d7d7;
   --chart-impact-axis: #8a8a8a;
+  /* The SHAP beeswarm's feature-value colours on the panel surface: the
+     SHAP convention's low and high poles, and a grey for values with no
+     order that no low-to-high mix can be mistaken for. */
+  --chart-value-low: #008bfb;
+  --chart-value-high: #ff0051;
+  --chart-value-none: var(--text-secondary);
   --chart-series-1: var(--warning-strong);
   --chart-series-2: var(--accent);
   --chart-series-3: var(--success);

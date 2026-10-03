@@ -531,11 +531,6 @@ class TestValidateModellingValues:
                 "CatBoost does not support the Gamma loss",
                 id="family-loss",
             ),
-            pytest.param(
-                {"target": "claims", "feature_columns": ["age", "claims"]},
-                "Target column 'claims' is also listed in feature_columns",
-                id="target-is-a-feature",
-            ),
         ],
     )
     def test_a_malformed_value_is_refused_naming_the_node(

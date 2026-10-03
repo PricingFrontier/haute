@@ -28,12 +28,37 @@ results are supplied by API and result-store layers.
   Boolean, date/datetime, target, weight, and excluded columns are never offered.
 - Modelling preview exposes summary unconditionally as the fallback tab whenever a result
   exists, presents remaining tabs (coefficients/relativities, loss, lift, residuals,
-  feature importance, AVE and PDP) only when backed by non-empty result data, and resets
+  feature importance, AVE, PDP and SHAP curves) only when backed by non-empty result data, and resets
   selection to summary when the result changes. When a node has no result because the one the
   browser remembered is gone from the server (it restarted, or the job expired), its results
-  panel says so in place of the data preview: training results are not kept across a server
-  restart, so train the model again, or open its MLflow run if it was logged. The Export pane
-  reports the same fact from the same record.
+  panel shows the node's data preview, as for a node that was never trained; the Export pane
+  says the last result is no longer available and to train the model again to export it.
+- The Features tab switches between importance measures with one button each: Prediction,
+  then Loss and SHAP (mean absolute SHAP) when the result has them, then SHAP beeswarm when
+  it has beeswarm rows (CatBoost, XGBoost, LightGBM). The beeswarm draws one row per feature,
+  in mean-absolute-SHAP order, and one dot per sampled row (up to 2,000) placed by its SHAP
+  value on the link scale around a zero line; a numeric feature's dots run from the low (blue)
+  to the high (red) colour by the value's rank, and a categorical feature's or a missing
+  value's dots are grey, which no low-to-high mix resembles, with a legend entry saying they
+  have no value order. It draws on the panel surface with the other modelling charts' axis
+  text, grid lines and label colours, not a plot of its own. The dots are painted on a canvas
+  layer under the chart's labels so thousands of them stay responsive. It replaces the search and
+  Features shown controls with one line saying it shows the top 20 of N features by mean
+  |SHAP| over the sampled rows. Dots stack within their row so dense regions show as height,
+  scaled so the densest stack fits the row. Pointing at a dot names its feature, value (the
+  level for a categorical feature) and SHAP value; each feature row is a single tab stop
+  whose focus states that feature's rows and SHAP range. A closed values table lists, per
+  feature, the rows and the minimum, median and maximum SHAP value.
+- A SHAP curves tab follows PDP when the result has curves (CatBoost, XGBoost, LightGBM). It
+  uses the AvE/PDP per-feature layout and shares their selected feature. Under a log link
+  (`shap_link` `log`) it shows relativities, exp of the mean SHAP value, around a 1.0
+  baseline; otherwise mean SHAP values around 0. A numeric feature draws a line through each
+  band's mean value with a shaded 10th to 90th percentile range and a separate "(missing)"
+  point when missing rows exist; a categorical feature draws one bar per level in the
+  result's order (most rows first) with 10th to 90th percentile whiskers and a row-count
+  strip, and says how many less frequent levels are not shown. Points and bars are
+  focusable and name their band or level, rows, mean SHAP, relativity under a log link and
+  percentile range; a closed values table lists the same per point.
 - Completed training accepts missing categorical PDP levels as JSON `null` and labels
   them `(missing)` in the chart. Numeric PDP levels remain non-null. Invalid status
   responses stop polling with a visible response error for every background job type
@@ -42,16 +67,17 @@ results are supplied by API and result-store layers.
 - CatBoost and RustyStats/GLM results use Explore's full-width, equal-width preview
   buttons, with keyboard navigation and an explicitly labelled active pane. Narrow
   panels scroll the button strip horizontally rather than clipping view names.
-  Diagnostic views introduce their chart or table with a plain-language title and
-  short explanation; AvE and PDP are expanded in those introductions.
+  Diagnostic views introduce their chart or table with a plain-language title; what
+  each view shows, and how to read a chart's values, is explained in the docs rather
+  than in the pane.
 - The completed summary uses responsive, themed cards with final-test performance
   first (without a test set, when a validation fit ran and the reported diagnostics are
   in-sample, the validation fit's selection metrics lead instead, labelled with their row
   count), separately labelled diagnostics, model information, and optional GLM fit
   statistics, the regularisation actually applied, and smooth terms. When RustyStats marks a
   GLM's inference invalid (penalties, monotonicity, smoothing), coefficients show dashes and the
-  reason instead of statistics. Metric values are prominent. No reserved final test is stated
-  explicitly without presenting development diagnostics as held-out performance. Candidate selection and tuning
+  reason instead of statistics. Metric values are prominent. Without a reserved final test, no
+  card presents development diagnostics as held-out performance. Candidate selection and tuning
   retain their complete evidence in separately headed cards; warnings remain visible
   above the summary. The summary carries no export action or model path: saving the
   trained model to a file and logging it to MLflow belong to the modelling editor's
@@ -187,9 +213,11 @@ strip; it never falls through to CatBoost. Pane ownership:
   pane nor any other supported-node editor action changes it. To configure the other algorithm,
   the user creates a separate modelling node, preserving the original node and all of its settings.
 - **Features** — CatBoost gets an always-expanded feature-card browser with a
-  case-insensitive name-substring search, upstream dtype labels, and the existing explicit
-  not-found treatment/removal for stale exclusions, applied only once the upstream columns are
-  known (before then the saved exclusion count is shown instead). Each eligible feature has one compact,
+  case-insensitive name-substring search, upstream dtype labels, and the explicit
+  not-found treatment/removal for stored features that are no longer upstream columns, applied
+  only once the upstream columns are known (before then the saved feature count is shown
+  instead). Features are opt-in: every feature starts excluded on a new node, including a column
+  that appears upstream later, and including one writes it to `feature_columns`. Each eligible feature has one compact,
   single-row bordered card: the name and dtype sit on the left, followed by the current-state
   inclusion button and monotonicity selector on the right. The green **Include** or red
   **Exclude** button reports its current state and toggles that state. These are compact,
@@ -213,17 +241,15 @@ strip; it never falls through to CatBoost. Pane ownership:
   lives on each term, and terms that cannot be fitted (role, missing, or unsupported columns, and
   malformed entries) are listed with their reason and removal. Interaction cards show which main
   effects Include main effects adds, which fits each slot may use, and any conflict the backend
-  would refuse, on every card involved. The GLM pane never writes CatBoost's `exclude`,
+  would refuse, on every card involved. The GLM pane never writes CatBoost's
   `feature_columns`, `monotone_constraints`, or `feature_weights`.
 - **Params** — immediately below the Hyperparameters heading, CatBoost shows a
   Target-style **Parameter strategy** radio group with **Fixed parameters** and
   **Tune parameters** choices. Exactly one strategy body is visible. Fixed parameters
   shows only the algorithm-neutral **Parameters JSON** object editor; Tune parameters
   instead shows Trial count, Seed, Selection metric and **Search space JSON**. Neither
-  JSON editor has Apply/Revert controls or an inline explanatory block; CatBoost's
-  Parameters JSON has only a one-line note beneath it naming `one_hot_max_size`: categorical
-  columns with up to that many levels are one-hot encoded, and above it CatBoost uses target
-  statistics, which are much slower to train. A new CatBoost node's starter parameters include
+  JSON editor has Apply/Revert controls, an inline explanatory block or a note beneath it.
+  A new CatBoost node's starter parameters include
   `one_hot_max_size: 10`, visible and editable in that JSON; Haute adds no hidden default, and
   nodes created earlier keep their parameters. A syntactically
   valid top-level object updates its corresponding config automatically, except that a
@@ -367,7 +393,7 @@ settings; inline arrow-based, role/final-selection-aware monotonic controls; the
 interaction editors against the shared dtype-class and expression-grammar fixtures; unset-only algorithm selection, read-only selected-algorithm
 context, and the absence of an in-place change action; mutually exclusive fixed/tuned Params
 bodies, arbitrary params JSON round trips, valid fixed/search-space autosave, compact default
-draft presentation, CatBoost's starter `one_hot_max_size` and its Parameters note, the run
+draft presentation, CatBoost's starter `one_hot_max_size`, the run
 summary's categorical encoding, invalid/non-object/reserved-key draft persistence without Apply/Revert or
 inline warnings, selected-strategy click-time validation, and GPU task-type merge; plain setup-tab
 labels, click-time-only aggregate validation beneath Train, authoritative bounded live-history
@@ -611,8 +637,8 @@ this discrete solve a positive λ can sit beside positive slack.
   the backend's EBM rules (`ebm-max-rounds` on Parameters, `ebm-interactions` on Features).
 - An EBM result adds a Terms tab: terms ranked by importance, a main effect drawn as its shape
   (bars per category, a step line over value bins, the missing-value score stated), and an
-  interaction as a score table over its two axes, all labelled as additive link-scale term
-  scores, never SHAP. A traced EBM prediction lists one contribution per term, an interaction
+  interaction as a score table over its two axes, all additive link-scale term scores and
+  never labelled as SHAP. A traced EBM prediction lists one contribution per term, an interaction
   as one row.
 - The response guard treats fit-evidence fields and a tuning report's `final_tree_count` as
   optional, because the backend drops nulls: a GLM's evidence is its threads alone, and a

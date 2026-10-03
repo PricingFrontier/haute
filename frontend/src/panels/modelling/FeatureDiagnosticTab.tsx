@@ -4,10 +4,7 @@ import { ChartEmptyState } from "./ChartScaffold"
 import { FeatureBrowser, type FeatureRanking } from "./FeatureBrowser"
 import { useDiagnosticFeature, type SharedFeatureBrowser } from "./useDiagnosticFeature"
 
-const IMPORTANCE_RANKING: FeatureRanking = {
-  label: "Importance",
-  description: "How much each feature contributes to the model's predictions.",
-}
+const IMPORTANCE_RANKING: FeatureRanking = { label: "Importance" }
 
 /**
  * The per-feature diagnostic tab layout AvE and PDP share: a feature browser

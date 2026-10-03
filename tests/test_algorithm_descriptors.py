@@ -43,6 +43,7 @@ EVALUATION = {
 def catboost_config(**overrides: object) -> dict[str, object]:
     config: dict[str, object] = {
         "target": "y",
+        "feature_columns": ["x"],
         "algorithm": "catboost",
         "loss_function": "RMSE",
         "params": {"iterations": 10, "depth": 3},

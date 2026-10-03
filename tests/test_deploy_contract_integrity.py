@@ -520,10 +520,7 @@ class TestFeatureContractBundled:
         pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         import numpy as np
 
-        monkeypatch.setattr(
-            "haute.modelling._algorithms.CatBoostAlgorithm.shap_summary",
-            lambda *a, **kw: [],
-        )
+        monkeypatch.delattr("haute.modelling._algorithms.CatBoostAlgorithm.shap_values")
         monkeypatch.setattr(
             "haute.modelling._algorithms.CatBoostAlgorithm.feature_importance_typed",
             lambda *a, **kw: [],

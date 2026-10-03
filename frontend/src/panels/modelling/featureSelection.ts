@@ -29,11 +29,22 @@ export function roleColumns(config: Record<string, unknown>): Set<string> {
   return new Set(roleColumnReasons(config).keys())
 }
 
-/** CatBoost's final feature selection: eligible columns that are not excluded. */
+/**
+ * CatBoost's selected features: the ticked `feature_columns` minus role
+ * columns, which stay stored but dormant. Mirrors the backend's
+ * `selected_feature_columns`; features are opt-in, so nothing ticked is none.
+ */
+export function selectedFeatureColumns(config: Record<string, unknown>): string[] {
+  const roles = roleColumns(config)
+  return [...new Set(configField<string[]>(config, "feature_columns", []))]
+    .filter((name) => !roles.has(name))
+}
+
+/** CatBoost's final feature selection: eligible columns that are ticked. */
 export function finalSelectedFeatureNames(
   config: Record<string, unknown>,
   eligible: readonly ModellingColumn[],
 ): Set<string> {
-  const excluded = new Set(configField<string[]>(config, "exclude", []))
-  return new Set(eligible.filter((column) => !excluded.has(column.name)).map((column) => column.name))
+  const selected = new Set(selectedFeatureColumns(config))
+  return new Set(eligible.filter((column) => selected.has(column.name)).map((column) => column.name))
 }

@@ -67,6 +67,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/modelling/_target_check.py` | `training_target_task_issue()` — data-dependent target-column vs task/metric gate returning an actionable message (or nothing when the pairing is valid), keyed on the effective reported-metric set (explicit config metrics or the objective-implied defaults), shared by the train route's pre-dispatch validation and `TrainingJob._prepare_data`. |
 | `src/haute/modelling/_split.py` | Internal partition-mask execution used by a final or selection fit. Its `SplitConfig` is a private test seam for direct callers exercising the shared partition/fit machinery; it is not a public modelling-node config contract and is not exported. |
 | `src/haute/modelling/_metrics.py` | Primary metric functions and diagnostic data computation (double lift, AvE, residuals, actual-vs-predicted, Lorenz, PDP). |
+| `src/haute/modelling/_shap.py` | The SHAP diagnostics every SHAP-capable family shares: `shap_sample` (the seeded, shuffled sample of at most `SHAP_SAMPLE_ROWS` = 5,000 diagnostics rows) and `shap_diagnostics`, which turns the algorithm's per-row SHAP matrix into `ShapViews`: the mean-absolute summary, the beeswarm (`BEESWARM_ROWS` = 2,000 rows, `BEESWARM_FEATURES` = 20 features) and the per-feature curves (`CURVE_BANDS` = 20 numeric bands, `CURVE_LEVELS` = 30 categorical levels). |
 | `src/haute/modelling/_feature_contract.py` | `FeatureContract` build/save/load/cache, contract comparison, and categorical-level normalisation/validation. |
 | `src/haute/modelling/_signature.py` | `build_signature()` — MLflow `ModelSignature` construction with loud dtype/metadata validation, structural Date/parameterised-Datetime mapping, and the explicit no-lossy-Decimal policy. |
 | `src/haute/modelling/_candidate_run.py` | The candidate-run contract builder shared by canvas and scripted logging (`CANDIDATE_RUN_CONTRACT_VERSION`, `training_identity_sha256`, `CandidateProvenance` capture including git state, `CandidateArtifacts.require_files`, `build_candidate_run`); see [mlflow-model-registry](../mlflow-model-registry/low-level.md#candidate-run-contract). |
@@ -104,8 +105,9 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   latter can silently produce incorrect curves when columns are swapped.
   `CatBoostAlgorithm` and `GLMAlgorithm` implement it.
   Both also expose algorithm-specific methods that `_training_job._compute_metrics`
-  probes with `hasattr()` rather than an interface method — `shap_summary` /
-  `feature_importance_typed` (CatBoost only), `glm_result` (GLM only).
+  probes with `hasattr()` rather than an interface method — `shap_values`
+  (CatBoost, XGBoost, LightGBM), `feature_importance_typed` (CatBoost only),
+  `glm_result` (GLM only).
 - **`FitResult`** (`_algorithms.py`) — `model`, `best_iteration: int | None`,
   `loss_history: list[dict[str, float]]`. Returned by every algorithm's `fit()`.
 - **`IterationCallback`** (`_algorithm_base.py`) — `(iteration, total, metrics,
@@ -116,12 +118,25 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   its fit, a GLM's first call (its second carries the one deviance row its history holds), and
   CatBoost's GPU fit, which polls only the iteration. The training worker
   forwards both in its `iteration` progress event, whose `history` field is that row or
-  `null`. The job's live `train_loss_history` appends each row, keeps the last
-  `HAUTE_TRAIN_LOSS_HISTORY_LIMIT` (default 200, setting `train_loss_history_truncated`),
-  and the live chart finds its `train_` and `eval_` keys as the Loss tab does. Only the fit
-  whose model the job keeps sends iteration events: after a refit that is the final fit
-  (no evaluation set), while a validation fit that is refit reports only its progress
-  message.
+  `null`. Every fit sends iteration events (each validation fit, cross-validation fold
+  and tuning trial fit, then the final fit), paced by the run's `_LiveRounds`: a fit's
+  first and last rounds always pass, the rounds between at most once a second until the
+  run has spent 3,000 of them, keeping the run inside the worker's progress-event limit.
+  Each fit's per-round callback (`_FitRounds`) checks cancellation every round and, on a
+  paced round, reports "Iteration i of n" across its training span before forwarding the
+  row; when the fit returns, `finish` sends a last round the pacing held back, so a fit
+  that early stopping ends before its budget still ends its live curve there. The
+  job's live `train_loss_history` holds the current fit: a row whose iteration does not
+  follow the last starts a new history, and past `HAUTE_TRAIN_LOSS_HISTORY_LIMIT`
+  (default 200) rows `_append_live_loss_row` compacts it to its first and newest rows,
+  the rows holding each value's lowest and highest so far, and the first row to reach
+  each of the even buckets the rest of the limit splits the fit's rounds into, so the
+  rows span every round so far and keep the fit's extremes
+  (`train_loss_history_truncated` records a dropped row); a limit too small to hold the
+  first, newest and extreme rows fails with an error naming the setting. Iteration events update only
+  the round readout and the history; the job's progress fraction and message come from
+  its progress events. The live chart finds its `train_` and `eval_` keys as the Loss
+  tab does.
 - **`ALGORITHM_REGISTRY`** (`_algorithms.py`) — `dict[str, type[BaseAlgorithm]]`,
   `{"catboost": CatBoostAlgorithm}` unconditionally; `"glm": GLMAlgorithm` is added only
   if `import rustystats` succeeds (lazy `try/except ImportError` at module import time),
@@ -191,10 +206,21 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   projects those fields into the `TrainingJob.params` mapping consumed by RustyStats.
   An interaction entry is
   `{"factors": [...], "specs": {factor: override}, "include_main": bool}`;
-  `specs` holds only `linear`, `categorical`, `bs`, or `ns` overrides. `exclude` never
-  narrows a GLM: a GLM feature is in the model exactly when it has a term or is a filled
-  interaction factor, and `build_training_job_kwargs` passes `exclude=[]` for GLM. Explicit
-  `feature_columns` retains its established precedence over a stale exclusion.
+  `specs` holds only `linear`, `categorical`, `bs`, or `ns` overrides. A GLM feature is in
+  the model exactly when it has a term or is a filled interaction factor, and
+  `build_training_job_kwargs` passes `feature_columns=None` for GLM.
+- **`feature_columns`** — the CatBoost feature selection, opt-in. `_train_config.py` owns
+  `string_list_config` (a validated, de-duplicated column-name list),
+  `role_column_reasons` (each role column mapped to its role in the precedence target,
+  weight, offset, fold, identifier, evaluation; the frontend's `roleColumnReasons` mirrors
+  it) and `selected_feature_columns` (the stored list minus role columns, in stored order).
+  `build_training_job_kwargs` passes the selected list, so a dormant role entry never
+  reaches `TrainingJob` or the exported script, and never passes `exclude`.
+  `training_objective_issue` reports an empty selection ("Modelling config has no
+  features. Tick at least one feature on the Features pane."), so the train route refuses
+  it with HTTP 400 before any pipeline execution. `reject_removed_config_keys` refuses a
+  modelling config carrying the removed `exclude`, naming `feature_columns`. `TrainingJob` keeps its `exclude` argument as a scripting lever: with no
+  `feature_columns`, a script's features are every column except the roles and `exclude`.
 - **`offset`** — maps to RustyStats `exposure=` when the effective link (explicit
   `link`, else `rustystats.formula.get_default_link(family)`) is `log`, and to `offset=`
   otherwise, so the column stays a multiplier under a log link and additive elsewhere;
@@ -203,9 +229,9 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   configured feature name to the exact integer `-1` or `1` (Boolean and zero are invalid).
   CatBoost only. `build_training_job_kwargs` passes `None` for GLM, and `TrainingJob`
   rejects a GLM job constructed with the argument; GLM monotonicity lives on each term's
-  `monotonicity` key. For CatBoost, `build_training_job_kwargs` removes entries named by
-  `exclude` from the effective job mapping without mutating stored config; an empty
-  effective mapping becomes `None`. `_validate_monotone_constraints` runs before
+  `monotonicity` key. For CatBoost, `build_training_job_kwargs` keeps only entries named by
+  `selected_feature_columns` in the effective job mapping without mutating stored config; an
+  empty effective mapping becomes `None`. `_validate_monotone_constraints` runs before
   `_split_data`; it requires a mapping with non-empty string keys, rejects names not in
   the final feature list, and accepts only canonical numeric contract dtypes
   (`Int64`/`Float64`). The resulting validated mapping is passed unchanged to
@@ -276,8 +302,9 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   import so no route/modelling cycle is introduced.
 
 - **`TrainingFeatureSelectionDiagnosticPayload`** (`schemas.py`) — the version-1
-  explanation of the pre-training feature choice. `mode` is `explicit`, `all_except`,
-  or `glm_terms`; `feature_count` must equal the selected-feature collection's total;
+  explanation of the pre-training feature choice. `mode` is `explicit` (CatBoost's
+  selected features) or `glm_terms`; an excluded column's reason is its role,
+  `not_selected`, or `not_in_formula`; `feature_count` must equal the selected-feature collection's total;
   selected features, retained metadata, and excluded columns are deterministically
   ordered and capped at 128 entries with `available|truncated` state. `TrainResponse`
   and `TrainStatusResponse` carry the payload additively as `feature_selection`, or
@@ -300,8 +327,8 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    solver validity (`validate_glm_params`) or, for every other family, loss validity against
    the selected family's own descriptor (`algorithm_descriptor(algorithm).native_loss(task,
    loss)`), so a loss that family supports and CatBoost does not (Gamma for LightGBM, XGBoost
-   and EBM) is not refused in CatBoost's name, and a target that is not also in
-   `feature_columns`. Save validation and the training builder run the same function; then
+   and EBM) is not refused in CatBoost's name. Save validation and the training builder run
+   the same function; then
    `training_objective_issue` for completeness); under
    `_start_lock`, reject if another job is already `"running"`
    (`_check_no_concurrent_jobs`), create the job record, and register its cancellation
@@ -357,7 +384,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
      `materialisation_estimate_unavailable` rejection an uncapped surface must raise;
    - the request is plain picklable data (`graph`, `node_id`, `job_id`, `source`,
      `parquet_path`, modelling `config`, `project_root`, `row_limit`,
-     `exclude`, `keep_columns`, `required_columns_by_node`, `preamble_supplied`, and the
+     `keep_columns`, `project_to_keep_columns`, `required_columns_by_node`, `preamble_supplied`, and the
      plan's `seed_plan` handoff); the child never touches the `JobStore`.
    - the job's `execution_metrics` are the reporting process's metrics carrying the whole
      job's evidence (`ExecutionContext.metrics_with_worker_evidence`): the parent adopts the
@@ -371,9 +398,9 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    `prepare_inputs=False` — seeds read, the modelling node's producer and every join, fan-out,
    and materialisation captured into shared snapshots, no checkpoint directory — holding the plan until the sink completes, derives the version-1
    feature-selection diagnostic from the materialised schema, rejects HTTP
-   422/`contract_error` if target/metadata/exclusion rules leave no feature columns, validates
-   the required columns actually arrived, projects away excluded columns while retaining
-   explicit `feature_columns` even when a stale `exclude` entry also names them (composing
+   422/`contract_error` if target/metadata rules leave no feature columns, validates
+   the required columns actually arrived, and for CatBoost (`project_to_keep_columns`)
+   projects away every column outside the role columns and selected features (composing
    column drops into an admitted recipe), writes the prepared frame to the parent's temp parquet
    with a single `write_file` call under the context's `training_sink_write` stage — which
    slices the frame directly when sliceable (`strategy="sliced"`), or slices the recipe's input
@@ -531,7 +558,8 @@ omit it retain the constructor-only internal/test-seam split pipeline described 
    to the outer job. Messages identify the current fit, total fits (including the
    final model), and current iteration/total when the algorithm supplies them.
    Fit-local fractions map into monotonically increasing overall progress. Selection
-   metrics never enter the final model's iteration callback or loss chart. Progress
+   fits stream their own loss rows to the live chart, which starts afresh with each fit;
+   selection metrics never enter the final model's loss history. Progress
    callbacks retain cancellation and memory checkpoints; a progress-only caller
    receives iteration updates even without an execution context.
    CatBoost callback iteration numbers are already one-based; the displayed count
@@ -635,8 +663,7 @@ experiment logs nothing.
    record (`job_type="dispersion_estimate"`).
 4. `_estimate_ram` and `_execute_and_sink` reuse the exact same helpers `start()` uses
    to materialise the node's training frame — same pipeline execution, projection, and
-   seeded row sampling, including preservation of explicit features that also appear
-   in `exclude` — so the profiled data matches what a real training run would
+   seeded row sampling — so the profiled data matches what a real training run would
    see. The row limit is additionally clamped to `_DISPERSION_ESTIMATE_ROW_CAP`
    (200,000): the profile search runs ~10-30 IRLS fits, so it samples rather than
    paying full-data cost per candidate — 200k rows pins a single dispersion scalar far
@@ -1286,9 +1313,9 @@ potentially large copy on its threadpool.
 - Feature contracts are written only to each model's canonical companion path.
 - Column-projection pushdown (`_glm_select_columns` / `_catboost_select_columns` /
   `_training_required_columns_by_node`) bounds parquet-read memory: GLM reads only its
-  term + target + weight + offset columns; CatBoost's required-columns demand is an
-  "all except" projection (everything but excluded/target/weight/offset) rather than
-  an unbounded "unknown" demand.
+  term + target + weight + offset columns; CatBoost's required-columns demand is the
+  exact set of selected features and role columns rather than an unbounded "unknown"
+  demand.
 - Every run-owned temp parquet is tracked with an `owns_tmp` flag at each stage; the
   happy path frees each file as soon as the next stage no longer needs it, and a
   `finally`-block abort-safety net (`_cleanup_owned_temp_parquets`) removes anything
@@ -1411,13 +1438,66 @@ rows/features) and retry.
   computed for that missing level. The frontend response contract accepts these levels
   and labels them `(missing)`; numeric grid values remain non-null.
 - `_compute_metrics` reports `Computing SHAP values` only immediately before an
-  available `shap_summary` call, then reports `Computing loss-based feature
+  available `shap_values` call, then reports `Computing loss-based feature
   importance` before constructing its pool/calling `feature_importance_typed`.
   Both progress callbacks run outside the optional-diagnostic exception guards,
   so cancellation between stages propagates rather than being recorded as an
-  optional diagnostic failure. Existing 1,000-row SHAP sampling and full-partition
-  loss importance are unchanged. Targeted tests pin stage order, the absence of
-  a SHAP stage for algorithms without it, and cancellation before loss importance.
+  optional diagnostic failure. Loss importance stays full-partition. Targeted tests
+  pin stage order, the absence of a SHAP stage for algorithms without it, and
+  cancellation before loss importance.
+- SHAP is computed once per run, on `shap_sample(diag_df)`: `diag_df.sample(n,
+  seed=42, shuffle=True)` with `n = min(height, 5,000)`, so the rows come in random
+  order even when the partition is smaller than the cap, and the beeswarm's leading rows
+  are a uniform sample rather than the partition's leading (on a temporal split, oldest)
+  rows. Every SHAP-capable adapter receives this sample: XGBoost and LightGBM no
+  longer compute contributions over the whole partition. `shap_values(model, df,
+  features, cat_features)` returns a `float64` matrix of one row per sampled row and
+  one column per feature in training order, without the bias column; an adapter
+  whose model records a different feature order raises rather than mislabelling
+  columns. `shap_diagnostics` builds every view from that matrix, and the job
+  assigns them, with `shap_link`, together: a failure anywhere records one `shap`
+  entry in `diagnostics_errors` and leaves `shap_summary`, `shap_beeswarm` and
+  `shap_curves` empty and `shap_link` null.
+  - `shap_summary` is `[{feature, mean_abs_shap}]`, largest first, ties in training
+    order.
+  - `shap_beeswarm` is one entry per feature for the first 20 features of
+    `shap_summary`, in that order: `{feature, kind, shap_values, values,
+    value_ranks}`, where the three lists hold one item per plotted row (the first 2,000
+    sampled rows) in the same row order. `kind` is `categorical` for a feature in
+    `cat_features`, else `numeric`. SHAP values are rounded to 4 significant figures.
+    A numeric value is the column cast to `Float64` (as `encode_frame` casts it), NaN
+    reported as null, rounded to 6 significant figures; its rank is the average rank
+    among the plotted rows' non-null values, scaled to 0 (lowest) to 1 (highest) and
+    rounded to 3 decimals, and is null for a null value or when the feature has fewer
+    than two distinct non-null values. A categorical value is the level as a string
+    (null when missing) and its rank is always null.
+  - `shap_curves` is one entry per feature, in `shap_summary` order, over every sampled
+    row: `{feature, kind, points, levels_omitted}`. Each point is `{value, low, high,
+    rows, mean_shap, p10_shap, p90_shap}` (percentiles by linear interpolation). A
+    numeric feature with at most 20 distinct non-null values has one point per value
+    (`low == high == value`); otherwise its values are cut at their 0th, 5th, ...,
+    100th percentiles, duplicate cut points merged, a value on an inner cut point
+    falling in the upper band, and each non-empty band reports its lowest and highest
+    value as `low`/`high` and its mean value as `value`. Points run in ascending value
+    order, then one point with null `value`, `low` and `high` for the rows whose value
+    is null or NaN. A categorical feature's points are its 30 most frequent levels
+    (a missing level, `value` null, counted like any other), most rows first with
+    ties in level order, `low`/`high` null, and `levels_omitted` counts the levels left
+    out (always 0 for a numeric feature).
+  - `shap_link` is `logit` for a classification task, else the run's offset link
+    (`log` for CatBoost `Poisson`/`Tweedie` and the native families' log-link losses,
+    else `identity`), and null when no SHAP views exist.
+  - `TrainShapBeeswarmFeature` and `TrainShapCurveFeature` in `schemas.py`
+    (`extra="forbid"`) refuse lists of unequal length, values inconsistent with the
+    kind (text for a numeric feature, a number or rank for a categorical one, a numeric
+    band whose value is outside its `low`..`high`, more than one missing point or a
+    numeric missing point that is not last, omitted levels on a numeric feature), a
+    rank outside 0 to 1, a point with no rows, and a 10th percentile above the 90th.
+    `TrainResponse` requires `shap_link` exactly when `shap_curves` is non-empty. The
+    training worker sends its response with `exclude_none`, so a curve point's `value`,
+    `low` and `high` default to null: an absent field is a null one, and the published
+    response carries the nulls again.
+  - MLflow (`shap/`) and the model card log `shap_summary` only.
 - **MLflow logging errors** — `_log_model_card` inside `log_experiment` is wrapped in
   `try/except Exception: logger.warning(...)`, so a model-card bug never fails an
   otherwise-successful experiment log; `build_run_url` similarly catches and returns
@@ -1478,7 +1558,7 @@ rows/features) and retry.
   directly off a data input writes `sliced` with rows, order and schema equal to the native
   result; a modelling node over a chunk-local filter parent writes its prepared parquet
   `input_sliced` across several slices, reporting `training_write_strategy` and
-  `training_write_input_slices` through the worker path; column exclusions compose into the
+  `training_write_input_slices` through the worker path; dropping unselected columns composes into the
   write recipe; a row-limit sample takes the native path with
   `training_write_native_reason="row_limit_sample"` while a sliceable sample records no native
   reason; a mismatched recipe degrades to native with
@@ -1585,6 +1665,24 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
 - `test_train_service_coverage.py` and
   `test_train_service_helpers_coverage.py` — `TrainService` error/cleanup
   branches and its pure column-demand helper functions.
+- `test_shap_diagnostics.py` — `shap_sample` caps at 5,000 rows, shuffles a smaller
+  partition and is deterministic; `shap_diagnostics` orders the summary largest first,
+  keeps the beeswarm to the summary's first 20 features and the first 2,000 rows, rounds
+  its SHAP and numeric values, ranks numeric values with ties averaged, gives a null or
+  NaN value and a single-valued feature null ranks, and reports categorical levels as
+  strings with null ranks; curves give a few-valued numeric feature one point per value,
+  band a many-valued one into at most 20 ordered bands whose bounds cover their rows,
+  put missing rows last, keep a categorical feature's 30 most frequent levels with the
+  rest counted as omitted, and report each group's rows, mean and percentiles; an XGBoost
+  model whose feature order differs from the requested one raises; the payload models
+  refuse unequal lengths, kind-inconsistent values and inconsistent curve points, and
+  `TrainResponse` refuses curves without a link. `test_xgboost_family.py` and
+  `test_lightgbm_family.py` train a real model on more than 5,000 diagnostics rows and
+  prove the adapter's `shap_values` receives exactly 5,000 rows, the result carries a
+  2,000-row beeswarm and a curve per feature, and `shap_link` names the loss's link.
+  `test_training_worker_protocol.py::test_train_service_publishes_shap_views_with_their_nulls`
+  sends SHAP views with missing values and categorical levels through the worker and the
+  service's publication and proves their nulls survive.
 - `test_algorithms_coverage.py` — targeted coverage of `_algorithms.py` /
   `_training_job.py` paths not hit elsewhere (platform-specific RSS reads, CatBoost and
   MLflow mocked out via `unittest.mock`).
@@ -1764,9 +1862,12 @@ suites prove the same canonical vocabulary and bounded lifecycle end to end.
   and `final_test` displays as Test. Internal keys and split calculations are unchanged.
 - `CommonFeatureConfig` keeps aligned inclusion, feature, type and monotonicity
   columns. Type labels use `getDtypeColor`; monotonicity uses the existing coloured
-  ↓ / − / ↑ buttons with accessible names and pressed states. Excluded and nonnumeric
-  features keep those controls disabled, and excluding a feature preserves its saved
-  constraint for re-inclusion.
+  ↓ / − / ↑ buttons with accessible names and pressed states. Every checkbox starts
+  unticked: the pane writes only `feature_columns`, and Include all / Exclude all add or
+  remove every eligible column. Unselected and nonnumeric features keep the monotonicity
+  controls disabled, and unticking a feature preserves its saved constraint for
+  re-selection. A stored feature that is not an upstream column is listed as not found
+  with a remove action once the columns are known.
 - `trainingObjective.ts` shares evaluation issue detection between Split, tab readiness
   and Train. Fraction sums at or above one are invalid for non-temporal single
   validation. CatBoost Tweedie power is a finite number in the open interval (1, 2),
@@ -1912,7 +2013,7 @@ used for staged input.
 ## Native model-family adapters
 
 - A new-family adapter pairs a `BaseAlgorithm` subclass (`fit`, `predict`, `feature_importance`,
-  `shap_summary`, `save`) with a self-describing model wrapper. `BaseAlgorithm`, `FitResult` and
+  `save`, and `shap_values` when the family has SHAP) with a self-describing model wrapper. `BaseAlgorithm`, `FitResult` and
   `IterationCallback` live in `src/haute/modelling/_algorithm_base.py`, so an adapter module can
   subclass them without importing `_algorithms` (which registers every adapter).
 - `src/haute/modelling/_native_encoding.py` is the shared categorical encoding:

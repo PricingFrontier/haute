@@ -255,6 +255,7 @@ def test_haute_train_logs_an_exported_script_with_an_experiment(
             {
                 "name": "freq",
                 "target": "y",
+                "feature_columns": ["x"],
                 "algorithm": "catboost",
                 "task": "regression",
                 "loss_function": "RMSE",

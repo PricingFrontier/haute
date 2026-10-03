@@ -725,21 +725,15 @@ class CatBoostAlgorithm(BaseAlgorithm):
         )
         return [{"feature": name, "importance": float(imp)} for name, imp in pairs]
 
-    def shap_summary(
+    def shap_values(
         self,
         model: Any,
         df: pl.DataFrame,
         features: list[str],
         cat_features: list[str] | None = None,
-        max_rows: int = 1000,
-    ) -> list[dict[str, Any]]:
-        """Compute mean |SHAP| per feature using CatBoost's native SHAP.
-
-        Subsamples to max_rows for performance. Returns
-        [{feature, mean_abs_shap}, ...] sorted by importance desc.
-        """
-        sample = df.sample(min(len(df), max_rows), seed=42) if len(df) > max_rows else df
-        pool = _build_pool(sample, features, cat_features)
+    ) -> np.ndarray:
+        """CatBoost's native SHAP values for every row of *df*, one column per feature."""
+        pool = _build_pool(df, features, cat_features)
 
         # CatBoost ShapValues returns shape (n_samples, n_features + 1), last col is base value
         shap_values = model.get_feature_importance(data=pool, type="ShapValues")
@@ -747,11 +741,7 @@ class CatBoostAlgorithm(BaseAlgorithm):
         # Ensure 2D and drop the base value column
         if shap_values.ndim == 1:
             shap_values = shap_values.reshape(1, -1)
-        shap_values = shap_values[:, :-1]
-
-        mean_abs = np.abs(shap_values).mean(axis=0)
-        pairs = sorted(zip(features, mean_abs), key=lambda x: x[1], reverse=True)
-        return [{"feature": name, "mean_abs_shap": float(val)} for name, val in pairs]
+        return np.asarray(shap_values[:, :-1], dtype=np.float64)
 
     def save(self, model: Any, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

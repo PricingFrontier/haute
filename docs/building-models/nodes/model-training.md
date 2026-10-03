@@ -68,7 +68,7 @@ XGBoost, LightGBM and EBM it has three sections; the GLM's version is described 
 |---|---|
 | **Target column** | The column the model predicts. Pick it from the searchable list (**Select target…** until you do). Training is blocked with **Select a target column.** until it is set. |
 | **Objective** | The training loss, one button per loss the family supports (see the table above). Choosing a loss also sets the task (regression or classification) and switches on that loss's usual metrics; clicking the selected loss again clears it. Training is blocked until a loss is chosen, because an unset loss would silently train under the library default. MAE is not offered for an EBM. |
-| **Variance power** | Shown for the **Tweedie** loss: a slider and a number between 1 (Poisson) and 2 (Gamma), exclusive. A new Tweedie selection starts at 1.5. A saved value outside that range shows **Saved variance power must be greater than 1 and less than 2.** |
+| **Variance power** | Shown for the **Tweedie** loss: a slider with a number box beside it, between 1 (Poisson) and 2 (Gamma), exclusive. A new Tweedie selection starts at 1.5. A saved value outside that range shows **Saved variance power must be greater than 1 and less than 2.** |
 | **Positive class** | Shown for a classification loss when the target is not Boolean: the label the model predicts the probability of. Predictions above 0.5 are labelled with it. For a numeric target the label reads **Positive class (only if the labels are not 0/1)**; for text labels it is required and shows **Choose which label is the positive class.** until set. |
 
 Binary classification needs exactly two target classes. A Boolean or 0/1 target is
@@ -117,9 +117,10 @@ If an estimate fails, the pane shows **Estimation failed:** and the reason.
 ## The FEATURES pane
 
 For CatBoost, XGBoost, LightGBM and EBM the pane lists every column that could be a
-feature, with a count of how many are included and excluded. Columns that already have a
-role (target, weight, offset, and the group or date column the split uses) are listed
-under **Excluded from predictors** and are never features.
+feature, with a count of how many are included and excluded. Every feature starts
+unticked on a new node: tick the ones the model should learn from. Columns that already have a
+role (target, weight, offset, and the group or date column the split uses) are left out
+of the list and are never features.
 
 - **Search features** narrows the list by name.
 - **All**, **Included** and **Excluded** filter the list by membership; each shows its count.
@@ -129,22 +130,21 @@ under **Excluded from predictors** and are never features.
   no constraint (the default) and **↑** increasing. The buttons are disabled for a
   non-numeric feature (**Monotonicity is only available for numeric features.**) and for an
   excluded one (**Include this feature to set monotonicity.**).
-- An excluded column that is no longer upstream shows as **<name> - not found** with a
-  button to remove the exclusion.
+- A ticked column that is no longer upstream shows as **<name> - not found** with a
+  button to remove it.
 
-Feature selection is explicit. Haute uses every available column except the target,
-weight, offset, any fold or identifier columns, the group or date column the split uses,
-and the columns you exclude here. If your data contains ID columns, dates, or columns
-derived from the target, exclude them to prevent data leakage. The target and weight are
-kept out because they have training roles; exclusions are for identifiers, dates,
-leakage-prone fields, and any other columns you deliberately do not want the model to learn
-from. The training result records the final ordered feature set, the retained metadata, and
-every excluded column with its reason.
+Feature selection is explicit: Haute trains on exactly the columns you tick, and a column
+that appears upstream later stays unticked until you tick it. Until at least one feature is
+ticked, the pane shows **Tick at least one feature on the Features pane.** and training is
+blocked. If you later give a ticked column a role (for example make it the target), it stops
+being a feature while it has that role and is ticked again once it no longer does. Leave ID
+columns, dates and columns derived from the target unticked to prevent data leakage. The
+training result records the final ordered feature set, the retained metadata, and every
+excluded column with its reason.
 
 Haute validates feature selection before collecting training data, so a missing, invalid,
 or unsuitable feature fails clearly before a large collection begins. See
-[Execution Strategy](../execution-strategy.md) for the all-except strategy and for reading
-execution diagnostics.
+[Execution Strategy](../execution-strategy.md) for reading execution diagnostics.
 
 XGBoost and LightGBM refuse monotone constraints with the MAE loss: training is blocked
 with a message asking you to remove them here or choose another loss. XGBoost's
@@ -165,8 +165,8 @@ monotone-constrained feature cannot take part in an interaction.
 
 ### GLM terms and interactions { #glm-features }
 
-A GLM's features are its terms and interaction cards; the exclusions and monotonicity
-buttons above do not apply to it.
+A GLM's features are its terms and interaction cards; the feature tick boxes and
+monotonicity buttons above do not apply to it.
 
 The **FEATURES** list shows how many columns are in the model. Above it:
 
@@ -274,7 +274,7 @@ For CatBoost, GPU training is set in the **TRAIN** pane rather than here.
     | `learning_rate` | Step-size shrinkage: smaller values are slower but often more accurate |
     | `l2_leaf_reg` | L2 regularisation of leaf values |
     | `early_stopping_rounds` | Stop a validation fit when its metric stops improving |
-    | `one_hot_max_size` | Categorical columns with up to this many levels are one-hot encoded; above it CatBoost uses target statistics, which are much slower to train. The pane repeats this under the box, and the **TRAIN** pane's run summary shows the resulting **Categorical encoding**. |
+    | `one_hot_max_size` | Categorical columns with up to this many levels are one-hot encoded; above it CatBoost uses target statistics, which are much slower to train. The **TRAIN** pane's run summary shows the resulting **Categorical encoding**. |
 
 ??? info "XGBoost parameters"
     XGBoost trains CPU histogram trees. **Parameters JSON** accepts `num_boost_round`,
@@ -477,8 +477,12 @@ selecting the CPU or reducing rows or features.
   progress message. If anything blocks training, a **Complete before training** list names
   each problem with a **Go to …** link to the pane that fixes it.
 - **Cancel training** stops a run in progress.
-- While a CatBoost, XGBoost or LightGBM model trains, the pane draws its loss curve live;
-  a tuned run also shows the trial and fold it is on and the best objective so far.
+- While a CatBoost, XGBoost or LightGBM model trains, the pane draws its loss curve live,
+  for every fit in the run: each validation fit, cross-validation fold and tuning trial,
+  then the final fit. Each fit starts a fresh chart whose axes are set from its first round:
+  rounds from 0 to the fit's round budget, and loss from 0 to a little over the starting
+  loss, so the curve fills in as the fit trains. A tuned run also shows the trial and fold
+  it is on and the best objective so far.
 - **Config changed since last training** appears when you change a training setting after
   training, with **Re-train** to train again.
 
@@ -548,9 +552,29 @@ appears only when the result has something to show in it:
   and a refit, it draws the validation fit and says which fit it is.
 - **Lift**: how well predictions separate lower and higher outcomes.
 - **Residuals**: prediction errors and actual against predicted.
-- **Features**: feature importance.
+- **Features**: feature importance, with a button per measure. **Prediction** is the
+  model's own importance; **Loss** (CatBoost) is how much the loss worsens without each
+  feature, which can be negative, and features are ranked by its size; **SHAP** (CatBoost, XGBoost, LightGBM) is each feature's mean absolute SHAP
+  value. **SHAP beeswarm** shows the top 20 of those features, one dot per sampled row:
+  how far right or left a dot sits is how much that row's value pushed its prediction up
+  or down (on the model's link scale), and its colour runs from blue for a low value to
+  red for a high one. A categorical feature's dots have no value order and take one
+  colour; point at a dot to see its row's value. SHAP is computed on a sample of up to
+  5,000 diagnostics rows, and the beeswarm draws 2,000 of them.
 - **AvE**: actual against expected across each feature's groups, with exposure.
 - **PDP**: partial dependence, how predictions change as one feature varies.
+- **SHAP curves** (CatBoost, XGBoost, LightGBM): for each feature, the average SHAP value
+  of the sampled rows in each band of its values (up to 20 bands) or in each of its 30
+  most common levels, with a shaded range from the 10th to the 90th percentile and the
+  rows with a missing value shown on their own. For a Poisson, Gamma or Tweedie loss the
+  curve reads as a relativity around 1.0, like a GLM's relativities; for other losses it
+  shows the average SHAP value around 0. Unlike PDP, which sets every row to the same
+  value, it only uses the values the rows really have.
+
+In the **AvE**, **PDP**, **SHAP curves** and **SHAP beeswarm** charts, point at a bin, point,
+band, level or dot, or move to it with the Tab key, and the line under the chart shows its
+exact values; a closed table under each chart lists every value. In **Terms**, point at a
+bin to see its score.
 
 The Summary keeps model-selection evidence distinct from final performance:
 
@@ -571,7 +595,8 @@ The Summary keeps model-selection evidence distinct from final performance:
   node's **Parameters JSON** and turns tuning off, after asking.
 - An EBM's **Terms** view shows each main effect's shape (including the score for
   missing values) and each interaction's score table, as additive scores on the model's
-  link scale. They are the model itself, not SHAP values.
+  link scale (log for Poisson, Gamma and Tweedie; log-odds for Logloss): the prediction is
+  the intercept plus every term's score. They are the model itself, not SHAP values.
 - A GLM shows its fit statistics, the penalty actually applied (with the folds, rule,
   and seed when it was cross-validated), and each automatic spline's effective degrees
   of freedom. Standard errors and p-values are valid only for an unpenalised,
@@ -621,7 +646,7 @@ A Poisson claim-frequency GLM with an exposure offset:
     | **Weight column (optional)** | `weight` |
     | **Offset column (optional)** | `offset` |
     | **Metrics** | `metrics`: `"gini"`, `"rmse"`, `"mae"`, `"mse"`, `"r2"`, `"auc"`, `"logloss"`, `"poisson_deviance"`, `"tweedie_deviance"`, `"gamma_deviance"` |
-    | Feature tick boxes | `exclude` (the columns left out; tree and EBM families) |
+    | Feature tick boxes | `feature_columns` (the ticked columns; tree and EBM families) |
     | **Monotonicity** | `monotone_constraints`, a map of column to `-1` or `1` (tree and EBM families) |
     | **Pairwise interactions** | `params.interactions` (EBM) |
     | **Parameters JSON** | `params` |
@@ -653,7 +678,6 @@ A Poisson claim-frequency GLM with an exposure offset:
     | Key | What it does |
     |---|---|
     | `name` | Names the training artifacts; training uses the node's id when it is absent. |
-    | `feature_columns` | An explicit feature list (tree and EBM families): Haute uses exactly those columns instead of the all-except set. |
     | `feature_weights` | CatBoost feature weights. |
     | `fold_column`, `id_columns` | Columns kept as training metadata rather than features. |
     | `output_dir` | Where training writes its working files (`outputs` by default). |
@@ -662,9 +686,10 @@ A Poisson claim-frequency GLM with an exposure offset:
     | `evaluation.validation.window` | `"expanding"` for time-based cross-validation; the editor sets it. |
     | `categorical_levels` | Declared category levels for categorical feature columns. |
 
-    `exclude`, `feature_columns` and `monotone_constraints` apply to the tree and EBM
+    `feature_columns` and `monotone_constraints` apply to the tree and EBM
     families (`feature_weights` to CatBoost only) and are ignored for a GLM, whose features
-    are its terms and interaction factors.
+    are its terms and interaction factors. A node file with the removed `exclude` key is
+    refused when the pipeline loads; list the features in `feature_columns` instead.
 
     **Evaluation.** Every node has one versioned `evaluation` object. The retired top-level
     `split` and `cross_validation` fields are not accepted. A random split reserving 20% of

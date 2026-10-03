@@ -128,6 +128,7 @@ def browser_ratebook(browser_optimiser_rows, browser_ratebook_banding):
 _BROWSER_MODEL_CONFIG = """{
   "name": "browser_model",
   "target": "value",
+  "feature_columns": ["id", "proposer_age", "channel", "vehicle_age", "mileage"],
   "algorithm": "catboost",
   "task": "regression",
   "loss_function": "RMSE",

@@ -19,12 +19,17 @@ STRICT_RANDOM_EVALUATION = {
     "validation": {"method": "single", "size": 0.2},
 }
 
+NO_FEATURES_MESSAGE = (
+    "Modelling config has no features. Tick at least one feature on the Features pane."
+)
+
 MINIMAL_CONFIG = {
     "name": "freq",
     "target": "ClaimCount",
     "algorithm": "catboost",
     "task": "regression",
     "loss_function": "Poisson",
+    "feature_columns": ["age", "region", "risk_score"],
     "evaluation": STRICT_RANDOM_EVALUATION,
 }
 
@@ -85,9 +90,9 @@ class TestParameterRepr:
         assert "params={'iterations': 100, 'depth': 4}" in script
 
     def test_list_params_are_repr_formatted(self):
-        config = {**MINIMAL_CONFIG, "exclude": ["IDpol", "PolicyID"]}
+        config = {**MINIMAL_CONFIG, "feature_columns": ["DrivAge", "Region"]}
         script = generate_training_script(config, "d.parquet")
-        assert "exclude=['IDpol', 'PolicyID']" in script
+        assert "feature_columns=['DrivAge', 'Region']" in script
 
     def test_int_params_are_repr_formatted(self):
         # Use offset (a simple string config) as the integer-adjacent
@@ -189,21 +194,45 @@ class TestOffsetColumn:
         assert "offset" not in script
 
 
-class TestExcludeList:
-    def test_exclude_list_properly_formatted(self):
-        config = {**MINIMAL_CONFIG, "exclude": ["IDpol", "PolicyID", "Date"]}
+class TestFeatureColumnsList:
+    def test_feature_columns_list_properly_formatted(self):
+        config = {**MINIMAL_CONFIG, "feature_columns": ["DrivAge", "VehPower", "Region"]}
         script = generate_training_script(config, "d.parquet")
-        assert "exclude=['IDpol', 'PolicyID', 'Date']" in script
-
-    def test_empty_exclude_list_omitted(self):
-        config = {**MINIMAL_CONFIG, "exclude": []}
-        script = generate_training_script(config, "d.parquet")
+        assert "feature_columns=['DrivAge', 'VehPower', 'Region']" in script
         assert "exclude" not in script
 
-    def test_single_item_exclude_list(self):
-        config = {**MINIMAL_CONFIG, "exclude": ["IDpol"]}
+    @pytest.mark.parametrize(
+        "selection",
+        [
+            pytest.param({}, id="absent"),
+            pytest.param({"feature_columns": None}, id="none"),
+            pytest.param({"feature_columns": []}, id="empty"),
+        ],
+    )
+    def test_missing_or_empty_feature_columns_fails_loud(self, selection):
+        """Features are opt-in: a tree-model script with no selected feature
+        must gate, not train on every column of the data."""
+        config = {key: value for key, value in MINIMAL_CONFIG.items() if key != "feature_columns"}
+        with pytest.raises(TrainingConfigError) as raised:
+            generate_training_script({**config, **selection}, "d.parquet")
+        assert str(raised.value) == NO_FEATURES_MESSAGE
+
+    def test_single_item_feature_columns_list(self):
+        config = {**MINIMAL_CONFIG, "feature_columns": ["DrivAge"]}
         script = generate_training_script(config, "d.parquet")
-        assert "exclude=['IDpol']" in script
+        assert "feature_columns=['DrivAge']" in script
+
+    def test_role_columns_listed_as_features_are_not_written(self):
+        """A role column ticked as a feature is dormant: the script carries only
+        the selected features, exactly as live training fits them."""
+        config = {
+            **MINIMAL_CONFIG,
+            "weight": "Exposure",
+            "feature_columns": ["DrivAge", "ClaimCount", "Exposure", "Region"],
+        }
+        script = generate_training_script(config, "d.parquet")
+        assert "feature_columns=['DrivAge', 'Region']" in script
+        assert "weight='Exposure'" in script
 
 
 class TestMetricsList:
@@ -550,21 +579,23 @@ class TestPreviouslyDroppedTrainingKwargs:
 
     def test_absent_optional_kwargs_stay_absent(self):
         script = generate_training_script(MINIMAL_CONFIG, "d.parquet")
-        for param in ["feature_columns", "fold_column", "id_columns", "categorical_levels"]:
+        for param in ["fold_column", "id_columns", "categorical_levels"]:
             assert param not in script
+        # Tree-model features are opt-in, so the selection is always written.
+        assert "feature_columns=['age', 'region', 'risk_score']" in script
 
 
 class TestByteStableExportForExistingConfigs:
-    """Charter pin: configs that were already exported correctly (clean
-    CatBoost, no GLM keys, no newly-supported kwargs) must produce a
-    byte-identical script after the shared-builder refactor."""
+    """Charter pin: a clean CatBoost config (its selected features, no GLM
+    keys) must produce a byte-identical script after the shared-builder
+    refactor."""
 
     def test_clean_catboost_script_is_byte_stable(self):
         config = {
             "name": "freq",
             "target": "ClaimCount",
             "weight": "Exposure",
-            "exclude": ["IDpol"],
+            "feature_columns": ["DrivAge", "VehPower"],
             "algorithm": "catboost",
             "task": "regression",
             "params": {"iterations": 100, "depth": 4},
@@ -588,7 +619,7 @@ job = TrainingJob(
     data='output/freq.parquet',
     target='ClaimCount',
     weight='Exposure',
-    exclude=['IDpol'],
+    feature_columns=['DrivAge', 'VehPower'],
     algorithm='catboost',
     task='regression',
     params={'iterations': 100, 'depth': 4},
@@ -643,7 +674,7 @@ class TestFullConfig:
             "name": "severity",
             "target": "ClaimAmount",
             "weight": "Exposure",
-            "exclude": ["IDpol", "PolicyID"],
+            "feature_columns": ["age", "risk", "region"],
             "algorithm": "catboost",
             "task": "regression",
             "params": {"depth": 6, "learning_rate": 0.05},
@@ -663,7 +694,8 @@ class TestFullConfig:
         assert "data='output/severity.parquet'" in script
         assert "target='ClaimAmount'" in script
         assert "weight='Exposure'" in script
-        assert "exclude=['IDpol', 'PolicyID']" in script
+        assert "feature_columns=['age', 'risk', 'region']" in script
+        assert "exclude" not in script
         assert "algorithm='catboost'" in script
         assert "task='regression'" in script
         assert "'depth': 6" in script
@@ -732,6 +764,7 @@ class TestExecutedExportMlflowDestinations:
         config = {
             **MINIMAL_CONFIG,
             "params": {"iterations": 2},
+            "feature_columns": ["feature_a"],
             "output_dir": str(output_dir),
             "mlflow_experiment": "/Shared/test_local",
         }
@@ -779,6 +812,7 @@ class TestExecutedExportMlflowDestinations:
         config = {
             **MINIMAL_CONFIG,
             "params": {"iterations": 2},
+            "feature_columns": ["feature_a"],
             "output_dir": str(exec_root / "outputs"),
             "mlflow_experiment": "/Shared/test_auto",
         }
@@ -826,6 +860,7 @@ class TestExecutedExportMlflowDestinations:
         config = {
             **MINIMAL_CONFIG,
             "params": {"iterations": 2},
+            "feature_columns": ["feature_a"],
             "output_dir": str(output_dir),
             "mlflow_experiment": "/Shared/test_server",
             "mlflow_destination": "server",
@@ -863,6 +898,7 @@ class TestExecutedExportMlflowDestinations:
         config = {
             **MINIMAL_CONFIG,
             "params": {"iterations": 2},
+            "feature_columns": ["feature_a"],
             "output_dir": str(output_dir),
             "mlflow_destination": "server",
         }

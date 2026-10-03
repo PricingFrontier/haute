@@ -5,7 +5,19 @@
  * shows only the top factors, and names categorical levels in words.
  */
 import { useMemo, useState } from "react"
-import { ChartLegend, ChartSvg, ChartValuesTable, ResponsiveChart } from "../modelling/ChartScaffold"
+import {
+  ChartLegend,
+  ChartSvg,
+  ChartValuesTable,
+  ResponsiveChart,
+  ValueColorBar,
+} from "../modelling/ChartScaffold"
+import {
+  VALUE_HIGH_COLOR,
+  VALUE_LOW_COLOR,
+  VALUE_NEUTRAL_COLOR,
+  valuePositionColor,
+} from "../modelling/beeswarm"
 import {
   factorRateSpread,
   formatRate,
@@ -64,9 +76,6 @@ const STACK_PATTERN = [0, -1, 1, -2, 2, -3, 3, -4, 4]
 const TOP_FACTORS = 8
 
 // ── Theme tokens (resolved from CSS variables) ───────────────────
-const VALUE_HIGH_COLOR = "var(--chart-impact-value-high)"
-const VALUE_LOW_COLOR = "var(--chart-impact-value-low)"
-const VALUE_NEUTRAL_COLOR = "var(--chart-impact-value-neutral)"
 const PLOT_BG = "var(--chart-impact-plot-bg)"
 const LABEL_COLOR = "var(--chart-impact-label)"
 const MUTED_COLOR = "var(--chart-impact-muted)"
@@ -77,7 +86,6 @@ const AXIS_COLOR = "var(--chart-impact-axis)"
 const VALUE_GRADIENT_ID = "ratebook-impact-value-gradient"
 
 // ── Colour bar ───────────────────────────────────────────────────
-const COLOR_BAR_WIDTH = 8
 const COLOR_BAR_INSET = 40
 
 const CATEGORICAL_NOTE = "No value order (categorical level)"
@@ -150,14 +158,6 @@ function directionForRate(rate: number): EffectDirection {
   if (rate > 1) return "increasing"
   if (rate < 1) return "decreasing"
   return "neutral"
-}
-
-function colorForValuePosition(valuePosition: number | null): string {
-  if (valuePosition == null) return VALUE_NEUTRAL_COLOR
-
-  const highPct = Math.round(valuePosition * 100)
-  const lowPct = 100 - highPct
-  return `color-mix(in srgb, ${VALUE_LOW_COLOR} ${lowPct}%, ${VALUE_HIGH_COLOR} ${highPct}%)`
 }
 
 function valuePositionLabel(valuePosition: number | null): string {
@@ -295,9 +295,6 @@ function BeeswarmSvg({
   const zeroX = xScale(0)
   const ticks = [-maxAbs, -maxAbs / 2, 0, maxAbs / 2, maxAbs]
   const colorBarX = width - COLOR_BAR_INSET
-  const captionX = colorBarX + COLOR_BAR_WIDTH + 8
-  const rotatedX = colorBarX + COLOR_BAR_WIDTH + 28
-  const rotatedY = MARGIN_TOP + (Math.max(0, factors.length - 1) * ROW_GAP) / 2
 
   return (
     <ChartSvg
@@ -306,12 +303,6 @@ function BeeswarmSvg({
       height={height}
       style={{ background: PLOT_BG, borderRadius: 4, border: "1px solid var(--border)" }}
     >
-      <defs>
-        <linearGradient id={VALUE_GRADIENT_ID} x1="0" y1="1" x2="0" y2="0">
-          <stop offset="0%" stopColor={VALUE_LOW_COLOR} />
-          <stop offset="100%" stopColor={VALUE_HIGH_COLOR} />
-        </linearGradient>
-      </defs>
       <line
         x1={zeroX}
         y1={12}
@@ -375,7 +366,7 @@ function BeeswarmSvg({
                   cx={x}
                   cy={cy}
                   r={dot.key === activeKey ? DOT_RADIUS + 1.6 : DOT_RADIUS}
-                  fill={colorForValuePosition(dot.valuePosition)}
+                  fill={valuePositionColor(dot.valuePosition)}
                   stroke={dot.key === activeKey ? LABEL_COLOR : undefined}
                   opacity={0.88}
                   className="focus-ring"
@@ -395,30 +386,18 @@ function BeeswarmSvg({
         Log rate effect
       </text>
 
-      <rect
-        data-testid="ratebook-impact-colour-bar"
+      <ValueColorBar
+        gradientId={VALUE_GRADIENT_ID}
         x={colorBarX}
-        y={MARGIN_TOP - 14}
-        width={COLOR_BAR_WIDTH}
-        height={height - MARGIN_TOP - MARGIN_BOTTOM + 28}
-        fill={`url(#${VALUE_GRADIENT_ID})`}
-      />
-      <text x={captionX} y={MARGIN_TOP - 8} fontSize={10} fill={MUTED_COLOR}>
-        High
-      </text>
-      <text x={captionX} y={height - MARGIN_BOTTOM + 18} fontSize={10} fill={MUTED_COLOR}>
-        Low
-      </text>
-      <text
-        x={rotatedX}
-        y={rotatedY}
+        top={MARGIN_TOP - 14}
+        bottom={height - MARGIN_BOTTOM + 14}
+        title="Factor value"
+        lowColor={VALUE_LOW_COLOR}
+        highColor={VALUE_HIGH_COLOR}
+        captionColor={MUTED_COLOR}
         fontSize={10}
-        fill={MUTED_COLOR}
-        textAnchor="middle"
-        transform={`rotate(90 ${rotatedX} ${rotatedY})`}
-      >
-        Factor value
-      </text>
+        testId="ratebook-impact-colour-bar"
+      />
     </ChartSvg>
   )
 }

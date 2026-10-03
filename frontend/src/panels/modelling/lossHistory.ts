@@ -1,11 +1,15 @@
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import type { LossEntry } from "./LossChart"
 
-/** The keys a loss history draws its curves from, or null when it cannot draw one. */
+/**
+ * The keys a loss history draws its curves from, or null when it has fewer
+ * than `minRows` rows or no training curve.
+ */
 export function lossCurveKeys(
   lossHistory: readonly LossEntry[],
+  minRows = 2,
 ): { trainKey: string; evalKey: string | undefined } | null {
-  if (lossHistory.length < 2) return null
+  if (lossHistory.length < Math.max(minRows, 1)) return null
   const keys = Object.keys(lossHistory[0]).filter((k) => k !== "iteration")
   const trainKey = keys.find((k) => k.startsWith("train_"))
   if (!trainKey) return null

@@ -84,6 +84,7 @@ def _training_graph(data_path: str) -> dict[str, Any]:
                     "nodeType": "modelling",
                     "config": {
                         "target": "y",
+                        "feature_columns": ["x1", "x2"],
                         "algorithm": "catboost",
                         "task": "regression",
                         "loss_function": "RMSE",
@@ -159,6 +160,7 @@ def _unsizable_group_by_graph(tmp_path: Path) -> dict[str, Any]:
                     "nodeType": "modelling",
                     "config": {
                         "target": "y",
+                        "feature_columns": ["g", "x1"],
                         "algorithm": "catboost",
                         "task": "regression",
                         "loss_function": "RMSE",

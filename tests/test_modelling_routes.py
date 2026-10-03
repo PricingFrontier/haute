@@ -311,8 +311,14 @@ def _make_modelling_graph(
     task: str = "regression",
     params: dict | None = None,
     evaluation: dict | None = None,
+    feature_columns: list[str] | None = None,
 ) -> dict:
-    """Build a simple 2-node graph: dataInput → modelling."""
+    """Build a simple 2-node graph: dataInput → modelling.
+
+    Features are opt-in, so a tree model ticks ``feature_columns``; the default
+    is the ``training_data`` fixture's features. Data with other columns passes
+    its own list.
+    """
     config: dict = {
         "target": target,
         "algorithm": algorithm,
@@ -329,6 +335,8 @@ def _make_modelling_graph(
     }
     if algorithm == "catboost":
         config["loss_function"] = "RMSE" if task == "regression" else "Logloss"
+    if algorithm != "glm":
+        config["feature_columns"] = ["x1", "x2"] if feature_columns is None else feature_columns
     if weight:
         config["weight"] = weight
 
@@ -364,8 +372,7 @@ def _make_joined_modelling_graph(tmp_path, rows: int, validate: str | None) -> d
     join_config: dict[str, object] = {"how": "left", "on": ["quote_id"]}
     if validate is not None:
         join_config["validate"] = validate
-    model = _make_modelling_graph(str(quotes))["nodes"][1]
-    model["data"]["config"]["exclude"] = ["quote_id"]
+    model = _make_modelling_graph(str(quotes), feature_columns=["x1"])["nodes"][1]
     graph = make_graph(
         {
             "nodes": [
@@ -408,10 +415,7 @@ def _make_joined_modelling_graph(tmp_path, rows: int, validate: str | None) -> d
 @pytest.fixture(autouse=True)
 def _fast_optional_training_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
     """Endpoint tests assert job state, metrics, and warnings, not optional charts."""
-    monkeypatch.setattr(
-        "haute.modelling._algorithms.CatBoostAlgorithm.shap_summary",
-        lambda *a, **kw: [],
-    )
+    monkeypatch.delattr("haute.modelling._algorithms.CatBoostAlgorithm.shap_values")
     monkeypatch.setattr(
         "haute.modelling._algorithms.CatBoostAlgorithm.feature_importance_typed",
         lambda *a, **kw: [],
@@ -505,8 +509,19 @@ class TestTrainEndpoint:
 
         assert job_id not in store._running_activity_at
 
-    def test_train_with_invalid_target(self, client, training_data):
-        graph = _make_modelling_graph(training_data, target="nonexistent")
+    @pytest.mark.parametrize(
+        ("target", "feature_columns"),
+        [
+            pytest.param("nonexistent", None, id="missing-target"),
+            pytest.param("y", ["x1", "nonexistent"], id="missing-selected-feature"),
+        ],
+    )
+    def test_train_with_a_missing_column_names_it(
+        self, client, training_data, target, feature_columns
+    ):
+        """The exact training demand meets the missing column at its source: a
+        422 contract failure naming it, never a generic pipeline failure."""
+        graph = _make_modelling_graph(training_data, target=target, feature_columns=feature_columns)
         resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
         assert resp.status_code == 200
         status = _poll_until_done(client, resp.json()["job_id"])
@@ -523,6 +538,29 @@ class TestTrainEndpoint:
         graph = _make_modelling_graph(training_data)
         resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "source"})
         assert resp.status_code == 400
+
+    @pytest.mark.parametrize(
+        "feature_columns", [None, [], ["y"]], ids=["absent", "empty", "target_only"]
+    )
+    def test_train_refuses_a_catboost_node_without_features(
+        self, client, training_data, feature_columns
+    ):
+        """Features are opt-in: the request is refused before any job starts, rather
+        than training on every non-role column of the data."""
+        from haute.routes.modelling import _store
+
+        graph = _make_modelling_graph(training_data)
+        config = graph["nodes"][1]["data"]["config"]
+        if feature_columns is None:
+            del config["feature_columns"]
+        else:
+            config["feature_columns"] = feature_columns
+
+        resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+
+        assert resp.status_code == 400
+        assert "Modelling config has no features" in resp.json()["detail"]
+        assert not _store.list_jobs()
 
     def test_train_success(self, client, training_data):
         graph = _make_modelling_graph(training_data)
@@ -689,6 +727,7 @@ class TestTrainBackgroundLaunchFailures:
                     "algorithm": "catboost",
                     "task": "regression",
                     "loss_function": "RMSE",
+                    "feature_columns": ["x"],
                     "evaluation": _random_evaluation_config(),
                 },
                 {},
@@ -788,6 +827,7 @@ class TestTrainBackgroundLaunchFailures:
                     "algorithm": "catboost",
                     "task": "regression",
                     "loss_function": "RMSE",
+                    "feature_columns": ["x"],
                     "evaluation": _random_evaluation_config(),
                 },
                 {},
@@ -889,6 +929,67 @@ class TestTrainStatusTimeout:
             _store.delete_job("train_done_past_timeout")
 
 
+def test_live_loss_history_spans_its_fit_and_restarts_with_the_next() -> None:
+    from haute.routes import _training_worker
+
+    limit = _training_worker._max_train_loss_history()
+    history: list[dict[str, float]] = []
+    truncated = False
+    peak, trough = -float("inf"), float("inf")
+    for n in range(1, 1001):
+        # A falling curve with a training spike at 500 and a validation dip at 700.
+        train = 5.0 if n == 500 else 1.0 / n
+        evaluation = 0.0001 if n == 700 else 1.0 / n + 0.1
+        row = {"iteration": float(n), "train_rmse": train, "eval_rmse": evaluation}
+        history, truncated = _training_worker._append_live_loss_row(history, truncated, row, 1000)
+        assert len(history) <= limit
+        # Every extreme so far survives thinning, so an axis drawn from the rows never shrinks.
+        peak, trough = max(peak, train), min(trough, evaluation)
+        assert max(entry["train_rmse"] for entry in history) == peak
+        assert min(entry["eval_rmse"] for entry in history) == trough
+    iterations = [row["iteration"] for row in history]
+    assert truncated is True
+    assert iterations[0] == 1.0 and iterations[-1] == 1000.0
+    assert iterations == sorted(set(iterations))
+    # Even coverage of the rounds so far: no gap is wider than two buckets.
+    assert max(b - a for a, b in zip(iterations, iterations[1:])) <= 2 * 1000 / (limit - 2)
+
+    # The next fit's first row starts its own history, even with the same values.
+    first = {"iteration": 1.0, "train_rmse": 1.0, "eval_rmse": 1.1}
+    history, truncated = _training_worker._append_live_loss_row(history, truncated, first, 1000)
+    assert history == [first]
+    assert truncated is False
+
+    # A fit that outruns its stated budget still stays within the limit and spans
+    # every round from its first.
+    for n in range(2, 501):
+        row = {"iteration": float(n), "train_rmse": 1.0 / n}
+        history, truncated = _training_worker._append_live_loss_row(history, truncated, row, 10)
+        assert len(history) <= limit
+    assert history[0] == first and history[-1]["iteration"] == 500.0
+    gaps = [b["iteration"] - a["iteration"] for a, b in zip(history, history[1:])]
+    assert max(gaps) <= 2 * 500 / (limit - 6)
+    assert truncated is True
+
+
+def test_live_loss_history_refuses_a_limit_too_small_for_its_extremes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute.routes import _training_worker
+
+    # Two values need six rows: first, newest, and each value's lowest and highest.
+    monkeypatch.setenv("HAUTE_TRAIN_LOSS_HISTORY_LIMIT", "5")
+    history: list[dict[str, float]] = []
+    truncated = False
+    for n in range(1, 6):
+        row = {"iteration": float(n), "train_rmse": 1.0 / n, "eval_rmse": 1.0 / n}
+        history, truncated = _training_worker._append_live_loss_row(history, truncated, row, 10)
+    with pytest.raises(RuntimeError, match="needs at least 6 rows"):
+        _training_worker._append_live_loss_row(
+            history, truncated, {"iteration": 6.0, "train_rmse": 0.1, "eval_rmse": 0.1}, 10
+        )
+
+
 def test_bounded_loss_history_thins_the_whole_fit_around_its_best_iteration() -> None:
     from haute.routes import _train_service
 
@@ -931,6 +1032,8 @@ class TestExportEndpoint:
         assert "script" in data
         assert "filename" in data
         assert "TrainingJob" in data["script"]
+        assert "feature_columns=['x1', 'x2']," in data["script"]
+        assert "exclude=" not in data["script"]
         assert data["filename"].endswith(".py")
 
     def test_export_missing_node(self, client, training_data):
@@ -1750,7 +1853,7 @@ class TestEstimateEndpoint:
                 "y": pl.Series([None, None, None], dtype=pl.Float64),
             }
         ).write_parquet(path)
-        graph = _make_modelling_graph(str(path))
+        graph = _make_modelling_graph(str(path), feature_columns=["x1"])
 
         resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
 
@@ -1888,6 +1991,7 @@ class TestEstimateEndpoint:
         ).write_parquet(path)
         graph = _make_modelling_graph(
             str(path),
+            feature_columns=["x"],
             evaluation={
                 "schema_version": 1,
                 "strategy": "group",
@@ -1935,6 +2039,7 @@ class TestEstimateEndpoint:
         ).write_parquet(path)
         graph = _make_modelling_graph(
             str(path),
+            feature_columns=["x"],
             evaluation={
                 "schema_version": 1,
                 "strategy": "temporal",
@@ -2670,22 +2775,29 @@ class TestTrainingProjection:
             )
         }
 
-    def test_catboost_training_columns_use_all_except_demand(self):
+    def test_catboost_training_columns_are_exactly_selected_features_and_roles(self):
+        """Features are opt-in, so the demand is exact before the schema is known:
+        the selected features plus the role columns, never an all-except demand.
+        A role column listed as a feature is dormant and demanded once, as a role;
+        a column nobody selected (``policy_id``) is not demanded at all."""
         demand = _training_required_columns_by_node(
             "train",
             {
                 "algorithm": "catboost",
                 "target": "claim_count",
-                "exclude": ["policy_id"],
+                "weight": "exposure",
+                "feature_columns": ["driver_age", "territory", "claim_count"],
             },
         )
 
-        assert demand is not None
-        assert type(demand["train"]).__name__ == "AllExcept"
-        assert demand["train"].required_columns == frozenset({"claim_count"})
-        assert demand["train"].excluded_columns == frozenset({"claim_count", "policy_id"})
+        assert demand == {
+            "train": frozenset({"driver_age", "territory", "claim_count", "exposure"})
+        }
+        assert type(demand["train"]) is frozenset
 
-    def test_catboost_feature_menu_exclusions_project_before_api_input_loading(self):
+    def test_catboost_feature_selection_projects_before_api_input_loading(self):
+        """An unselected API column is projected away at the input, from the exact
+        selected-features-plus-roles seed."""
         config = {
             "algorithm": "catboost",
             "target": "target",
@@ -2700,7 +2812,7 @@ class TestTrainingProjection:
                 "seed": 42,
                 "validation": {"method": "single", "size": 0.2},
             },
-            "exclude": ["excluded_feature"],
+            "feature_columns": ["feature_a", "feature_b"],
         }
         graph = make_graph(
             {
@@ -2720,7 +2832,7 @@ class TestTrainingProjection:
                                             for column in (
                                                 "feature_a",
                                                 "feature_b",
-                                                "excluded_feature",
+                                                "unselected_feature",
                                                 "target",
                                                 "weight",
                                                 "offset",
@@ -2775,9 +2887,10 @@ class TestTrainingProjection:
             }
         )
 
+        assert required == {"train": expected}
         assert projection.needed_by_node["train"] == expected
         assert projection.demand_for_edge(graph.edges[0]) == expected
-        assert projection.diagnostics.node_reasons["train"].rule == "schema_all_except"
+        assert projection.diagnostics.node_reasons["train"].rule == "projection_seed"
 
     def test_prepare_training_data_forwards_training_projection(self, tmp_path):
         from haute.routes._training_preparation import (
@@ -2785,6 +2898,7 @@ class TestTrainingProjection:
             prepare_training_data,
         )
 
+        config = {"target": "claim_count", "feature_columns": ["driver_age"]}
         graph = make_graph(
             {
                 "nodes": [
@@ -2793,7 +2907,7 @@ class TestTrainingProjection:
                         "data": {
                             "label": "train",
                             "nodeType": "modelling",
-                            "config": {"target": "claim_count"},
+                            "config": dict(config),
                         },
                     }
                 ],
@@ -2819,7 +2933,7 @@ class TestTrainingProjection:
             job_id="job",
             source="live",
             parquet_path=parquet_path,
-            config={"target": "claim_count"},
+            config=config,
             project_root=str(tmp_path),
             required_columns_by_node=seeds,
         )
@@ -2851,6 +2965,76 @@ class TestTrainingProjection:
         assert outcome.execution_metrics is not None
         assert pl.read_parquet(parquet_path)["claim_count"].to_list() == [1.0]
 
+    @pytest.mark.parametrize(
+        ("project_to_keep_columns", "written"),
+        [
+            (True, ["claim_count", "driver_age"]),
+            (False, ["claim_count", "driver_age", "unselected"]),
+        ],
+        ids=["projects_to_keep_columns", "no_projection_drops_nothing"],
+    )
+    def test_prepare_training_data_sink_keeps_only_keep_columns_when_projecting(
+        self, tmp_path, project_to_keep_columns, written
+    ) -> None:
+        """A tree model's sink drops every column outside ``keep_columns`` (its
+        selected features and role columns); without projection nothing is dropped."""
+        from haute.routes._training_preparation import (
+            TrainingPreparationRequest,
+            prepare_training_data,
+        )
+
+        config = {"target": "claim_count", "feature_columns": ["driver_age"]}
+        graph = make_graph(
+            {
+                "nodes": [
+                    {
+                        "id": "train",
+                        "data": {
+                            "label": "train",
+                            "nodeType": "modelling",
+                            "config": dict(config),
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+
+        def fake_execute_lazy(*_args, **_kwargs):
+            frame = pl.DataFrame(
+                {"claim_count": [1.0, 2.0], "driver_age": [40, 41], "unselected": ["a", "b"]}
+            ).lazy()
+            return ({"train": frame}, ["train"], {}, {})
+
+        parquet_path = str(tmp_path / "prepared.parquet")
+        request = TrainingPreparationRequest(
+            graph=graph,
+            node_id="train",
+            job_id="job",
+            source="live",
+            parquet_path=parquet_path,
+            config=config,
+            project_root=str(tmp_path),
+            project_to_keep_columns=project_to_keep_columns,
+            keep_columns=["claim_count", "driver_age"],
+        )
+        with (
+            patch(
+                "haute.routes._training_preparation.execute_lazy_graph",
+                side_effect=fake_execute_lazy,
+            ),
+            patch("haute.executor._build_node_fn", return_value=None),
+            patch("haute.modelling._algorithms._mem_checkpoint"),
+            patch("haute.modelling._algorithms._MEM_LOG", MagicMock(write_text=MagicMock())),
+            patch("haute.executor._preview_cache", MagicMock()),
+            patch("haute.trace._cache", MagicMock()),
+        ):
+            with _training_prep_context() as context:
+                outcome = prepare_training_data(request, execution_context=context)
+
+        assert outcome.failure is None
+        assert pl.read_parquet(parquet_path).columns == written
+
     def test_prepare_training_data_maps_bounded_sink_failure_to_contract_failure(
         self,
         tmp_path,
@@ -2861,6 +3045,7 @@ class TestTrainingProjection:
             prepare_training_data,
         )
 
+        config = {"target": "claim_count", "feature_columns": ["driver_age"]}
         graph = make_graph(
             {
                 "nodes": [
@@ -2869,7 +3054,7 @@ class TestTrainingProjection:
                         "data": {
                             "label": "train",
                             "nodeType": "modelling",
-                            "config": {"target": "claim_count"},
+                            "config": dict(config),
                         },
                     }
                 ],
@@ -2895,7 +3080,7 @@ class TestTrainingProjection:
             job_id="job",
             source="live",
             parquet_path=parquet_path,
-            config={"target": "claim_count"},
+            config=config,
             project_root=str(tmp_path),
         )
         with (
@@ -3171,6 +3356,7 @@ class TestValidateConfig:
                 "target": "y",
                 "algorithm": "catboost",
                 "loss_function": "RMSE",
+                "feature_columns": ["x"],
                 "params": {"iterations": 10},
                 "evaluation": _random_evaluation_config(),
             }
@@ -3245,6 +3431,33 @@ class TestValidateConfig:
         assert exc_info.value.status_code == 400
         assert "loss function" in exc_info.value.detail.lower()
 
+    @pytest.mark.parametrize("algorithm", ["catboost", "xgboost", "lightgbm", "ebm"])
+    @pytest.mark.parametrize(
+        "selection",
+        [{}, {"feature_columns": []}, {"feature_columns": ["y"]}],
+        ids=["absent", "empty", "target_only"],
+    )
+    def test_tree_config_without_a_selected_feature_raises_400(self, algorithm, selection):
+        """Features are opt-in: a tree model with no ticked feature is refused, never
+        trained on every column. A listed role column is dormant, so ticking only
+        the target selects no feature either."""
+        with pytest.raises(HTTPException) as exc_info:
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": algorithm,
+                    "task": "regression",
+                    "loss_function": "RMSE",
+                    "params": {"max_rounds": 100} if algorithm == "ebm" else {},
+                    "evaluation": _random_evaluation_config(),
+                    **selection,
+                }
+            )
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail == (
+            "Modelling config has no features. Tick at least one feature on the Features pane."
+        )
+
     @pytest.mark.parametrize(
         ("algorithm", "task", "loss"),
         [
@@ -3264,6 +3477,7 @@ class TestValidateConfig:
                 "algorithm": algorithm,
                 "task": task,
                 "loss_function": loss,
+                "feature_columns": ["x"],
                 **({"variance_power": 1.5} if loss == "Tweedie" else {}),
                 # EBM trains every round it is given, so it needs an explicit count.
                 "params": {"max_rounds": 100} if algorithm == "ebm" else {},
@@ -3653,7 +3867,7 @@ class TestGlmInputSchemaGate:
 
 
 # ---------------------------------------------------------------------------
-# GLM sink exclusions
+# Training sink projection
 # ---------------------------------------------------------------------------
 
 
@@ -3676,46 +3890,51 @@ def _inline_sink_service(monkeypatch: pytest.MonkeyPatch):
     return service, launched
 
 
-def _spy_on_sink_exclusions(
+def _spy_on_sink_projection(
     monkeypatch: pytest.MonkeyPatch,
-) -> list[tuple[list[str] | None, list[str]]]:
-    """Record each ``_execute_and_sink`` call's ``exclude`` and the columns the
-    real sink actually wrote.
+) -> list[tuple[bool | None, list[str] | None, list[str]]]:
+    """Record each ``_execute_and_sink`` call's ``project_to_keep_columns`` and
+    ``keep_columns`` and the columns the real sink actually wrote.
 
     The real sink runs; its parquet is read here because the caller deletes it
     (or hands ownership to the worker) as soon as preparation returns. Asserting
-    on ``exclude`` alone would pass even if preparation never produced a frame.
+    on the arguments alone would pass even if preparation never produced a frame.
     """
-    captured: list[tuple[list[str] | None, list[str]]] = []
+    captured: list[tuple[bool | None, list[str] | None, list[str]]] = []
     original = TrainService._execute_and_sink
 
     def spy(self, body, preamble_ns, row_limit, job_id, **kwargs):
         prepared = original(self, body, preamble_ns, row_limit, job_id, **kwargs)
-        captured.append((kwargs.get("exclude"), pl.read_parquet(prepared).columns))
+        captured.append(
+            (
+                kwargs.get("project_to_keep_columns"),
+                kwargs.get("keep_columns"),
+                pl.read_parquet(prepared).columns,
+            )
+        )
         return prepared
 
     monkeypatch.setattr(TrainService, "_execute_and_sink", spy)
     return captured
 
 
-_GLM_STALE_EXCLUDE_CONFIG: dict = {
+_GLM_SINK_CONFIG: dict = {
     "algorithm": "glm",
     "target": "y",
     "terms": {"x": {"type": "linear"}},
-    "exclude": ["x"],
 }
 
 
-class TestGlmSinkExclusions:
-    """A GLM's column membership comes from its terms and interactions, so the
-    training and dispersion sinks never drop a column by ``exclude`` — a stale
-    entry left behind by a CatBoost run must not delete a live GLM term."""
+class TestTrainingSinkProjection:
+    """A tree model's training sink keeps exactly its selected features and role
+    columns. A GLM's column membership comes from its terms and interactions, so
+    its training and dispersion sinks never project a column away."""
 
-    def test_training_sink_keeps_excluded_glm_term_columns(
+    def test_catboost_training_sink_keeps_only_selected_features_and_roles(
         self, glm_collision_data, tmp_path, monkeypatch
     ):
         monkeypatch.setenv("HAUTE_MEM_LOG", str(tmp_path / "training_mem.log"))
-        captured = _spy_on_sink_exclusions(monkeypatch)
+        captured = _spy_on_sink_projection(monkeypatch)
         from haute.schemas import TrainRequest
         from tests.test_training_worker_protocol import _SuccessfulTrainingJob
 
@@ -3723,7 +3942,41 @@ class TestGlmSinkExclusions:
             graph=_glm_schema_gate_graph(
                 glm_collision_data,
                 {
-                    **_GLM_STALE_EXCLUDE_CONFIG,
+                    "algorithm": "catboost",
+                    "task": "regression",
+                    "target": "y",
+                    "loss_function": "RMSE",
+                    "feature_columns": ["x"],
+                    "evaluation": _random_evaluation_config(),
+                },
+            ),
+            node_id="train",
+        )
+        service, launched = _inline_sink_service(monkeypatch)
+
+        with patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob):
+            response = service.start(body)
+            service._join_preparation(response.job_id)
+            for thread in launched:
+                thread.join(timeout=10)
+
+        # ``x_sq`` is in the data but was never ticked, so it never reaches training.
+        assert captured == [(True, ["x", "y"], ["x", "y"])]
+        job = service._store.require_job(response.job_id)
+        assert job["status"] == "completed", job
+        assert launched
+
+    def test_glm_training_sink_drops_nothing(self, glm_collision_data, tmp_path, monkeypatch):
+        monkeypatch.setenv("HAUTE_MEM_LOG", str(tmp_path / "training_mem.log"))
+        captured = _spy_on_sink_projection(monkeypatch)
+        from haute.schemas import TrainRequest
+        from tests.test_training_worker_protocol import _SuccessfulTrainingJob
+
+        body = TrainRequest(
+            graph=_glm_schema_gate_graph(
+                glm_collision_data,
+                {
+                    **_GLM_SINK_CONFIG,
                     "family": "gaussian",
                     "evaluation": _random_evaluation_config(),
                 },
@@ -3739,26 +3992,24 @@ class TestGlmSinkExclusions:
                 thread.join(timeout=10)
 
         assert len(captured) == 1
-        exclude, columns = captured[0]
-        assert exclude is None
-        # ``x`` is the live GLM term the stale ``exclude`` would have dropped.
+        project_to_keep_columns, _keep_columns, columns = captured[0]
+        assert project_to_keep_columns is False
+        # ``x`` is the live GLM term; the sink never projects it away.
         assert "x" in columns and "y" in columns
         job = service._store.require_job(response.job_id)
         assert job["status"] == "completed", job
         assert launched
 
-    def test_dispersion_sink_keeps_excluded_glm_term_columns(
-        self, glm_collision_data, tmp_path, monkeypatch
-    ):
+    def test_glm_dispersion_sink_drops_nothing(self, glm_collision_data, tmp_path, monkeypatch):
         monkeypatch.setenv("HAUTE_MEM_LOG", str(tmp_path / "training_mem.log"))
-        captured = _spy_on_sink_exclusions(monkeypatch)
+        captured = _spy_on_sink_projection(monkeypatch)
         from haute.schemas import DispersionEstimateRequest
 
         body = DispersionEstimateRequest(
             graph=_glm_schema_gate_graph(
                 glm_collision_data,
                 {
-                    **_GLM_STALE_EXCLUDE_CONFIG,
+                    **_GLM_SINK_CONFIG,
                     "family": "tweedie",
                     "evaluation": _random_evaluation_config(),
                 },
@@ -3773,8 +4024,8 @@ class TestGlmSinkExclusions:
             thread.join(timeout=10)
 
         assert len(captured) == 1
-        exclude, columns = captured[0]
-        assert exclude is None
+        project_to_keep_columns, _keep_columns, columns = captured[0]
+        assert project_to_keep_columns is False
         assert "x" in columns and "y" in columns
         job = service._store.require_job(response.job_id)
         assert job["status"] == "completed", job
@@ -4178,15 +4429,15 @@ class TestDispersionErrorPaths:
         self,
         nb_training_data,
     ):
-        """feature_columns and exclude are CatBoost levers: a GLM's sink keeps
-        its role columns and reads its term columns through projection demand."""
+        """feature_columns is a tree-model lever: a GLM's sink keeps its role
+        columns, projects nothing away, and reads its term columns through
+        projection demand."""
         from haute._execution_context import ExecutionContext, ExecutionProfile
         from haute.schemas import DispersionEstimateRequest
 
         graph = _make_negbinomial_graph(
             nb_training_data,
             feature_columns=["x1"],
-            exclude=["x1"],
             theta=1.5,
         )
         store, service = self._service()
@@ -4195,7 +4446,8 @@ class TestDispersionErrorPaths:
         )
         captured: dict[str, object] = {}
 
-        def capture_sink(*_args, keep_columns, **_kwargs):
+        def capture_sink(*_args, project_to_keep_columns, keep_columns, **_kwargs):
+            captured["project_to_keep_columns"] = project_to_keep_columns
             captured["keep_columns"] = keep_columns
             return "prepared.parquet"
 
@@ -4229,6 +4481,7 @@ class TestDispersionErrorPaths:
             response = service.start_dispersion_estimate(body)
 
         assert response.status == "started"
+        assert captured["project_to_keep_columns"] is False
         assert captured["keep_columns"] == ["y"]
 
     def test_start_maps_unexpected_exception_to_error(self, nb_training_data):
@@ -4710,6 +4963,7 @@ class TestExportScriptDirect:
                                 "algorithm": "catboost",
                                 "task": "regression",
                                 "loss_function": "RMSE",
+                                "feature_columns": ["x1", "x2"],
                                 "params": {"iterations": 100},
                                 "evaluation": _random_evaluation_config(),
                             },
@@ -4722,6 +4976,8 @@ class TestExportScriptDirect:
         body = ExportScriptRequest(graph=graph, node_id="model", data_path="output/data.parquet")
         result = await export_script(body)
         assert "TrainingJob" in result.script
+        assert "feature_columns=['x1', 'x2']," in result.script
+        assert "exclude=" not in result.script
         assert result.filename == "train_my_model.py"
 
     @pytest.mark.asyncio
@@ -4742,6 +4998,7 @@ class TestExportScriptDirect:
                                 "target": "y",
                                 "algorithm": "catboost",
                                 "loss_function": "RMSE",
+                                "feature_columns": ["x1"],
                                 "params": {"iterations": 10},
                                 "evaluation": _random_evaluation_config(),
                             },

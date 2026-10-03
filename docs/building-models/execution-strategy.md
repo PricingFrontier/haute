@@ -10,8 +10,7 @@ The strategy shown for a run uses one of these outcomes:
 
 - **Projected**: Haute knows the columns needed downstream and reads only that
   useful subset where the source supports it.
-- **Schema all-except**: a node needs every column except a known set, such as
-  training features after excluding the target, weight, and metadata columns.
+- **Schema all-except**: a node needs every column except a known set.
 - **Admitted eager**: the operation must collect data in memory, but Haute has
   an available estimate that fits the admitted memory headroom.
 - **Streaming boundary**: Haute can continue processing rows in a bounded

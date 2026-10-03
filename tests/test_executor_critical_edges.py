@@ -171,7 +171,7 @@ def test_column_reference_extraction_handles_editor_config_shapes() -> None:
             "target": "target",
             "weight": "",
             "offset": "offset",
-            "exclude": ["excluded", None, ""],
+            "feature_columns": ["excluded", None, ""],
             "factors": [{"column": "band"}, {"column": ""}, "not-a-factor"],
             "tables": [{"factors": ["rating", "", 42]}, "not-a-table"],
             "output_column": "excluded",

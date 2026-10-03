@@ -20,7 +20,9 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any
 
-from haute.errors import HauteValidationError
+from haute._config_validation import reject_removed_config_keys
+from haute._types import NodeType
+from haute.errors import ConfigError, HauteValidationError
 from haute.modelling._descriptors import DESCRIPTORS, algorithm_descriptor
 from haute.modelling._evaluation import EvaluationConfig
 from haute.modelling._glm_terms import (
@@ -73,7 +75,6 @@ GLM_FAMILY_LINKS: Mapping[str, tuple[str, ...]] = MappingProxyType(
 #: Config levers only CatBoost honours. A GLM's features are its terms and
 #: interaction factors, and its monotonicity lives on each term.
 CATBOOST_ONLY_LEVERS: tuple[str, ...] = (
-    "exclude",
     "feature_columns",
     "monotone_constraints",
     "feature_weights",
@@ -429,27 +430,82 @@ def effective_metrics(config: Mapping[str, Any]) -> list[str]:
     return list(metrics)
 
 
-def _excluded_feature_names(config: Mapping[str, Any]) -> set[str]:
-    """Return exclusions that make feature settings dormant for this fit.
-
-    The established explicit ``feature_columns`` contract wins over a stale entry
-    in ``exclude``; keep that same precedence when projecting dependent settings.
-    """
-    raw = config.get("exclude")
+def string_list_config(config: Mapping[str, Any], key: str) -> list[str]:
+    """Return a configured column-name list, de-duplicated in stored order."""
+    raw = config.get(key)
+    if raw is None:
+        return []
     if not isinstance(raw, list):
-        return set()
-    excluded = {name for name in raw if isinstance(name, str) and name}
-    explicit = config.get("feature_columns")
-    if isinstance(explicit, list):
-        excluded.difference_update(name for name in explicit if isinstance(name, str) and name)
-    return excluded
+        raise TrainingConfigError(f"{key} must be a list of column names")
+    columns: list[str] = []
+    seen: set[str] = set()
+    for value in raw:
+        if not isinstance(value, str) or not value:
+            raise TrainingConfigError(f"{key} must contain non-empty string column names")
+        if value in seen:
+            continue
+        columns.append(value)
+        seen.add(value)
+    return columns
+
+
+def role_column_reasons(config: Mapping[str, Any]) -> dict[str, str]:
+    """Return configured non-feature columns in deterministic role precedence."""
+    reasons: dict[str, str] = {}
+
+    def add(raw_column: object, reason: str) -> None:
+        if isinstance(raw_column, str) and raw_column:
+            reasons.setdefault(raw_column, reason)
+
+    add(config.get("target"), "target")
+    add(config.get("weight"), "weight")
+    add(config.get("offset"), "offset")
+    add(config.get("fold_column"), "fold")
+    for column in string_list_config(config, "id_columns"):
+        add(column, "identifier")
+    evaluation = config.get("evaluation")
+    if isinstance(evaluation, dict):
+        strategy = evaluation.get("strategy")
+        if strategy == "temporal":
+            add(evaluation.get("date_column"), "evaluation")
+        elif strategy == "group":
+            add(evaluation.get("group_column"), "evaluation")
+    return reasons
+
+
+def selected_feature_columns(config: Mapping[str, Any]) -> list[str]:
+    """Return CatBoost's selected features: ``feature_columns`` minus role columns.
+
+    Features are opt-in. A listed column that holds a role stays stored but is
+    dormant, and is selected again once it leaves the role.
+    """
+    roles = role_column_reasons(config)
+    return [
+        column for column in string_list_config(config, "feature_columns") if column not in roles
+    ]
+
+
+NO_FEATURES_MESSAGE = (
+    "Modelling config has no features. Tick at least one feature on the Features pane."
+)
+
+
+def feature_selection_issue(config: Mapping[str, Any]) -> str | None:
+    """Return an actionable message when a tree model has no selected feature.
+
+    Kept apart from :func:`training_objective_issue` so an unfinished feature
+    selection does not hide the Split pane's evaluation preview.
+    """
+    if is_glm_config(config) or selected_feature_columns(config):
+        return None
+    return NO_FEATURES_MESSAGE
 
 
 def _effective_glm_params(config: Mapping[str, Any]) -> dict[str, Any]:
     """Project stored GLM config into the settings active for this fit.
 
-    ``exclude`` is a CatBoost lever; a GLM feature is in the model exactly
-    when it has a term or is an interaction factor, so nothing is narrowed.
+    A GLM feature is in the model exactly when it has a term or is an
+    interaction factor.
     """
     params = {key: config[key] for key in GLM_CONFIG_KEYS if key in config}
     if glm_cross_validates(params) and not _configured(params, "cv_seed"):
@@ -458,12 +514,12 @@ def _effective_glm_params(config: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _effective_monotone_constraints(config: Mapping[str, Any]) -> Any:
-    """Omit dormant excluded constraints without mutating stored node config."""
+    """Omit constraints on unselected features without mutating stored node config."""
     constraints = config.get("monotone_constraints")
     if not isinstance(constraints, Mapping):
         return constraints or None
-    excluded = _excluded_feature_names(config)
-    effective = {name: direction for name, direction in constraints.items() if name not in excluded}
+    selected = set(selected_feature_columns(config))
+    effective = {name: direction for name, direction in constraints.items() if name in selected}
     return effective or None
 
 
@@ -524,10 +580,17 @@ def validate_modelling_config_values(config: Mapping[str, Any]) -> None:
     Malformed, not incomplete: an absent value is the objective gate's concern
     (:func:`training_objective_issue`), so the editor's unfinished ``{}`` passes.
     The check is pure, so save validation, the train route and the training
-    builder run the same one. The algorithm must be a descriptor key exactly
-    (``"GLM"`` is not ``glm``); then a GLM's values, or another family's loss
-    for its task; and the target must not also be an explicit feature.
+    builder run the same one. A removed field (``exclude``, ``model_name``) is
+    refused first, so a config that never passed through load or save cannot
+    carry one into training or export. The algorithm must be a descriptor key
+    exactly (``"GLM"`` is not ``glm``); then a GLM's values, or another family's
+    loss for its task. A role column listed in ``feature_columns`` is dormant,
+    not malformed.
     """
+    try:
+        reject_removed_config_keys(NodeType.MODELLING, dict(config))
+    except ConfigError as exc:
+        raise TrainingConfigError(exc.message) from exc
     algorithm = config.get("algorithm", "catboost")
     if not isinstance(algorithm, str) or algorithm not in DESCRIPTORS:
         raise TrainingConfigError(
@@ -546,13 +609,6 @@ def validate_modelling_config_values(config: Mapping[str, Any]) -> None:
                 raise
             except HauteValidationError as exc:
                 raise TrainingConfigError(str(exc)) from exc
-    target = config.get("target")
-    features = config.get("feature_columns")
-    if isinstance(target, str) and target and isinstance(features, list) and target in features:
-        raise TrainingConfigError(
-            f"Target column '{target}' is also listed in feature_columns. A model cannot "
-            "use its target as a feature; remove it from the features."
-        )
 
 
 def build_train_params(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -611,9 +667,9 @@ def build_training_job_kwargs(
         (an unset loss/family, or an unset objective parameter that would fall
         through to a library/literal failover: Tweedie variance power, Negative
         Binomial theta, elastic-net L1 ratio, cross-validation settings, empty
-        GLM term set), or invalid GLM params. Such a job/script trains a
-        plausible-looking wrong model, so it must fail at build time, not at
-        training time.
+        GLM term set), no selected tree-model feature, or invalid GLM params.
+        Such a job/script trains a plausible-looking wrong model, so it must
+        fail at build time, not at training time.
     """
     target = config.get("target")
     if not isinstance(target, str) or not target:
@@ -653,6 +709,9 @@ def build_training_job_kwargs(
         raise TrainingConfigError(objective_issue)
     variance_power = config.get("var_power") if glm else config.get("variance_power")
     reject_removed_evaluation_fields(config)
+    feature_issue = feature_selection_issue(config)
+    if feature_issue is not None:
+        raise TrainingConfigError(feature_issue)
     evaluation = parse_evaluation_config(config.get("evaluation"))
     metrics = effective_metrics(config)
     tuning = parse_tuning_config(
@@ -688,8 +747,7 @@ def build_training_job_kwargs(
         "target": target,
         "weight": config.get("weight") or None,
         # CatBoost-only levers never reach a GLM job (CATBOOST_ONLY_LEVERS).
-        "exclude": [] if glm else config.get("exclude", []),
-        "feature_columns": None if glm else config.get("feature_columns") or None,
+        "feature_columns": None if glm else selected_feature_columns(config),
         "fold_column": config.get("fold_column") or None,
         "id_columns": config.get("id_columns") or None,
         "algorithm": config.get("algorithm", "catboost"),

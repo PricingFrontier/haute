@@ -21,6 +21,7 @@ import { LiftTab } from "./modelling/LiftTab"
 import { LossTab } from "./modelling/LossTab"
 import { PdpTab } from "./modelling/PdpTab"
 import { ResidualsTab } from "./modelling/ResidualsTab"
+import { ShapCurvesTab } from "./modelling/ShapCurvesTab"
 import { SummaryTab } from "./modelling/SummaryTab"
 import { diagnosticsRowCount, diagnosticsSetLabel, headlineMetrics } from "./modelling/diagnosticsSet"
 import { shownFit } from "./modelling/lossHistory"
@@ -50,6 +51,7 @@ const TAB_KEYS = [
   "features",
   "ave",
   "pdp",
+  "shap_curves",
 ] as const
 type TabKey = (typeof TAB_KEYS)[number]
 
@@ -64,51 +66,20 @@ const TAB_LABELS: Record<TabKey, string> = {
   features: "Features",
   ave: "AvE",
   pdp: "PDP",
+  shap_curves: "SHAP curves",
 }
 
-const VIEW_INTRODUCTIONS: Record<
-  Exclude<TabKey, "summary">,
-  { title: string; description: string }
-> = {
-  coefficients: {
-    title: "GLM coefficients",
-    description: "Inspect each term's estimate, uncertainty and statistical significance.",
-  },
-  relativities: {
-    title: "GLM relativities",
-    description: "Compare each term's effect relative to the baseline of 1.",
-  },
-  terms: {
-    title: "EBM terms",
-    description:
-      "Read each main effect's shape and each pairwise interaction's surface: the model is their sum.",
-  },
-  loss: {
-    title: "Training loss",
-    description:
-      "Follow model fit across iterations and compare training and validation loss where available.",
-  },
-  lift: {
-    title: "Lift and discrimination",
-    description: "Explore how well predictions separate lower and higher outcomes.",
-  },
-  residuals: {
-    title: "Residual diagnostics",
-    description: "Inspect prediction errors and how closely predictions match actual outcomes.",
-  },
-  features: {
-    title: "Feature importance",
-    description: "Compare the contribution of each feature to the model's predictions.",
-  },
-  ave: {
-    title: "Actual vs expected",
-    description:
-      "Compare observed and predicted outcomes across each feature's groups, alongside exposure.",
-  },
-  pdp: {
-    title: "Partial dependence",
-    description: "Explore how model predictions change as one feature varies.",
-  },
+const VIEW_TITLES: Record<Exclude<TabKey, "summary">, string> = {
+  coefficients: "GLM coefficients",
+  relativities: "GLM relativities",
+  terms: "EBM terms",
+  loss: "Training loss",
+  lift: "Lift and discrimination",
+  residuals: "Residual diagnostics",
+  features: "Feature importance",
+  ave: "Actual vs expected",
+  pdp: "Partial dependence",
+  shap_curves: "SHAP curves",
 }
 
 export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewProps) {
@@ -134,6 +105,7 @@ export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewPr
     ...new Set([
       ...result.ave_per_feature.map((item) => item.feature),
       ...result.pdp_data.map((item) => item.feature),
+      ...result.shap_curves.map((item) => item.feature),
     ]),
   ]
   const featureBrowser = {
@@ -180,6 +152,8 @@ export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewPr
         return result.ave_per_feature && result.ave_per_feature.length > 0
       case "pdp":
         return result.pdp_data && result.pdp_data.length > 0
+      case "shap_curves":
+        return result.shap_curves.length > 0
       default:
         return false
     }
@@ -192,7 +166,7 @@ export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewPr
     )
     .join(" | ")
   const tabs = availableTabs.map((key) => ({ key, label: TAB_LABELS[key] }))
-  const introduction = activeTab === "summary" ? null : VIEW_INTRODUCTIONS[activeTab]
+  const introduction = activeTab === "summary" ? null : { title: VIEW_TITLES[activeTab] }
 
   const useBestAsFixedParameters = (params: Record<string, unknown>) => {
     if (!window.confirm("Use the winning parameters as fixed parameters and disable tuning?")) {
@@ -266,6 +240,9 @@ export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewPr
       {activeTab === "features" && <FeaturesTab result={result} />}
       {activeTab === "ave" && <AveTab result={result} featureBrowser={featureBrowser} />}
       {activeTab === "pdp" && <PdpTab result={result} featureBrowser={featureBrowser} />}
+      {activeTab === "shap_curves" && (
+        <ShapCurvesTab result={result} featureBrowser={featureBrowser} />
+      )}
     </ResultsWorkspace>
   )
 }

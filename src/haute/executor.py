@@ -832,8 +832,8 @@ def _extract_column_refs(
         if isinstance(val, str) and val:
             refs.add(val)
 
-    # exclude: list[str] — on modelling nodes
-    for col in config.get("exclude", []) or []:
+    # feature_columns: list[str] — on modelling nodes
+    for col in config.get("feature_columns", []) or []:
         if isinstance(col, str) and col:
             refs.add(col)
 

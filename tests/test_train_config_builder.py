@@ -19,6 +19,7 @@ from haute.modelling._train_config import (
     build_training_job_kwargs,
     default_metrics,
     effective_metrics,
+    validate_modelling_config_values,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +32,14 @@ MINIMAL_EVALUATION = {
     "seed": 42,
     "validation": {"method": "single", "size": 0.2},
 }
+
+# Tree-model features are opt-in: a tree config trains on exactly the
+# columns its feature_columns lists.
+FEATURE_COLUMNS = ["age", "region"]
+
+NO_FEATURES_MESSAGE = (
+    "Modelling config has no features. Tick at least one feature on the Features pane."
+)
 
 
 CV_SETTINGS = {"cv_folds": 5, "cv_selection": "min", "cv_seed": 42}
@@ -87,13 +96,13 @@ class TestBuildTrainParams:
         assert params["var_power"] == 1.5
         assert params["offset"] == "log_exposure"
 
-    def test_glm_exclude_does_not_narrow_terms_or_interactions(self):
-        """``exclude`` is a CatBoost lever. A GLM feature is in the model
-        exactly when it has a term or is an interaction factor, so a stale
-        exclusion must never silently drop a configured term."""
+    def test_glm_feature_columns_do_not_narrow_terms_or_interactions(self):
+        """``feature_columns`` is a tree-model lever. A GLM feature is in the
+        model exactly when it has a term or is an interaction factor, so a
+        stale feature selection must never silently drop a configured term."""
         config = {
             "algorithm": "glm",
-            "exclude": ["age"],
+            "feature_columns": ["region"],
             "terms": {
                 "age": {"type": "linear"},
                 "region": {"type": "categorical"},
@@ -169,6 +178,7 @@ class TestBuildTrainingJobKwargs:
             "target": "y",
             "algorithm": "catboost",
             "loss_function": "RMSE",
+            "feature_columns": FEATURE_COLUMNS,
             "evaluation": MINIMAL_EVALUATION,
             "refit_on_development": False,
         }
@@ -183,7 +193,12 @@ class TestBuildTrainingJobKwargs:
 
     def test_minimal_config_defaults(self):
         kwargs = build_training_job_kwargs(
-            {"target": "y", "loss_function": "RMSE", "evaluation": MINIMAL_EVALUATION},
+            {
+                "target": "y",
+                "loss_function": "RMSE",
+                "feature_columns": FEATURE_COLUMNS,
+                "evaluation": MINIMAL_EVALUATION,
+            },
             data="d.parquet",
         )
         assert kwargs["name"] == "model"
@@ -197,9 +212,9 @@ class TestBuildTrainingJobKwargs:
         assert kwargs["metrics"] == ["gini", "rmse"]
         assert kwargs["output_dir"] == "outputs"
         assert kwargs["loss_function"] == "RMSE"
+        assert kwargs["feature_columns"] == ["age", "region"]
         for key in (
             "weight",
-            "feature_columns",
             "fold_column",
             "id_columns",
             "mlflow_experiment",
@@ -210,7 +225,7 @@ class TestBuildTrainingJobKwargs:
             "categorical_levels",
         ):
             assert kwargs[key] is None, key
-        assert kwargs["exclude"] == []
+        assert "exclude" not in kwargs
         assert kwargs["mlflow_destination"] == ""
 
     def test_mlflow_destination_passthrough(self):
@@ -218,6 +233,7 @@ class TestBuildTrainingJobKwargs:
             {
                 "target": "y",
                 "loss_function": "RMSE",
+                "feature_columns": FEATURE_COLUMNS,
                 "evaluation": MINIMAL_EVALUATION,
                 "mlflow_destination": "server",
             },
@@ -227,7 +243,12 @@ class TestBuildTrainingJobKwargs:
 
     def test_mlflow_destination_absent_is_the_local_folder(self):
         kwargs = build_training_job_kwargs(
-            {"target": "y", "loss_function": "RMSE", "evaluation": MINIMAL_EVALUATION},
+            {
+                "target": "y",
+                "loss_function": "RMSE",
+                "feature_columns": FEATURE_COLUMNS,
+                "evaluation": MINIMAL_EVALUATION,
+            },
             data="d.parquet",
         )
         assert kwargs["mlflow_destination"] == ""
@@ -239,6 +260,7 @@ class TestBuildTrainingJobKwargs:
                 {
                     "target": "y",
                     "loss_function": "RMSE",
+                    "feature_columns": FEATURE_COLUMNS,
                     "evaluation": MINIMAL_EVALUATION,
                     "mlflow_destination": destination,
                 },
@@ -295,7 +317,12 @@ class TestBuildTrainingJobKwargs:
 
     def test_default_name_override(self):
         kwargs = build_training_job_kwargs(
-            {"target": "y", "loss_function": "RMSE", "evaluation": MINIMAL_EVALUATION},
+            {
+                "target": "y",
+                "loss_function": "RMSE",
+                "feature_columns": FEATURE_COLUMNS,
+                "evaluation": MINIMAL_EVALUATION,
+            },
             data="d",
             default_name="node_7",
         )
@@ -305,6 +332,7 @@ class TestBuildTrainingJobKwargs:
                 "target": "y",
                 "name": "freq",
                 "loss_function": "RMSE",
+                "feature_columns": FEATURE_COLUMNS,
                 "evaluation": MINIMAL_EVALUATION,
             },
             data="d",
@@ -319,7 +347,6 @@ class TestBuildTrainingJobKwargs:
             "name": "freq",
             "target": "claim_count",
             "weight": "exposure",
-            "exclude": ["policy_id"],
             "feature_columns": ["age"],
             "fold_column": "fold",
             "id_columns": ["policy_id"],
@@ -345,12 +372,12 @@ class TestBuildTrainingJobKwargs:
         assert job.fold_column == "fold"
         assert job.id_columns == ["policy_id"]
 
-    def test_excluded_monotone_constraints_are_dormant_and_reversible(self):
+    def test_unselected_monotone_constraints_are_dormant_and_reversible(self):
         config = {
             "target": "y",
             "loss_function": "RMSE",
             "evaluation": MINIMAL_EVALUATION,
-            "exclude": ["age"],
+            "feature_columns": ["risk"],
             "monotone_constraints": {"age": 1, "risk": -1},
         }
 
@@ -358,17 +385,14 @@ class TestBuildTrainingJobKwargs:
         assert dormant["monotone_constraints"] == {"risk": -1}
         assert config["monotone_constraints"] == {"age": 1, "risk": -1}
 
-        restored = build_training_job_kwargs({**config, "exclude": []}, data="d.parquet")
-        assert restored["monotone_constraints"] == {"age": 1, "risk": -1}
-
-        explicitly_retained = build_training_job_kwargs(
+        restored = build_training_job_kwargs(
             {**config, "feature_columns": ["age", "risk"]},
             data="d.parquet",
         )
-        assert explicitly_retained["monotone_constraints"] == {"age": 1, "risk": -1}
+        assert restored["monotone_constraints"] == {"age": 1, "risk": -1}
 
         all_dormant = build_training_job_kwargs(
-            {**config, "exclude": ["age", "risk"]},
+            {**config, "feature_columns": ["region"]},
             data="d.parquet",
         )
         assert all_dormant["monotone_constraints"] is None
@@ -383,6 +407,7 @@ class TestBuildTrainingJobKwargs:
             "fold_column": "",
             "mlflow_experiment": "",
             "loss_function": "RMSE",
+            "feature_columns": FEATURE_COLUMNS,
             "evaluation": MINIMAL_EVALUATION,
         }
         kwargs = build_training_job_kwargs(config, data="d")
@@ -413,6 +438,196 @@ class TestBuildTrainingJobKwargs:
             build_training_job_kwargs({"algorithm": "catboost"}, data="d")
         with pytest.raises(ValueError, match="target"):
             build_training_job_kwargs({"target": ""}, data="d")
+
+
+_ROLE_ASSIGNMENTS = [
+    pytest.param({"target": "role_col"}, id="target"),
+    pytest.param({"weight": "role_col"}, id="weight"),
+    pytest.param({"offset": "role_col"}, id="offset"),
+    pytest.param({"fold_column": "role_col"}, id="fold_column"),
+    pytest.param({"id_columns": ["role_col"]}, id="id_columns"),
+    pytest.param(
+        {
+            "evaluation": {
+                "schema_version": 1,
+                "strategy": "group",
+                "group_column": "role_col",
+                "seed": 42,
+                "validation": {"method": "single", "size": 0.2},
+            }
+        },
+        id="evaluation_group_column",
+    ),
+    pytest.param(
+        {
+            "evaluation": {
+                "schema_version": 1,
+                "strategy": "temporal",
+                "validation": {"method": "single", "start": "2023-01-01"},
+                "date_column": "role_col",
+            }
+        },
+        id="evaluation_date_column",
+    ),
+]
+
+
+class TestOptInFeatureSelection:
+    """Tree-model features are opt-in: ``feature_columns`` names exactly the
+    columns a tree model trains on, and a config that names none is refused
+    rather than silently training on every column."""
+
+    @pytest.mark.parametrize(
+        ("algorithm", "params"),
+        [
+            ("catboost", {}),
+            ("xgboost", {}),
+            ("lightgbm", {}),
+            # EBM trains every round it is given, so it needs an explicit budget.
+            ("ebm", {"max_rounds": 100}),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "selection",
+        [
+            pytest.param({}, id="absent"),
+            pytest.param({"feature_columns": None}, id="none"),
+            pytest.param({"feature_columns": []}, id="empty"),
+            pytest.param(
+                {"feature_columns": ["y", "exposure"], "weight": "exposure"},
+                id="only_role_columns",
+            ),
+        ],
+    )
+    def test_tree_config_without_features_is_refused(self, algorithm, params, selection):
+        config = {
+            "target": "y",
+            "algorithm": algorithm,
+            "params": params,
+            "loss_function": "RMSE",
+            "evaluation": MINIMAL_EVALUATION,
+            **selection,
+        }
+        with pytest.raises(TrainingConfigError) as raised:
+            build_training_job_kwargs(config, data="d.parquet")
+        assert str(raised.value) == NO_FEATURES_MESSAGE
+
+    def test_glm_needs_no_feature_columns(self):
+        """A GLM's features are its terms, so the opt-in rule does not apply."""
+        kwargs = build_training_job_kwargs(
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "poisson",
+                "terms": {"age": {"type": "linear"}},
+                "evaluation": MINIMAL_EVALUATION,
+            },
+            data="d.parquet",
+        )
+        assert kwargs["feature_columns"] is None
+
+    def test_objective_and_removed_evaluation_issues_are_reported_before_features(self):
+        with pytest.raises(TrainingConfigError, match="loss") as unset_loss:
+            build_training_job_kwargs(
+                {"target": "y", "evaluation": MINIMAL_EVALUATION}, data="d.parquet"
+            )
+        assert str(unset_loss.value) != NO_FEATURES_MESSAGE
+
+        with pytest.raises(TrainingConfigError, match="field 'split' was removed"):
+            build_training_job_kwargs(
+                {
+                    "target": "y",
+                    "loss_function": "RMSE",
+                    "evaluation": MINIMAL_EVALUATION,
+                    "split": {"strategy": "random"},
+                },
+                data="d.parquet",
+            )
+
+    @pytest.mark.parametrize("role", _ROLE_ASSIGNMENTS)
+    def test_role_column_listed_as_a_feature_is_dormant(self, role):
+        """A role column ticked as a feature is not an error: it stays stored,
+        is left out of the fit with its monotone constraint, and is selected
+        again once it leaves the role."""
+        base = {
+            "target": "y",
+            "loss_function": "RMSE",
+            "evaluation": MINIMAL_EVALUATION,
+            "feature_columns": ["age", "role_col"],
+            "monotone_constraints": {"age": 1, "role_col": -1},
+        }
+        config = {**base, **role}
+
+        kwargs = build_training_job_kwargs(config, data="d.parquet")
+
+        assert kwargs["feature_columns"] == ["age"]
+        assert kwargs["monotone_constraints"] == {"age": 1}
+        assert config["feature_columns"] == ["age", "role_col"]
+        assert config["monotone_constraints"] == {"age": 1, "role_col": -1}
+
+        released = build_training_job_kwargs(base, data="d.parquet")
+        assert released["feature_columns"] == ["age", "role_col"]
+        assert released["monotone_constraints"] == {"age": 1, "role_col": -1}
+
+    def test_selected_features_keep_their_stored_order_without_duplicates(self):
+        kwargs = build_training_job_kwargs(
+            {
+                "target": "y",
+                "loss_function": "RMSE",
+                "evaluation": MINIMAL_EVALUATION,
+                "feature_columns": ["region", "age", "region"],
+            },
+            data="d.parquet",
+        )
+        assert kwargs["feature_columns"] == ["region", "age"]
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            pytest.param(
+                {
+                    "target": "y",
+                    "loss_function": "RMSE",
+                    "feature_columns": FEATURE_COLUMNS,
+                    "evaluation": MINIMAL_EVALUATION,
+                },
+                id="catboost",
+            ),
+            pytest.param(
+                {
+                    "target": "y",
+                    "algorithm": "glm",
+                    "family": "poisson",
+                    "terms": {"age": {"type": "linear"}},
+                    "evaluation": MINIMAL_EVALUATION,
+                },
+                id="glm",
+            ),
+        ],
+    )
+    def test_kwargs_never_carry_exclude(self, config):
+        """Node configs select features only through ``feature_columns``; the
+        scripting API's all-except ``exclude`` mode never engages from one."""
+        from haute.modelling import TrainingJob
+
+        kwargs = build_training_job_kwargs(config, data="d.parquet")
+
+        assert "exclude" not in kwargs
+        assert TrainingJob(**kwargs).exclude == []
+
+    def test_the_builder_refuses_a_config_carrying_exclude(self):
+        """A config that never passed load or save still cannot train with ``exclude``."""
+        config = {
+            "target": "y",
+            "loss_function": "RMSE",
+            "evaluation": MINIMAL_EVALUATION,
+            "feature_columns": FEATURE_COLUMNS,
+            "exclude": ["policy_id"],
+        }
+        with pytest.raises(TrainingConfigError, match="removed exclude field. Features are opt-in"):
+            build_training_job_kwargs(config, data="d.parquet")
+        with pytest.raises(TrainingConfigError, match="removed exclude field"):
+            validate_modelling_config_values(config)
 
 
 class TestExplicitObjectiveRequired:
@@ -460,6 +675,7 @@ class TestEvaluationConfig:
         config = {
             "target": "y",
             "loss_function": "RMSE",
+            "feature_columns": FEATURE_COLUMNS,
             "evaluation": {
                 "schema_version": 1,
                 "strategy": "group",
@@ -476,7 +692,10 @@ class TestEvaluationConfig:
 
     def test_missing_evaluation_fails_with_actionable_guidance(self):
         with pytest.raises(TrainingConfigError, match="Split pane"):
-            build_training_job_kwargs({"target": "y", "loss_function": "RMSE"}, data="d.parquet")
+            build_training_job_kwargs(
+                {"target": "y", "loss_function": "RMSE", "feature_columns": FEATURE_COLUMNS},
+                data="d.parquet",
+            )
 
     @pytest.mark.parametrize(
         "evaluation",
@@ -505,6 +724,7 @@ class TestEvaluationConfig:
                 {
                     "target": "y",
                     "loss_function": "RMSE",
+                    "feature_columns": FEATURE_COLUMNS,
                     "evaluation": evaluation,
                 },
                 data="d.parquet",
@@ -542,7 +762,12 @@ class TestDefaultMetricsDerivation:
         ],
     )
     def test_catboost_regression_metrics_follow_loss(self, loss, expected):
-        config = {"target": "y", "loss_function": loss, "evaluation": MINIMAL_EVALUATION}
+        config = {
+            "target": "y",
+            "loss_function": loss,
+            "feature_columns": FEATURE_COLUMNS,
+            "evaluation": MINIMAL_EVALUATION,
+        }
         if loss == "Tweedie":
             config["variance_power"] = 1.5
         kwargs = build_training_job_kwargs(config, data="d")
@@ -555,6 +780,7 @@ class TestDefaultMetricsDerivation:
                 "target": "y",
                 "task": "classification",
                 "loss_function": loss,
+                "feature_columns": FEATURE_COLUMNS,
                 "evaluation": MINIMAL_EVALUATION,
             },
             data="d",
@@ -594,6 +820,7 @@ class TestDefaultMetricsDerivation:
                 "target": "y",
                 "loss_function": "Poisson",
                 "metrics": ["rmse"],
+                "feature_columns": FEATURE_COLUMNS,
                 "evaluation": MINIMAL_EVALUATION,
             },
             data="d",
@@ -649,6 +876,7 @@ class TestDefaultMetricsDerivation:
                 "target": "y",
                 "task": "regression",
                 "loss_function": "Poisson",
+                "feature_columns": FEATURE_COLUMNS,
                 "evaluation": MINIMAL_EVALUATION,
             },
         ):
@@ -697,6 +925,7 @@ class TestFailoverGates:
                 "target": "y",
                 "loss_function": "Tweedie",
                 "variance_power": 1.5,
+                "feature_columns": FEATURE_COLUMNS,
                 "evaluation": MINIMAL_EVALUATION,
             },
             data="d",
@@ -705,7 +934,12 @@ class TestFailoverGates:
 
     def test_catboost_non_tweedie_does_not_require_variance_power(self):
         build_training_job_kwargs(
-            {"target": "y", "loss_function": "Poisson", "evaluation": MINIMAL_EVALUATION},
+            {
+                "target": "y",
+                "loss_function": "Poisson",
+                "feature_columns": FEATURE_COLUMNS,
+                "evaluation": MINIMAL_EVALUATION,
+            },
             data="d",
         )
 
@@ -855,7 +1089,7 @@ class TestFailoverGates:
         assert kwargs["params"]["terms"] == {"age": {"type": "linear"}}
         assert set(kwargs["params"]) <= set(GLM_CONFIG_KEYS)
 
-    def test_glm_ignores_exclude_and_clears_monotone_constraints(self):
+    def test_glm_ignores_feature_columns_and_clears_monotone_constraints(self):
         kwargs = build_training_job_kwargs(
             {
                 "target": "y",
@@ -863,13 +1097,14 @@ class TestFailoverGates:
                 "family": "poisson",
                 "terms": {"age": {"type": "linear"}, "region": {"type": "categorical"}},
                 "interactions": [{"factors": ["age", "region"], "include_main": True}],
-                "exclude": ["age"],
+                "feature_columns": ["region"],
                 "monotone_constraints": {"age": 1},
                 "evaluation": MINIMAL_EVALUATION,
             },
             data="d",
         )
-        assert kwargs["exclude"] == []
+        assert "exclude" not in kwargs
+        assert kwargs["feature_columns"] is None
         assert kwargs["monotone_constraints"] is None
         assert kwargs["params"]["terms"] == {
             "age": {"type": "linear"},
@@ -879,19 +1114,20 @@ class TestFailoverGates:
             {"factors": ["age", "region"], "include_main": True}
         ]
 
-    def test_catboost_keeps_exclude_and_monotone_constraints(self):
+    def test_catboost_keeps_selected_features_and_their_monotone_constraints(self):
         kwargs = build_training_job_kwargs(
             {
                 "target": "y",
                 "algorithm": "catboost",
                 "loss_function": "RMSE",
-                "exclude": ["age"],
+                "feature_columns": ["income", "region"],
                 "monotone_constraints": {"age": 1, "income": -1},
                 "evaluation": MINIMAL_EVALUATION,
             },
             data="d",
         )
-        assert kwargs["exclude"] == ["age"]
+        assert "exclude" not in kwargs
+        assert kwargs["feature_columns"] == ["income", "region"]
         assert kwargs["monotone_constraints"] == {"income": -1}
 
     # -- Elastic-net mixing weight ----------------------------------------
@@ -991,14 +1227,13 @@ class TestGlmValueContract:
     def test_glm_jobs_receive_no_catboost_only_levers(self):
         kwargs = build_training_job_kwargs(
             _glm_config(
-                exclude=["age"],
                 feature_columns=["age"],
                 monotone_constraints={"age": 1},
                 feature_weights={"age": 2.0},
             ),
             data="d",
         )
-        assert kwargs["exclude"] == []
+        assert "exclude" not in kwargs
         assert kwargs["feature_columns"] is None
         assert kwargs["monotone_constraints"] is None
         assert kwargs["feature_weights"] is None

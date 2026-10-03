@@ -1,9 +1,13 @@
-import { describe, it, expect, afterEach } from "vitest"
+import { describe, it, expect, afterEach, vi } from "vitest"
 import { render, screen, fireEvent, cleanup } from "@testing-library/react"
 import { FeaturesTab } from "../FeaturesTab"
+import { stubBeeswarmCanvas } from "./beeswarmCanvas"
 import { makeTrainResult } from "../../../test-utils/factories"
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+})
 
 describe("FeaturesTab", () => {
   it("shows empty state when no feature importance data", () => {
@@ -125,6 +129,52 @@ describe("FeaturesTab", () => {
 
     fireEvent.click(screen.getByText("SHAP"))
     expect(screen.getByText("shap_feat")).toBeInTheDocument()
+  })
+
+  it("offers the SHAP beeswarm only for a result with beeswarm rows", () => {
+    const shap_summary = [{ feature: "x", mean_abs_shap: 5 }]
+    render(<FeaturesTab result={makeTrainResult({ shap_summary })} />)
+    expect(screen.queryByText("SHAP beeswarm")).not.toBeInTheDocument()
+    cleanup()
+
+    render(
+      <FeaturesTab
+        result={makeTrainResult({
+          shap_summary,
+          shap_beeswarm: [
+            { feature: "x", kind: "numeric", shap_values: [0.1], values: [1], value_ranks: [null] },
+          ],
+        })}
+      />,
+    )
+    expect(screen.getByRole("button", { name: "SHAP beeswarm" })).toBeInTheDocument()
+  })
+
+  it("replaces the search and Features shown controls with the beeswarm's scope", () => {
+    stubBeeswarmCanvas()
+    const names = Array.from({ length: 25 }, (_, i) => `feat_${i}`)
+    const result = makeTrainResult({
+      feature_importance: names.map((feature, i) => ({ feature, importance: 25 - i })),
+      shap_summary: names.map((feature, i) => ({ feature, mean_abs_shap: 25 - i })),
+      shap_beeswarm: names.slice(0, 20).map((feature) => ({
+        feature,
+        kind: "numeric" as const,
+        shap_values: [0.1, -0.2, 0.3],
+        values: [1, 2, 3],
+        value_ranks: [0, 0.5, 1],
+      })),
+    })
+    render(<FeaturesTab result={result} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "SHAP beeswarm" }))
+
+    expect(screen.queryByLabelText("Search importance features")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Features shown")).not.toBeInTheDocument()
+    expect(screen.getByText("Top 20 of 25 features by mean |SHAP|, 3 sampled rows.")).toBeInTheDocument()
+    expect(screen.getAllByTestId("shap-beeswarm-feature")).toHaveLength(20)
+
+    fireEvent.click(screen.getByRole("button", { name: "Prediction" }))
+    expect(screen.getByLabelText("Search importance features")).toBeInTheDocument()
   })
 
   it("displays importance values", () => {

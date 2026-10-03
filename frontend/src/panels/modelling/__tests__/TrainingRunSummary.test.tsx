@@ -16,6 +16,7 @@ function catboostConfig(overrides: Record<string, unknown> = {}): Record<string,
   return {
     algorithm: "catboost",
     target: "avg_cheapest_5",
+    feature_columns: ["policy_cover_type", "ncd_years"],
     loss_function: "Tweedie",
     params: { iterations: 1000, depth: 6 },
     evaluation: {
@@ -81,7 +82,7 @@ describe("TrainingRunSummary categorical encoding", () => {
   })
 
   it.each([
-    ["the categorical column is excluded", catboostConfig({ exclude: ["policy_cover_type"] })],
+    ["the categorical column is not ticked", catboostConfig({ feature_columns: [] })],
     ["the family is not CatBoost", catboostConfig({ algorithm: "xgboost" })],
   ])("names no encoding when %s", (_case, config) => {
     render(<TrainingRunSummary config={config} columns={COLUMNS} preview={null} />)

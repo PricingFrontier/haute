@@ -23,7 +23,7 @@ export type ResultsWorkspaceAccent = {
   soft: string
 }
 
-export type ResultsWorkspaceIntro = { title: string; description: ReactNode }
+export type ResultsWorkspaceIntro = { title: string }
 
 const MODEL_ACCENT: ResultsWorkspaceAccent = {
   color: MODEL_COLORS.accent,
@@ -170,14 +170,9 @@ export default function ResultsWorkspace<T extends string>({
           style={paneStyle}
         >
           {intro && (
-            <div className="mb-4">
-              <h3 className="text-base font-semibold" style={{ color: "var(--text-primary)" }}>
-                {intro.title}
-              </h3>
-              <p className="mt-1 text-xs leading-relaxed" style={{ color: "var(--text-muted)" }}>
-                {intro.description}
-              </p>
-            </div>
+            <h3 className="mb-4 text-base font-semibold" style={{ color: "var(--text-primary)" }}>
+              {intro.title}
+            </h3>
           )}
           {children}
         </div>

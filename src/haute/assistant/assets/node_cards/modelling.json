@@ -4,7 +4,7 @@
   "fields": {
     "name": "The model's name, used for its saved files and MLflow run.",
     "target": "The column to predict; never also a feature.",
-    "feature_columns": "The predictor columns. Target, weight and offset columns are never features.",
+    "feature_columns": "Tree families: the predictor columns, required; features are opt-in, so only listed columns train. Target, weight and offset columns are never features.",
     "algorithm": "The model family, lower case: \"catboost\", \"xgboost\", \"lightgbm\" and \"ebm\" are tree families; \"glm\" is a generalised linear model.",
     "task": "\"regression\" or \"classification\"; a GLM trains regression only.",
     "loss_function": "Tree families: the training loss, required: \"RMSE\", \"MAE\", \"Poisson\", \"Gamma\", \"Tweedie\" (with variance_power between 1 and 2), \"Logloss\" or \"CrossEntropy\". CatBoost has no Gamma.",

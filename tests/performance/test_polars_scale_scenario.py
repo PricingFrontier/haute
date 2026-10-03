@@ -246,11 +246,6 @@ def test_generated_join_training_projection_scale_contract(
         "weight": "weight",
         "id_columns": ["policy_id"],
         "feature_columns": ["feature_a", "feature_b", "region_factor"],
-        "exclude": [
-            "region_key",
-            *[column for column in base_columns if column.startswith("unused_")],
-            *[column for column in lookup_columns if column.startswith("unused_")],
-        ],
     }
     required_columns_by_node = _training_required_columns_by_node(
         "training_input",

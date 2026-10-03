@@ -80,10 +80,7 @@ class TestPerModelContractFiles:
         pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         from haute.modelling._training_job import model_contract_filename
 
-        monkeypatch.setattr(
-            "haute.modelling._algorithms.CatBoostAlgorithm.shap_summary",
-            lambda *a, **kw: [],
-        )
+        monkeypatch.delattr("haute.modelling._algorithms.CatBoostAlgorithm.shap_values")
         monkeypatch.setattr(
             "haute.modelling._algorithms.CatBoostAlgorithm.feature_importance_typed",
             lambda *a, **kw: [],

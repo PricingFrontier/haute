@@ -313,7 +313,7 @@ export function parseTrainFeatureSelection(value: unknown): NonNullable<TrainRes
     const itemObj = expectPlainObject("parseTrainFeatureSelection", item, field)
     return {
       column: expectString("parseTrainFeatureSelection", itemObj.column, `${field}.column`),
-      reason: expectStringLiteral("parseTrainFeatureSelection", itemObj.reason, `${field}.reason`, ["target", "weight", "offset", "fold", "identifier", "evaluation", "configured_exclusion", "not_selected", "not_in_formula"]),
+      reason: expectStringLiteral("parseTrainFeatureSelection", itemObj.reason, `${field}.reason`, ["target", "weight", "offset", "fold", "identifier", "evaluation", "not_selected", "not_in_formula"]),
     }
   }
   const retainedMetadata = parseTrainFeatureSelectionCollection(obj.retained_metadata, "retained_metadata", parseExcludedColumn)
@@ -331,7 +331,7 @@ export function parseTrainFeatureSelection(value: unknown): NonNullable<TrainRes
   if (featureCount !== features.total_count) throw new Error("parseTrainFeatureSelection: feature_count is inconsistent")
   return {
     schema_version: 1,
-    mode: expectStringLiteral("parseTrainFeatureSelection", obj.mode, "mode", ["explicit", "all_except", "glm_terms"]),
+    mode: expectStringLiteral("parseTrainFeatureSelection", obj.mode, "mode", ["explicit", "glm_terms"]),
     feature_count: featureCount,
     detail_state: detailState,
     features,

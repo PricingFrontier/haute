@@ -424,6 +424,7 @@ def test_config_rejects_invalid_ebm_settings(
         "loss_function": "RMSE",
         "params": params,
         "evaluation": EVALUATION,
+        "feature_columns": ["age", "region"],
         **config_extra,
     }
     with pytest.raises(TrainingConfigError, match=message):
@@ -437,6 +438,7 @@ def test_config_refuses_mae_and_feature_weights_and_accepts_a_valid_ebm() -> Non
         "loss_function": "Poisson",
         "params": {"max_rounds": 100, "interactions": [["a", "b"]]},
         "evaluation": EVALUATION,
+        "feature_columns": ["a", "b", "c"],
         "monotone_constraints": {"c": 1},
     }
     assert build_training_job_kwargs(config, data="d.parquet")["algorithm"] == "ebm"

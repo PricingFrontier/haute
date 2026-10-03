@@ -29,6 +29,28 @@ describe("RelativityBars", () => {
     expect(barFill(rows[2]).style.left).toBe("50%")
   })
 
+  it("diverges from a caller baseline, with an optional smaller scale floor", () => {
+    render(
+      <RelativityBars
+        ariaLabel="SHAP"
+        baseline={0}
+        minHalfScale={Number.MIN_VALUE}
+        bars={[
+          { key: "a", label: "Low", value: -0.01 },
+          { key: "b", label: "High", value: 0.02 },
+        ]}
+      />,
+    )
+
+    const [low, high] = screen.getAllByTestId("relativity-row")
+    expect(barFill(low).style.background).toBe("var(--chart-below)")
+    expect(barFill(high).style.background).toBe("var(--chart-above)")
+    // Without the 0.1 floor relativities use, 0.02 fills half the track.
+    expect(barFill(high).style.width).toBe("50%")
+    expect(barFill(low).style.width).toBe("25%")
+    expect(barFill(low).style.left).toBe("25%")
+  })
+
   it("draws the baseline and whiskers with theme tokens, never raw colour literals", () => {
     const { container } = render(
       <RelativityBars

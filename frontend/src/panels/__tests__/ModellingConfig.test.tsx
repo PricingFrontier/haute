@@ -104,6 +104,7 @@ function defaultProps(overrides: ConfigOverrides = {}) {
     task: "regression",
     algorithm: "catboost",
     loss_function: "RMSE",
+    feature_columns: ["age", "region", "exposure"],
     evaluation,
   }
   return {
@@ -284,10 +285,11 @@ describe("Training configuration readiness", () => {
       onPaneIssuesChange,
       config: { _nodeId: "incomplete", algorithm: "catboost", target: "loss_ratio" },
     })
-    expect(onPaneIssuesChange).toHaveBeenLastCalledWith("incomplete", ["target"])
+    expect(onPaneIssuesChange).toHaveBeenLastCalledWith("incomplete", ["features", "target"])
   })
   it.each([
-    [{ algorithm: "catboost" }, ["target"]],
+    [{ algorithm: "catboost" }, ["features", "target"]],
+    [{ algorithm: "catboost", target: "loss_ratio", loss_function: "RMSE" }, ["features"]],
     [{ algorithm: "glm", family: "poisson", target: "loss_ratio" }, ["features"]],
     [
       {
@@ -320,17 +322,6 @@ describe("Training configuration readiness", () => {
 
     expect(screen.queryByText(/Parameters JSON/)).toBeNull()
     expect(onPaneIssuesChange).toHaveBeenLastCalledWith("node_1", [])
-  })
-  it("names one_hot_max_size beneath CatBoost's Parameters JSON only", () => {
-    const note = /one_hot_max_size.*one-hot encoded.*target statistics, which are much slower to train/
-    renderConfig({ activePane: "params" })
-    expect(screen.getByText(note)).toBeInTheDocument()
-    cleanup()
-    renderConfig({
-      activePane: "params",
-      config: { _nodeId: "xgb", algorithm: "xgboost", target: "loss_ratio", loss_function: "RMSE", params: {} },
-    })
-    expect(screen.queryByText(note)).toBeNull()
   })
   it("starts an XGBoost study from XGBoost's own parameter keys (MOD-F02)", () => {
     const { props } = renderConfig({
@@ -467,16 +458,17 @@ describe("ModellingConfig", () => {
     it("feature count adjusts when weight is set", () => {
       renderConfig({
         activePane: "features",
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", weight: "exposure" },
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", weight: "exposure", feature_columns: ["age", "region", "exposure"] },
       })
-      // Target=loss_ratio, weight=exposure both excluded. Features: age, region = 2 of 4
+      // Target=loss_ratio, weight=exposure both excluded; the ticked weight is
+      // dormant. Features: age, region = 2 of 4
       expect(
         screen.getAllByRole("checkbox", { name: /^Include / }),
       ).toHaveLength(2)
       expect(screen.getByText("2 included · 0 excluded")).toBeInTheDocument()
     })
 
-    it("exclude column toggles work", () => {
+    it("unticking a feature removes it from feature_columns", () => {
       vi.spyOn(window, "confirm").mockReturnValue(true)
       const { props } = renderConfig({ activePane: "features" })
       fireEvent.click(
@@ -485,22 +477,23 @@ describe("ModellingConfig", () => {
           { name: "Include age" },
         ),
       )
-      expect(props.onUpdate).toHaveBeenCalledWith({ exclude: ["age"] })
+      expect(props.onUpdate).toHaveBeenCalledWith({ feature_columns: ["region", "exposure"] })
     })
 
-    it("excluded column re-includes on second click", () => {
+    it("a new node starts with every feature unticked and blocks training until one is ticked", () => {
       const { props } = renderConfig({
         activePane: "features",
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", exclude: ["age"] },
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", loss_function: "RMSE" },
       })
+      expect(screen.getByText("0 included · 3 excluded")).toBeInTheDocument()
+      expect(screen.getByRole("alert")).toHaveTextContent("Tick at least one feature on the Features pane.")
       fireEvent.click(
         within(screen.getByRole("group", { name: "age feature" })).getByRole(
           "checkbox",
           { name: "Include age" },
         ),
       )
-      // Should remove "age" from exclusion list
-      expect(props.onUpdate).toHaveBeenCalledWith({ exclude: [] })
+      expect(props.onUpdate).toHaveBeenCalledWith({ feature_columns: ["age"] })
     })
 
     it("shows algorithm picker when algorithm is not set", () => {
@@ -951,6 +944,7 @@ describe("ModellingConfig", () => {
         target: "loss_ratio",
         task: "regression",
         algorithm: "catboost",
+        feature_columns: ["age"],
       }
       const completeConfig = {
         ...incompleteConfig,
@@ -1924,14 +1918,14 @@ describe("ModellingConfig", () => {
   })
 
   // ═════════════════════════════════════════════════════════════════
-  // Feature exclude/include updates config
+  // Feature include/exclude updates config
   // ═════════════════════════════════════════════════════════════════
 
-  describe("Feature exclude/include updates config", () => {
+  describe("Feature include/exclude updates config", () => {
     beforeEach(() => { defaultPane = "features" })
-    it("excluding multiple columns accumulates in exclude array", () => {
+    it("ticking more columns accumulates in feature_columns", () => {
       const { props } = renderConfig({
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", exclude: ["age"] },
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", feature_columns: ["age"] },
       })
       fireEvent.click(
         within(screen.getByRole("group", { name: "region feature" })).getByRole(
@@ -1939,12 +1933,12 @@ describe("ModellingConfig", () => {
           { name: "Include region" },
         ),
       )
-      expect(props.onUpdate).toHaveBeenCalledWith({ exclude: ["age", "region"] })
+      expect(props.onUpdate).toHaveBeenCalledWith({ feature_columns: ["age", "region"] })
     })
 
-    it("including a column from exclude list removes only that column", () => {
+    it("unticking a column removes only that column", () => {
       const { props } = renderConfig({
-        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", exclude: ["age", "region"] },
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost", feature_columns: ["age", "region"] },
       })
       fireEvent.click(
         within(screen.getByRole("group", { name: "region feature" })).getByRole(
@@ -1952,7 +1946,7 @@ describe("ModellingConfig", () => {
           { name: "Include region" },
         ),
       )
-      expect(props.onUpdate).toHaveBeenCalledWith({ exclude: ["age"] })
+      expect(props.onUpdate).toHaveBeenCalledWith({ feature_columns: ["age"] })
     })
   })
 

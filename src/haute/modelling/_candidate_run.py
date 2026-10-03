@@ -26,7 +26,7 @@ CANDIDATE_RUN_CONTRACT_VERSION = "1"
 _TRAINING_IDENTITY_KEYS = (
     "target",
     "weight",
-    "exclude",
+    "exclude",  # scripted TrainingJob only; the node builder never passes it
     "feature_columns",
     "fold_column",
     "id_columns",

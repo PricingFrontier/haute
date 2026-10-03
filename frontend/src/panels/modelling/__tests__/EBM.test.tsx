@@ -41,7 +41,7 @@ describe("EBMInteractionsConfig (MOD-F04)", () => {
     const onUpdate = renderInteractions({
       params: { max_rounds: 500, interactions: [["age", "region"]] },
       monotone_constraints: { income: 1 },
-      exclude: [],
+      feature_columns: ["age", "region", "income"],
     })
     const pair = screen.getByRole("group", { name: "Interaction 1" })
     const second = within(pair).getByLabelText("Interaction 1 feature 2")
@@ -103,13 +103,12 @@ const TERMS: EbmTerm[] = [
 describe("EBMTermsTab (MOD-F04)", () => {
   afterEach(cleanup)
 
-  it("shows the most important term's shape with its missing bin, labelled as term scores", () => {
+  it("shows the most important term's shape with its missing bin, not as SHAP values", () => {
     render(<EBMTermsTab result={makeTrainResult({ ebm_terms: TERMS })} />)
     expect(screen.getByRole("heading", { name: "age" })).toBeInTheDocument()
     expect(screen.getByText(/Main effect/)).toBeInTheDocument()
     expect(screen.getByText("Missing values score 0.05")).toBeInTheDocument()
     expect(screen.getByRole("img", { name: "Shape function for age" })).toBeInTheDocument()
-    expect(screen.getByText(/Additive term scores on the model's link scale/)).toBeInTheDocument()
     expect(screen.queryByText(/SHAP/)).toBeNull()
   })
 

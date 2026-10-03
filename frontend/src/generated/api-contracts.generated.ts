@@ -2030,6 +2030,9 @@ export interface TrainResponse {
   residuals_stats: {
     [k: string]: number;
   };
+  shap_beeswarm: TrainShapBeeswarmFeature[];
+  shap_curves: TrainShapCurveFeature[];
+  shap_link: 'identity' | 'log' | 'logit' | null;
   shap_summary: {
     [k: string]: unknown;
   }[];
@@ -2102,7 +2105,7 @@ export interface TrainingFeatureSelectionDiagnosticPayload {
   excluded_columns: TrainingFeatureColumnReasonCollectionPayload;
   feature_count: number;
   features: TrainingFeatureNameCollectionPayload;
-  mode: 'explicit' | 'all_except' | 'glm_terms';
+  mode: 'explicit' | 'glm_terms';
   retained_metadata: TrainingFeatureColumnReasonCollectionPayload;
   schema_version: 1;
 }
@@ -2116,16 +2119,7 @@ export interface TrainingFeatureColumnReasonCollectionPayload {
 }
 export interface TrainingFeatureColumnReasonPayload {
   column: string;
-  reason:
-    | 'target'
-    | 'weight'
-    | 'offset'
-    | 'fold'
-    | 'identifier'
-    | 'evaluation'
-    | 'configured_exclusion'
-    | 'not_selected'
-    | 'not_in_formula';
+  reason: 'target' | 'weight' | 'offset' | 'fold' | 'identifier' | 'evaluation' | 'not_selected' | 'not_in_formula';
 }
 export interface TrainingFeatureNameCollectionPayload {
   /**
@@ -2145,6 +2139,40 @@ export interface FitEvidencePayload {
   stopping_reason: 'none' | 'validation' | 'native_exhaustion' | null;
   term_update_steps: number[] | null;
   threads: number;
+}
+/**
+ * One feature's beeswarm row: each plotted row's SHAP value, feature value and rank.
+ */
+export interface TrainShapBeeswarmFeature {
+  feature: string;
+  kind: 'numeric' | 'categorical';
+  shap_values: number[];
+  value_ranks: (number | null)[];
+  values: (number | string | null)[];
+}
+/**
+ * One feature's SHAP curve: SHAP statistics per value band or level.
+ */
+export interface TrainShapCurveFeature {
+  feature: string;
+  kind: 'numeric' | 'categorical';
+  levels_omitted: number;
+  /**
+   * @minItems 1
+   */
+  points: TrainShapCurvePoint[];
+}
+/**
+ * One group of a SHAP curve: a numeric band or value, a level, or the missing rows.
+ */
+export interface TrainShapCurvePoint {
+  high: number | null;
+  low: number | null;
+  mean_shap: number;
+  p10_shap: number;
+  p90_shap: number;
+  rows: number;
+  value: number | string | null;
 }
 /**
  * The tuning study as published; its invariants are checked where the

@@ -55,6 +55,12 @@ _MODELLING = {
     },
     "metrics": ["rmse"],
 }
+# Tree-model features are opt-in: every graph names the columns that reach
+# ``train`` besides the target. These are the quotes file's.
+_QUOTE_FEATURES = ["id", "a", "b"]
+# What training over the default two-node chain demands of ``B``: its
+# selected features and the target.
+_CHAIN_TRAINING_COLUMNS = NodeSnapshotColumns.of({*_QUOTE_FEATURES, "k0", "k1", "y"})
 
 
 @pytest.fixture()
@@ -125,8 +131,14 @@ def _graph(
     }
 
 
-def _chain(project: Path, length: int = 2, *, b_code: str | None = None) -> dict[str, Any]:
-    """``src → A → B (→ C) → train``."""
+def _chain(
+    project: Path,
+    length: int = 2,
+    *,
+    b_code: str | None = None,
+    extra_features: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """``src → A → B (→ C) → train``, training on every column but the target."""
     names = ["A", "B", "C"][:length]
     nodes: list[tuple[str, str, dict[str, Any]]] = [
         ("src", "dataInput", _data_input(project, "quotes.parquet"))
@@ -141,7 +153,8 @@ def _chain(project: Path, length: int = 2, *, b_code: str | None = None) -> dict
         edges.append((parent, name))
         parent = name
     edges.append((parent, "train"))
-    return _graph(project, nodes, edges)
+    features = [*_QUOTE_FEATURES, *(f"k{index}" for index in range(length)), *extra_features]
+    return _graph(project, nodes, edges, modelling_config={"feature_columns": features})
 
 
 def _diamond(
@@ -162,6 +175,7 @@ def _diamond(
             ("D", "polars", {"code": "df = B.join(C, on='id', how='left', validate='1:1')"}),
         ],
         [("src", "A"), ("A", "B"), ("A", "C"), ("B", "D"), ("C", "D"), ("D", "train")],
+        modelling_config={"feature_columns": [*_QUOTE_FEATURES, "rb", "rc"]},
     )
 
 
@@ -369,6 +383,7 @@ def test_second_training_run_seeds_first_runs_captures(
             ("B", "polars", {"code": "df = J.filter(pl.col('a') >= 0)"}),
         ],
         [("src", "A"), ("A", "J"), ("other", "J"), ("J", "B"), ("B", "train")],
+        modelling_config={"feature_columns": [*_QUOTE_FEATURES, "a2", "d"]},
     )
     first = _train(monkeypatch, graph)
     assert first.job["status"] == "running", first.job.get("message")
@@ -444,6 +459,7 @@ def test_training_behind_batch_model_score_scores_once(
             ),
         ],
         [("scoring", "M"), ("M", "train")],
+        modelling_config={"feature_columns": ["feature", "prediction"]},
     )
     first = _train(monkeypatch, graph, source="batch")
     assert first.job["status"] == "running", first.job.get("message")
@@ -599,7 +615,9 @@ def test_single_cached_branch_after_ancestor_clear_recomputes(
 def test_paused_seeded_worker_survives_refresh_and_clear(
     project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    graph = _chain(project)
+    # B's published generation carries a marker column its code does not
+    # produce; selecting it keeps it in the training frame.
+    graph = _chain(project, extra_features=("marker",))
     frames = _chain_frames(project)
     b1_rows = frames["B"].with_columns(pl.lit(7.0).alias("marker"))
     _publish(store, graph, "B", b1_rows)
@@ -627,7 +645,8 @@ def test_evaluation_preview_seeds_training_capture(
     graph = _chain(project, b_code="df = A.with_columns(pl.lit(1).alias('k1')).sort('y')")
     _train(monkeypatch, graph)
     b = store.latest_generation(_identity(store, graph, "B"))
-    assert b is not None and b.columns == ALL
+    # Training captures exactly what it demands: its selected features and target.
+    assert b is not None and b.columns == _CHAIN_TRAINING_COLUMNS
     calls = _counting_builds(monkeypatch)
 
     preview = TrainService(JobStore()).evaluation_preview(
@@ -656,7 +675,7 @@ def test_training_widens_evaluation_preview_capture(
 
     assert run.captures == {"B": "published"}
     widened = store.latest_generation(_identity(store, graph, "B"))
-    assert widened is not None and widened.columns == ALL
+    assert widened is not None and widened.columns == _CHAIN_TRAINING_COLUMNS
 
 
 def test_training_leaves_no_checkpoint_directory(
@@ -974,6 +993,7 @@ def test_concurrent_training_workers_publish_each_capture_once(
     from haute.routes._training_preparation import (
         TrainingPreparationOutcome,
         TrainingPreparationRequest,
+        _training_projection_keep_columns,
         _training_required_columns_by_node,
         create_training_parquet_path,
         training_seed_plan_request,
@@ -992,6 +1012,7 @@ def test_concurrent_training_workers_publish_each_capture_once(
             ),
         ],
         [("src", "J"), ("other", "J"), ("J", "B"), ("B", "train")],
+        modelling_config={"feature_columns": [*_QUOTE_FEATURES, "d", "e"]},
     )
     pipeline = PipelineGraph.model_validate(graph)
     config = dict(pipeline.node_map["train"].data.config)
@@ -1024,8 +1045,8 @@ def test_concurrent_training_workers_publish_each_capture_once(
                     config=config,
                     project_root=str(project),
                     row_limit=None,
-                    exclude=None,
-                    keep_columns=None,
+                    project_to_keep_columns=True,
+                    keep_columns=_training_projection_keep_columns(config),
                     required_columns_by_node=required,
                     preamble_supplied=True,
                     seed_plan=plan.handoff(),
@@ -1182,6 +1203,7 @@ def test_consumed_select_below_a_rating_step_is_captured_and_seeded(
             ("S", "polars", {"code": "df = R.select('id', 'a', 'b', 'y')"}),
         ],
         [("src", "R"), ("R", "S"), ("S", "train")],
+        modelling_config={"feature_columns": _QUOTE_FEATURES},
     )
     first = _train(monkeypatch, graph)
     assert first.job["status"] == "running", first.job.get("message")
@@ -1206,6 +1228,7 @@ def test_modelling_node_over_chunk_local_filter_writes_input_sliced(
             ("A", "polars", {"code": "df = src.filter(pl.col('a') >= 2)"}),
         ],
         [("src", "A"), ("A", "train")],
+        modelling_config={"feature_columns": _QUOTE_FEATURES},
     )
     run = _train(monkeypatch, graph, streaming_chunk_size=40)
     assert run.job["status"] == "running", run.job.get("message")
@@ -1218,9 +1241,11 @@ def test_modelling_node_over_chunk_local_filter_writes_input_sliced(
     assert_frame_equal(run.frame, expected)
 
 
-def test_training_write_composes_column_exclusions(
+def test_training_write_composes_dropping_unselected_columns(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The tree-model sink keeps only selected features and role columns, and
+    that drop composes into the input-sliced write recipe."""
     graph = _graph(
         project,
         [
@@ -1228,7 +1253,7 @@ def test_training_write_composes_column_exclusions(
             ("A", "polars", {"code": "df = src.filter(pl.col('a') >= 2)"}),
         ],
         [("src", "A"), ("A", "train")],
-        modelling_config={"exclude": ["b"]},
+        modelling_config={"feature_columns": ["id", "a"]},
     )
     run = _train(monkeypatch, graph, streaming_chunk_size=40)
     assert run.job["status"] == "running", run.job.get("message")
@@ -1251,6 +1276,7 @@ def test_training_write_under_row_limit_takes_native_path(
             ("A", "polars", {"code": "df = src.filter(pl.col('a') >= 2)"}),
         ],
         [("src", "A"), ("A", "train")],
+        modelling_config={"feature_columns": _QUOTE_FEATURES},
     )
     run = _train(monkeypatch, graph, streaming_chunk_size=40, row_limit=50)
     assert run.job["status"] == "running", run.job.get("message")
@@ -1286,6 +1312,7 @@ def test_mismatched_write_recipe_degrades_to_native_with_warning(
             ("A", "polars", {"code": "df = src.filter(pl.col('a') >= 2)"}),
         ],
         [("src", "A"), ("A", "train")],
+        modelling_config={"feature_columns": _QUOTE_FEATURES},
     )
     run = _train(monkeypatch, graph, streaming_chunk_size=40)
     assert run.job["status"] == "running", run.job.get("message")
@@ -1332,6 +1359,7 @@ def test_write_failure_that_is_not_a_mismatch_fails_the_job(
             ("A", "polars", {"code": "df = src.filter(pl.col('a') >= 2)"}),
         ],
         [("src", "A"), ("A", "train")],
+        modelling_config={"feature_columns": _QUOTE_FEATURES},
     )
     run = _train(monkeypatch, graph, streaming_chunk_size=40)
     assert run.job["status"] == "error", run.job.get("message")
@@ -1347,6 +1375,7 @@ def test_modelling_node_directly_off_data_input_writes_sliced(
             ("src", "dataInput", _data_input(project, "quotes.parquet")),
         ],
         [("src", "train")],
+        modelling_config={"feature_columns": _QUOTE_FEATURES},
     )
     run = _train(monkeypatch, graph, streaming_chunk_size=40)
     assert run.job["status"] == "running", run.job.get("message")
@@ -1372,6 +1401,7 @@ def test_sliceable_sampled_frame_records_no_native_reason(
             ("src", "dataInput", _data_input(project, "quotes.parquet")),
         ],
         [("src", "train")],
+        modelling_config={"feature_columns": _QUOTE_FEATURES},
     )
     run = _train(monkeypatch, graph, streaming_chunk_size=40, row_limit=50)
     assert run.job["status"] == "running", run.job.get("message")
@@ -1429,6 +1459,7 @@ def test_cancellation_mid_write_leaves_no_prepared_parquet(
             ("A", "polars", {"code": "df = src.filter(pl.col('a') >= 2)"}),
         ],
         [("src", "A"), ("A", "train")],
+        modelling_config={"feature_columns": _QUOTE_FEATURES},
     )
     run = _train(monkeypatch, graph, streaming_chunk_size=40)
     # A cancelled run reports as cancelled, not as a pipeline failure pointing

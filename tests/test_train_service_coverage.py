@@ -65,7 +65,12 @@ def _training_execution_context() -> ExecutionContext:
 
 
 def _source_only_request(path: str = "x.parquet"):
-    """Build a TrainRequest whose graph is a single dataInput node."""
+    """Build a TrainRequest whose graph is a single dataInput node.
+
+    The preparation core reads the target node's config as the modelling
+    config; features are opt-in, so it ticks ``x1``, which every stub frame
+    here carries.
+    """
     from haute.schemas import TrainRequest
 
     graph = make_graph(
@@ -76,7 +81,7 @@ def _source_only_request(path: str = "x.parquet"):
                     "data": {
                         "label": "n",
                         "nodeType": "dataInput",
-                        "config": {"path": path},
+                        "config": {"path": path, "feature_columns": ["x1"]},
                     },
                 }
             ],
@@ -264,8 +269,8 @@ class TestPreparationMissingTarget:
 
 
 class TestPreparationProjection:
-    def test_excluded_columns_dropped_before_sink(self, tmp_path):
-        """exclude + keep_columns should drop excluded non-keep columns."""
+    def test_unselected_columns_dropped_before_sink(self, tmp_path):
+        """A tree model's sink keeps only keep_columns (selected features + roles)."""
         body = _source_only_request()
         parquet_path = tmp_path / "prepared.parquet"
 
@@ -315,8 +320,8 @@ class TestPreparationProjection:
                     body,
                     parquet_path,
                     row_limit=2,
-                    exclude=["drop_me", "keep_me"],
-                    keep_columns=["y", "keep_me"],
+                    project_to_keep_columns=True,
+                    keep_columns=["y", "keep_me", "x1"],
                 )
             )
 
@@ -324,14 +329,12 @@ class TestPreparationProjection:
         assert outcome.parquet_path == str(parquet_path)
         assert len(sunk_frames) == 1
         cols = sunk_frames[0].collect_schema().names()
-        # drop_me is excluded and not in keep_columns → dropped.
+        # drop_me is not in keep_columns → dropped; the kept columns survive.
         assert "drop_me" not in cols
-        # keep_me is excluded but protected → retained.
-        assert "keep_me" in cols
-        assert "y" in cols
+        assert set(cols) == {"y", "keep_me", "x1"}
 
-    def test_no_drop_when_nothing_excluded_matches(self, tmp_path):
-        """exclude listing only protected columns drops nothing."""
+    def test_no_drop_when_not_projecting(self, tmp_path):
+        """A GLM sink (project_to_keep_columns False) drops nothing."""
         body = _source_only_request()
         parquet_path = tmp_path / "prepared.parquet"
 
@@ -372,7 +375,7 @@ class TestPreparationProjection:
                 _preparation_request(
                     body,
                     parquet_path,
-                    exclude=["y"],
+                    project_to_keep_columns=False,
                     keep_columns=["y"],
                 )
             )
@@ -425,7 +428,6 @@ class TestStartGlmMergeAndKeepColumns:
             "weight": "exposure",
             "offset": "log_exp",
             "feature_columns": ["x1"],
-            "exclude": ["junk", "x1"],
             "params": {"iterations": 3},
             "evaluation": MINIMAL_EVALUATION,
         }
@@ -466,9 +468,16 @@ class TestStartGlmMergeAndKeepColumns:
         captured: dict[str, object] = {}
 
         def fake_execute_and_sink(
-            _body, _preamble, _row_limit, _job_id, *, exclude, keep_columns, **kwargs
+            _body,
+            _preamble,
+            _row_limit,
+            _job_id,
+            *,
+            project_to_keep_columns,
+            keep_columns,
+            **kwargs,
         ):
-            captured["exclude"] = exclude
+            captured["project_to_keep_columns"] = project_to_keep_columns
             captured["keep_columns"] = keep_columns
             return "/tmp/fake_train.parquet"
 
@@ -505,8 +514,8 @@ class TestStartGlmMergeAndKeepColumns:
         keep = captured["keep_columns"]
         assert set(keep) == {"loss", "exposure", "log_exp"}
         # A GLM feature is in the model exactly when it has a term or is an
-        # interaction factor, so the sink is never asked to drop by `exclude`.
-        assert captured["exclude"] is None
+        # interaction factor, so its sink never projects to the keep columns.
+        assert captured["project_to_keep_columns"] is False
 
     def test_start_stamps_explicit_timeout_before_preparation(self, haute_scratch):
         from haute.routes._job_store import JobStore
@@ -929,6 +938,7 @@ class TestStartExecutionContextLifecycle:
 
         config = {
             "target": "loss",
+            "feature_columns": ["age"],
             "algorithm": "catboost",
             "loss_function": "RMSE",
             "params": {"iterations": 2},
@@ -1084,7 +1094,7 @@ class TestStartExecutionContextLifecycle:
 
 
 # ---------------------------------------------------------------------------
-# Pure helper functions: _string_list_config, _training_required_metadata_columns,
+# Pure helper functions: string_list_config, _training_required_metadata_columns,
 # _training_required_columns_by_node, _job_elapsed_seconds, _check_gpu_vram.
 # These are module-level and validate config-shape invariants; their error and
 # early-return arms (197, 202, 204, 219->229, 247, 348-349, 368, 384->390) are
@@ -1095,23 +1105,23 @@ class TestStartExecutionContextLifecycle:
 class TestStringListConfig:
     def test_non_list_value_raises(self):
         """A scalar where a list is expected is a config error (line 197)."""
-        from haute.routes._train_service import _string_list_config
+        from haute.modelling._train_config import string_list_config
 
         with pytest.raises(ValueError, match="must be a list of column names"):
-            _string_list_config({"id_columns": "not_a_list"}, "id_columns")
+            string_list_config({"id_columns": "not_a_list"}, "id_columns")
 
     def test_non_string_member_raises(self):
         """A non-string / empty member is rejected (line 202)."""
-        from haute.routes._train_service import _string_list_config
+        from haute.modelling._train_config import string_list_config
 
         with pytest.raises(ValueError, match="non-empty string column names"):
-            _string_list_config({"id_columns": ["ok", 123]}, "id_columns")
+            string_list_config({"id_columns": ["ok", 123]}, "id_columns")
 
     def test_duplicate_members_deduplicated(self):
         """Duplicates are skipped while order is preserved (line 204 continue)."""
-        from haute.routes._train_service import _string_list_config
+        from haute.modelling._train_config import string_list_config
 
-        out = _string_list_config({"id_columns": ["a", "b", "a", "c", "b"]}, "id_columns")
+        out = string_list_config({"id_columns": ["a", "b", "a", "c", "b"]}, "id_columns")
         assert out == ["a", "b", "c"]
 
 
@@ -1278,6 +1288,7 @@ class TestStartCategoricalLevelsMerge:
 
         config = {
             "target": "loss",
+            "feature_columns": ["region"],
             "algorithm": "catboost",
             "loss_function": "RMSE",
             "categorical_levels": {"region": ["north", "south"]},
@@ -1407,6 +1418,7 @@ class TestCheckGpuFallbackNoWarning:
 def _launch_config():
     return {
         "target": "y",
+        "feature_columns": ["x"],
         "algorithm": "catboost",
         "loss_function": "RMSE",
         "params": {"iterations": 1},
@@ -1640,21 +1652,22 @@ class TestLaunchBackgroundWorker:
 
     def test_success_path_runs_progress_iteration_and_completes(self, tmp_path):
         """A TrainingJob whose run() invokes progress + on_iteration (past the
-        loss-history cap) drives the success closures and the truncation arm
-        (1075-1076); the job ends completed and the temp parquet is unlinked."""
+        loss-history cap) drives the success closures and the thinning arm;
+        the job ends completed and the temp parquet is unlinked."""
         from haute.routes import _training_lifecycle as _train_service
+        from haute.routes import _training_worker
 
         store, service, job_id = self._service_and_job()
         context = _training_execution_context()
         tmp_parquet = str(tmp_path / "train.parquet")
         Path(tmp_parquet).write_text("x", encoding="utf-8")
 
-        cap = _train_service._max_train_loss_history()
+        cap = _training_worker._max_train_loss_history()
 
         class FakeJob(_SuccessfulTrainingJob):
             def run(self, progress, on_iteration, **kwargs):
                 progress("working", 0.5)
-                # Push more iterations than the cap so 1075-1076 truncates.
+                # Push more iterations than the cap so the live history thins.
                 for i in range(cap + 3):
                     on_iteration(
                         i, cap + 3, {"RMSE": float(i)}, {"iteration": float(i), "train_RMSE": i}
@@ -1684,13 +1697,10 @@ class TestLaunchBackgroundWorker:
 
         job = store.require_job(job_id)
         assert job["status"] == "completed"
-        # The loss history keeps the engine's prefixed rows, capped and flagged truncated;
-        # the readout keeps the engine's own metric name.
-        assert job["train_loss_history_truncated"] is True
-        pushed = [{"iteration": float(i), "train_RMSE": i} for i in range(cap + 3)]
-        # The base fake's run adds its own row last.
-        own = {"iteration": 1.0, "train_rmse": 0.5}
-        assert job["train_loss_history"] == [*pushed, own][-cap:]
+        # The base fake's run adds its own row last: iteration 1 again, so it is a
+        # new fit whose live history starts afresh, untruncated.
+        assert job["train_loss_history"] == [{"iteration": 1.0, "train_rmse": 0.5}]
+        assert job["train_loss_history_truncated"] is False
         # Temp parquet removed in the worker finally (1229->exit true side).
         assert not Path(tmp_parquet).exists()
 
@@ -2468,6 +2478,7 @@ class TestTrainServiceLifecycles:
         config = {
             "name": "quoted",
             "target": "y",
+            "feature_columns": ["x"],
             "algorithm": "catboost",
             "loss_function": "RMSE",
             "params": {"iterations": 2},

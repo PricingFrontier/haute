@@ -453,7 +453,6 @@ class TestMetricStageContext:
             }
         )
         with (
-            patch.object(CatBoostAlgorithm, "shap_summary", return_value=[]),
             patch.object(CatBoostAlgorithm, "feature_importance_typed", return_value=[]),
             patch("haute.modelling._metrics.compute_pdp", return_value=[]),
         ):
@@ -683,6 +682,7 @@ class TestPreDispatchServiceGate:
                         "nodeType": "modelling",
                         "config": {
                             "target": "sev",
+                            "feature_columns": ["x1"],
                             "task": "classification",
                             "algorithm": "catboost",
                             "loss_function": "Logloss",

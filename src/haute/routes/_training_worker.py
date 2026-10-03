@@ -228,6 +228,52 @@ def _bounded_loss_history(
     return [rows[index] for index in sorted(kept)][:limit], True
 
 
+def _append_live_loss_row(
+    history: list[dict[str, float]],
+    truncated: bool,
+    row: dict[str, float],
+    total: int,
+) -> tuple[list[dict[str, float]], bool]:
+    """Add a fit's newest loss row to the live history, keeping its span and extremes.
+
+    A row that does not follow the last one starts a new fit's history. Past
+    the limit the history is compacted to its first and newest rows, the rows
+    holding each value's lowest and highest so far, and the first row to reach
+    each of the even buckets the rest of the limit splits the fit's rounds
+    into. Its rows therefore span every round so far, and axes drawn from them
+    never shrink during a fit. Returns the history and whether it has dropped
+    any row it was given.
+    """
+    if history and row["iteration"] <= history[-1]["iteration"]:
+        history, truncated = [], False
+    history = [*history, row]
+    limit = _max_train_loss_history()
+    if len(history) <= limit:
+        return history, truncated
+    keys = {key for entry in history for key in entry if key != "iteration"}
+    required = 2 + 2 * len(keys)
+    if limit < required:
+        raise RuntimeError(
+            f"HAUTE_TRAIN_LOSS_HISTORY_LIMIT is {limit}, but a live loss history needs at "
+            f"least {required} rows: its first and newest rows and the lowest and highest "
+            f"row of each of its {len(keys)} values."
+        )
+    kept = {0, len(history) - 1}
+    for key in keys:
+        values = {index: entry[key] for index, entry in enumerate(history) if key in entry}
+        kept.add(min(values, key=values.__getitem__))
+        kept.add(max(values, key=values.__getitem__))
+    rounds = max(total, int(row["iteration"]))
+    stride = max(1, math.ceil(rounds / max(limit - len(kept) - 1, 1)))
+    buckets: set[int] = set()
+    for index, entry in enumerate(history):
+        bucket = int(entry["iteration"]) // stride
+        if bucket not in buckets:
+            buckets.add(bucket)
+            kept.add(index)
+    return [history[index] for index in sorted(kept)], True
+
+
 def _worker_request_payload(request: WorkerRequest, *, expected_kind: str) -> dict[str, Any]:
     if request.kind != expected_kind:
         raise HauteValidationError(
@@ -509,6 +555,9 @@ def _training_response_payload(
         validation_loss_history_truncated=validation_loss_history_truncated,
         double_lift=train_result.double_lift,
         shap_summary=train_result.shap_summary,
+        shap_beeswarm=train_result.shap_beeswarm,
+        shap_curves=train_result.shap_curves,
+        shap_link=train_result.shap_link,
         feature_importance_loss=train_result.feature_importance_loss,
         ave_per_feature=train_result.ave_per_feature,
         residuals_histogram=train_result.residuals_histogram,

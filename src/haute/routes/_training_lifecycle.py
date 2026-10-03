@@ -75,10 +75,12 @@ from haute.modelling._train_config import (
     TrainingConfigError,
     build_train_params,
     build_training_job_kwargs,
+    feature_selection_issue,
     is_glm_config,
     parse_evaluation_config,
     parse_tuning_config,
     reject_removed_evaluation_fields,
+    role_column_reasons,
     training_objective_issue,
     validate_modelling_config_values,
     validate_training_device,
@@ -135,10 +137,8 @@ from haute.routes._training_preparation import (
     _memory_limit_http_exception,
     _remove_prepared_parquet,
     _seeded_training_sample,
-    _training_metadata_reasons,
     _training_projection_keep_columns,
     _training_required_columns_by_node,
-    _training_sink_exclusions,
     create_training_parquet_path,
     estimate_training_memory,
     preparation_failure_outcome,
@@ -147,10 +147,10 @@ from haute.routes._training_preparation import (
     training_seed_plan_request,
 )
 from haute.routes._training_worker import (
+    _append_live_loss_row,
     _assert_json_finite,
     _friendly_error,
     _job_elapsed_seconds,
-    _max_train_loss_history,
     _require_consistent_completed_response,
     _run_dispersion_process_job,
     _run_training_process_job,
@@ -636,7 +636,7 @@ class TrainService:
                 preamble_ns,
                 row_limit,
                 job_id,
-                exclude=_training_sink_exclusions(config),
+                project_to_keep_columns=not is_glm_config(config),
                 keep_columns=_training_projection_keep_columns(config),
                 required_columns_by_node=_training_required_columns_by_node(node_id, config),
                 execution_context=execution_context,
@@ -824,7 +824,7 @@ class TrainService:
                 preamble_ns,
                 row_limit,
                 job_id,
-                exclude=_training_sink_exclusions(config),
+                project_to_keep_columns=not is_glm_config(config),
                 keep_columns=keep_cols,
                 required_columns_by_node=required_columns_by_node,
                 execution_context=execution_context,
@@ -1264,6 +1264,9 @@ class TrainService:
             raise HTTPException(status_code=400, detail=objective_issue)
         try:
             reject_removed_evaluation_fields(config)
+            feature_issue = feature_selection_issue(config)
+            if feature_issue is not None:
+                raise TrainingConfigError(feature_issue)
             evaluation = parse_evaluation_config(config.get("evaluation"))
             validate_training_device(config)
             metrics = config.get("metrics") or []
@@ -1323,7 +1326,7 @@ class TrainService:
                 terms,
                 params.get("interactions") or [],
                 schema,
-                role_columns=_training_metadata_reasons(config),
+                role_columns=role_column_reasons(config),
             )
             return preamble_ns
         except PUBLIC_CONTRACT_ERROR_TYPES as exc:
@@ -1498,7 +1501,7 @@ class TrainService:
         row_limit: int | None,
         job_id: str,
         *,
-        exclude: list[str] | None = None,
+        project_to_keep_columns: bool = False,
         keep_columns: list[str] | None = None,
         required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
         execution_context: ExecutionContext | None = None,
@@ -1542,7 +1545,7 @@ class TrainService:
                 preamble_ns,
                 row_limit,
                 job_id,
-                exclude=exclude,
+                project_to_keep_columns=project_to_keep_columns,
                 keep_columns=keep_columns,
                 required_columns_by_node=required_columns_by_node,
                 budget=budget,
@@ -1586,7 +1589,7 @@ class TrainService:
         row_limit: int | None,
         job_id: str,
         *,
-        exclude: list[str] | None,
+        project_to_keep_columns: bool,
         keep_columns: list[str] | None,
         required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None,
         budget: IsolatedExecutionBudget,
@@ -1612,7 +1615,7 @@ class TrainService:
             config=dict(body.graph.node_map[body.node_id].data.config),
             project_root=str(_get_project_root()),
             row_limit=row_limit,
-            exclude=list(exclude) if exclude else None,
+            project_to_keep_columns=project_to_keep_columns,
             keep_columns=list(keep_columns) if keep_columns else None,
             required_columns_by_node=(
                 None
@@ -1955,17 +1958,14 @@ class TrainService:
             if current_job is None:
                 raise KeyError(f"Training job {job_id!r} disappeared during progress")
             history = list(current_job.get("train_loss_history") or [])
-            if row is not None:
-                history.append(row)
             truncated = bool(current_job.get("train_loss_history_truncated"))
-            if len(history) > _max_train_loss_history():
-                history = history[-_max_train_loss_history() :]
-                truncated = True
+            if row is not None:
+                history, truncated = _append_live_loss_row(history, truncated, row, total)
+            # The fit's own round readout and loss rows; the job's progress and
+            # message come from its progress events, which span every fit.
             self._store.atomic_update(
                 job_id,
                 {
-                    "progress": event.progress,
-                    "message": event.message,
                     "iteration": iteration,
                     "total_iterations": total,
                     "train_loss": metrics,
