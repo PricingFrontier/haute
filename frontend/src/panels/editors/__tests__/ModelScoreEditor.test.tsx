@@ -177,14 +177,15 @@ describe("ModelScoreEditor", () => {
   })
   afterEach(cleanup)
 
-  // 1. Renders with default registered source type
-  it("explains the selected model source in plain language", () => {
-    const { unmount } = render(<ModelScoreEditor {...defaultProps()} />)
-    expect(screen.getByText(/named, versioned model in the registry/i)).toBeInTheDocument()
-    unmount()
-
-    render(<ModelScoreEditor {...defaultProps()} config={{ sourceType: "run" }} />)
-    expect(screen.getByText(/pick one specific training run/i)).toBeInTheDocument()
+  it("shows no description line under the source buttons", () => {
+    discovery.listFiles.mockResolvedValue({ dir: ".", items: [] })
+    for (const sourceType of ["run", "registered", "file"]) {
+      const { unmount } = render(<ModelScoreEditor {...defaultProps()} config={{ sourceType }} />)
+      expect(screen.queryByText(/pick one specific training run/i)).toBeNull()
+      expect(screen.queryByText(/named, versioned model in the registry/i)).toBeNull()
+      expect(screen.queryByText(/scored with the feature contract saved beside it/i)).toBeNull()
+      unmount()
+    }
   })
 
   it("shows an empty-state hint when no registered models exist", () => {
@@ -239,7 +240,6 @@ describe("ModelScoreEditor", () => {
 
     // A file source never reads MLflow, so the destination is not offered.
     expect(screen.queryByText(/Local folder/i)).toBeNull()
-    expect(screen.getByText(/scored with the feature contract saved beside it/i)).toBeInTheDocument()
     fireEvent.click(await screen.findByText("freq.cbm"))
 
     expect(onUpdate).toHaveBeenCalledWith({ sourceType: "file", model_path: "models/freq.cbm" })

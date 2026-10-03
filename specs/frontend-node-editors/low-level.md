@@ -161,10 +161,8 @@
    `artifact_path`, `registered_model`, `version` reset to `"latest"`, `alias`
    removed, and for optimiser apply `optimiser_mode`) in the same config update and shows
    an inline note that identifiers are not portable across backends until
-   the next pick. `ModelScoreEditor` explains
-   the selected model source in one plain-language line under the toggle
-   ("registered model — a named, versioned model in the registry" versus
-   "pick one specific training run"), and the shared pickers render honest
+   the next pick. `ModelScoreEditor` shows no description under its source
+   toggle; the button labels name the sources. The shared pickers render honest
    empty states instead of bare dropdowns: no registered models → "haute logs
    training runs; your promotion process registers them"; an experiment with
    no matching finished runs → "no finished runs with a model artifact in

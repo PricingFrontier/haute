@@ -28,12 +28,6 @@ const TASK_LABELS: Record<ModelTask, string> = {
   classification: "Classification",
 }
 
-const SOURCE_DESCRIPTIONS: Record<string, string> = {
-  registered: "Registered model - a named, versioned model in the registry (recommended).",
-  run: "Experiment run - pick one specific training run by experiment.",
-  file: "Model file - a model saved in the project, scored with the feature contract saved beside it.",
-}
-
 type ModelFileState =
   | { path: string; contractPath: string; inspection: ModelFileInspectionResponse; error?: undefined }
   | { path: string; contractPath: string; inspection?: undefined; error: string }
@@ -172,9 +166,6 @@ export default function ModelScoreEditor({
             accentColor={accentColor}
           />
         </div>
-        <p className="mt-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
-          {SOURCE_DESCRIPTIONS[sourceType] ?? SOURCE_DESCRIPTIONS.registered}
-        </p>
       </div>
 
       {/* Where this node browses and loads from (MLflow sources only) */}
