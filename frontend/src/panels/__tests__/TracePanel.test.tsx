@@ -1103,6 +1103,154 @@ describe("TracePanel", () => {
     expect(quotes).toHaveTextContent("+3 added")
   })
 
+  it("shows the formula a model's or expander's code computed the traced column with, above the node's detail", () => {
+    const formula = (column: string, expressionText: string, substituted: string, value: number, reads: string[]) => ({
+      column,
+      expression_text: expressionText,
+      substituted_text: substituted,
+      result_value: value,
+      not_computable_reason: null,
+      result_source: null,
+      reads: reads.map((read) => ({ column: read, sources: [{ node_id: "premiums", column: read, before_code: false }] })),
+      error: null,
+      error_type: null,
+    })
+    const diff = (added: string[], modified: string[] = []) => ({
+      columns_added: added,
+      columns_removed: [],
+      columns_modified: modified,
+      columns_passed: ["premium"],
+    })
+    const premiums = makeStep({
+      node_id: "premiums",
+      node_name: "premiums",
+      node_type: "dataInput",
+      schema_diff: { columns_added: ["premium"], columns_removed: [], columns_modified: [], columns_passed: [] },
+      input_values: {},
+      output_values: { premium: 250 },
+      contributed_columns: ["premium"],
+    })
+    const scoring = (contributed: string[], derivations: TraceStep["derivations"]) => makeStep({
+      node_id: "competitor_scoring",
+      node_name: "competitor_scoring",
+      node_type: "modelScore",
+      topological_rank: 1,
+      schema_diff: diff(["competitor_premium", "diff_to_market"]),
+      output_values: { premium: 250, competitor_premium: 252.2, diff_to_market: 0.9913 },
+      contributed_columns: contributed,
+      derivations,
+      node_detail: {
+        detail_type: "model_score",
+        prediction_value: 252.2,
+        prediction_column: "competitor_premium",
+      } as TraceStep["node_detail"],
+      // The backend explains the traced column on every step that carries it.
+      expression: {
+        expression_text: "premium / competitor_premium",
+        expression_type: "arithmetic",
+        referenced_columns: ["premium", "competitor_premium"],
+      },
+      calculation: {
+        substituted_text: "250.0 / 252.2",
+        result_value: 0.9913,
+        input_values: { premium: 250, competitor_premium: 252.2 },
+      },
+    })
+    const expectBefore = (first: HTMLElement, second: HTMLElement) => {
+      expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    }
+    const competitorPremium = { ...formula("competitor_premium", "", "", 252.2, []), expression_text: null, substituted_text: null }
+
+    // The model's hook code computed the clicked column.
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "competitor_scoring",
+          column: "diff_to_market",
+          output_value: 0.9913,
+          steps: [
+            premiums,
+            makeStep({
+              node_id: "pricing",
+              node_name: "pricing",
+              schema_diff: { columns_added: [], columns_removed: [], columns_modified: ["premium"], columns_passed: [] },
+              input_values: { premium: 200 },
+              output_values: { premium: 250 },
+              contributed_columns: ["premium"],
+              derivations: [formula("premium", "premium * 1.25", "200.0 * 1.25", 250, ["premium"])],
+            }),
+            scoring(["competitor_premium", "diff_to_market"], [
+              competitorPremium,
+              formula("diff_to_market", "premium / competitor_premium", "250.0 / 252.2", 0.9913, ["premium", "competitor_premium"]),
+            ]),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+    const modelBody = screen.getByTestId("trace-step-body-competitor_scoring")
+    expect(within(modelBody).getByTestId("trace-calculation-body")).toHaveTextContent(/premium.*competitor_premium/)
+    // The model that predicted what the formula read is still explained, before the
+    // formula, as the code ran after it.
+    expectBefore(within(modelBody).getByText("Model Score"), within(modelBody).getByTestId("trace-calculation-body"))
+    // The step that computed the premium the formula read opens with it.
+    expect(screen.getByTestId("trace-step-body-pricing")).toBeInTheDocument()
+    cleanup()
+
+    // An expander downstream rewrote the column: its code's formula is the one shown,
+    // and the model step's earlier formula for it, which no longer holds, is not.
+    render(
+      <TracePanel
+        trace={makeTrace({
+          target_node_id: "scenarios",
+          column: "diff_to_market",
+          output_value: 0.4956,
+          steps: [
+            premiums,
+            scoring(["competitor_premium"], [competitorPremium]),
+            makeStep({
+              node_id: "scenarios",
+              node_name: "scenarios",
+              node_type: "scenarioExpander",
+              topological_rank: 2,
+              schema_diff: diff(["price_adjustment"], ["diff_to_market"]),
+              output_values: { premium: 125, price_adjustment: 0.5, diff_to_market: 0.4956 },
+              contributed_columns: ["diff_to_market"],
+              derivations: [
+                formula("diff_to_market", "premium / competitor_premium", "125.0 / 252.2", 0.4956, ["premium", "competitor_premium"]),
+              ],
+              node_detail: {
+                detail_type: "scenario_expander",
+                scenario_value: 0.5,
+                scenario_column: "price_adjustment",
+              } as TraceStep["node_detail"],
+              expression: {
+                expression_text: "premium / competitor_premium",
+                expression_type: "arithmetic",
+                referenced_columns: ["premium", "competitor_premium"],
+              },
+              calculation: {
+                substituted_text: "125.0 / 252.2",
+                result_value: 0.4956,
+                input_values: { premium: 125, competitor_premium: 252.2 },
+              },
+            }),
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+    const expanderBody = screen.getByTestId("trace-step-body-scenarios")
+    expect(within(expanderBody).getByTestId("trace-calculation-body")).toHaveTextContent(/premium.*competitor_premium/)
+    expectBefore(within(expanderBody).getByText("Scenario Expander"), within(expanderBody).getByTestId("trace-calculation-body"))
+    const modelCard = screen.getByTestId("trace-step-card-competitor_scoring")
+    if (!within(modelCard).queryByTestId("trace-step-body-competitor_scoring")) {
+      fireEvent.click(within(modelCard).getAllByRole("button")[0])
+    }
+    expect(modelCard).not.toHaveTextContent("250.0 / 252.2")
+    expect(within(modelCard).getByText("Model Score")).toBeInTheDocument()
+  })
+
   it("omits unrelated optimiser input branches from the focused ratebook trace", () => {
     render(
       <TracePanel

@@ -61,6 +61,18 @@ export function hasPrimaryNodeDetail(step: TraceStep | null | undefined): boolea
     detailType === "live_switch"
 }
 
+/**
+ * Whether the step's own code computed *column* with a formula. A model, an
+ * optimiser or an expander may also run transform steps; the backend gives a
+ * derivation a formula only when the node's code assigned the column for the
+ * traced value, so a formula the step carries for a column a later step
+ * rewrote does not count.
+ */
+export function stepCodeComputesColumn(step: TraceStep, column: string | null | undefined): boolean {
+  if (!column) return false
+  return step.derivations.some((derivation) => derivation.column === column && Boolean(derivation.expression_text))
+}
+
 export function isOptimiserApplyErrorDetail(
   detail: OptimiserApplyNodeDetail,
 ): detail is Extract<OptimiserApplyNodeDetail, { status: "error" }> {
@@ -98,9 +110,14 @@ export function hasStructuredDependencyDetail(detail: TraceNodeDetail | null | u
     detail?.detail_type === "optimiser_apply"
 }
 
-export function directInputSourceNodeNames(step: TraceStep | null): Set<string> {
+/** Whether the step's formula, not its node detail, explains the traced column. */
+function formulaExplainsColumn(step: TraceStep, tracedColumn: string | null): boolean {
+  return !hasStructuredDependencyDetail(step.node_detail) || stepCodeComputesColumn(step, tracedColumn)
+}
+
+export function directInputSourceNodeNames(step: TraceStep | null, tracedColumn: string | null): Set<string> {
   const names = new Set<string>()
-  if (!step?.calculation?.input_sources || hasStructuredDependencyDetail(step.node_detail)) return names
+  if (!step?.calculation?.input_sources || !formulaExplainsColumn(step, tracedColumn)) return names
 
   for (const source of Object.values(step.calculation.input_sources)) {
     if (source?.node_name) {
@@ -115,7 +132,7 @@ export function targetStepDependencyColumns(step: TraceStep, tracedColumn: strin
   const dependencyColumns = new Set<string>()
   const detail = step.node_detail
 
-  if (!hasStructuredDependencyDetail(detail)) {
+  if (formulaExplainsColumn(step, tracedColumn)) {
     for (const col of step.expression?.referenced_columns ?? []) {
       dependencyColumns.add(col)
     }
@@ -211,7 +228,7 @@ export function defaultExpandedStepIds(steps: TraceStep[], targetStep: TraceStep
   }
 
   const targetIndex = steps.findIndex((step) => step.node_id === targetStep.node_id)
-  const sourceNodeNames = directInputSourceNodeNames(targetStep)
+  const sourceNodeNames = directInputSourceNodeNames(targetStep, column)
   const dependencyColumns = targetStepDependencyColumns(targetStep, column)
 
   steps.forEach((step, index) => {
