@@ -27,7 +27,7 @@ from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 from haute._model_flavors import is_registered_flavor, model_families, model_family
-from haute._model_source import ModelSource, require_model_source
+from haute._model_source import BoundModel, ModelSource, require_model_source
 from haute._polars_utils import bounded_collect_batches
 from haute._types import _Frame
 from haute.errors import ConfigError
@@ -1598,37 +1598,43 @@ class ModelScorer:
         self.reuse_loaded_model = reuse_loaded_model
         self.input_fanout = max(1, int(input_fanout))
         self.base_dir = base_dir
-        self._scoring_model: Any | None = None
+        self._bound_model: BoundModel | None = None
         self._scoring_model_lock = threading.Lock()
 
-    def _load_scoring_model_uncached(self) -> Any:
+    def _load_bound_model_uncached(self) -> BoundModel:
         """Load the configured model through the model-source seam, bound to its contract."""
-        from haute._model_source import load_scoring_model
+        from haute._model_source import load_bound_model
 
-        return load_scoring_model(
+        return load_bound_model(
             self.model_source,
             self.task,
             feature_contract_path=self.feature_contract_path,
             base_dir=self.base_dir,
         )
 
-    def _load_scoring_model(self) -> Any:
+    def _load_bound_model(self) -> BoundModel:
         """Load the configured model, optionally pinning it for this scorer."""
         if not self.reuse_loaded_model:
-            return self._load_scoring_model_uncached()
+            return self._load_bound_model_uncached()
 
-        if self._scoring_model is not None:
-            return self._scoring_model
+        if self._bound_model is not None:
+            return self._bound_model
 
         with self._scoring_model_lock:
-            if self._scoring_model is None:
-                self._scoring_model = self._load_scoring_model_uncached()
-        return self._scoring_model
+            if self._bound_model is None:
+                self._bound_model = self._load_bound_model_uncached()
+        return self._bound_model
 
-    def _categorical_levels_for_score(self) -> dict[str, list[str | None]]:
-        """Return the categorical value domains to enforce for this score call."""
+    def _categorical_levels_for_score(
+        self, contract_path: str | None
+    ) -> dict[str, list[str | None]]:
+        """Return the categorical value domains to enforce for this score call.
+
+        *contract_path* is the contract the model is bound to: the node's own,
+        or the one its run logged for a model that needs it.
+        """
         declared = self._declared_categorical_levels
-        if self.feature_contract_path is None:
+        if contract_path is None:
             return {column: list(levels) for column, levels in (declared or {}).items()}
 
         from haute.modelling._feature_contract import (
@@ -1636,7 +1642,7 @@ class ModelScorer:
             normalise_categorical_levels,
         )
 
-        expected = load_contract(self.feature_contract_path)
+        expected = load_contract(contract_path)
         if not expected.categorical_levels:
             return normalise_categorical_levels(declared, features=expected.features)
 
@@ -1656,7 +1662,7 @@ class ModelScorer:
                 field="categorical_levels",
                 expected=expected.categorical_levels,
                 actual=mismatched_levels,
-                feature_contract_path=self.feature_contract_path,
+                feature_contract_path=contract_path,
             )
         return {column: list(levels) for column, levels in expected.categorical_levels.items()}
 
@@ -1673,8 +1679,15 @@ class ModelScorer:
         Positional frames follow incoming-edge order; named frames are
         reconstructed in the scorer's declared-source order.
         """
-        categorical_levels = self._categorical_levels_for_score()
-        scoring_model = self._load_scoring_model()
+        if self.feature_contract_path is not None:
+            # A configured contract's domain drift fails before the model loads.
+            categorical_levels = self._categorical_levels_for_score(self.feature_contract_path)
+            scoring_model = self._load_bound_model().scoring_model
+        else:
+            # A contract the run logged is known only once the model has loaded.
+            bound = self._load_bound_model()
+            categorical_levels = self._categorical_levels_for_score(bound.contract_path)
+            scoring_model = bound.scoring_model
 
         if dfs_by_name:
             # Reconstruct positional tuple in declared-source order.

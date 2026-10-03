@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import getpass
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -10,6 +11,15 @@ from haute._logging import get_logger
 from haute.deploy._config import ResolvedDeploy
 
 logger = get_logger(component="deploy.utils")
+
+
+def artifact_basename(raw_path: str) -> str:
+    """The file name a configured path names, on every platform.
+
+    A path saved on Windows may use backslashes; splitting on both separators
+    gives the bundler and the deployed scorer one artifact key for it.
+    """
+    return re.split(r"[\\/]", raw_path)[-1]
 
 
 def get_user() -> str:

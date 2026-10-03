@@ -1181,7 +1181,11 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
         from haute._mlflow_io import model_contract_candidates
 
         for index, candidate in enumerate(model_contract_candidates(paths["model_path"])):
-            paths[f"contract_candidate:{index}"] = candidate
+            # Contained before it is hashed: a sibling that resolves outside the
+            # project through a symlink is refused, never read.
+            paths[f"contract_candidate:{index}"] = resolve_runtime_file_path(
+                str(candidate), source_file=graph.source_file, prefer="project"
+            )
     return paths
 
 

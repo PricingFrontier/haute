@@ -163,14 +163,25 @@ def require_model_source(config: Mapping[str, Any]) -> ModelSource:
     return source
 
 
-def _resolve_project_file(raw_path: str, base_dir: str | Path | None, kind: str) -> Path:
-    """Resolve a configured project file through the runtime sandbox; it must exist."""
+def _resolve_project_file(
+    raw_path: str,
+    base_dir: str | Path | None,
+    kind: str,
+    *,
+    project_root: str | Path | None = None,
+) -> Path:
+    """Resolve a configured project file through the runtime sandbox; it must exist.
+
+    The project is preferred over the pipeline directory, as for every runtime
+    input, so the preview, a standalone run and the deploy bundler pick the same
+    file. *project_root* defaults to the execution-scoped project root.
+    """
     from haute._path_resolution import current_runtime_project_root, resolve_runtime_file_path
 
     resolved = resolve_runtime_file_path(
         raw_path,
         pipeline_dir=base_dir,
-        project_root=current_runtime_project_root(),
+        project_root=project_root if project_root is not None else current_runtime_project_root(),
         prefer="project",
         enforce_project_root=True,
     )
@@ -182,7 +193,12 @@ def _resolve_project_file(raw_path: str, base_dir: str | Path | None, kind: str)
     return resolved
 
 
-def resolve_model_file(model_path: str, base_dir: str | Path | None) -> Path:
+def resolve_model_file(
+    model_path: str,
+    base_dir: str | Path | None,
+    *,
+    project_root: str | Path | None = None,
+) -> Path:
     """The file a file source names, resolved through the runtime sandbox.
 
     Raises:
@@ -193,27 +209,35 @@ def resolve_model_file(model_path: str, base_dir: str | Path | None) -> Path:
 
     # An unsupported suffix is refused before the file is looked for.
     family_for_artifact(model_path)
-    return _resolve_project_file(model_path, base_dir, "model file")
+    return _resolve_project_file(model_path, base_dir, "model file", project_root=project_root)
 
 
 def model_contract_path(
     source: FileModelSource,
     feature_contract_path: str | None,
     base_dir: str | Path | None,
+    *,
+    project_root: str | Path | None = None,
 ) -> Path | None:
     """The contract a file source scores under: explicit, else saved beside the model.
 
-    ``None`` when there is no explicit contract and none beside the model.
+    ``None`` when there is no explicit contract and none beside the model. A
+    sibling is a runtime input like the explicit contract: one that resolves
+    outside the project (through a symlink) is refused, never read.
     """
     from haute._mlflow_io import model_contract_candidates
 
     if feature_contract_path:
-        return _resolve_project_file(feature_contract_path, base_dir, "feature contract")
-    model_file = resolve_model_file(source.model_path, base_dir)
-    return next(
-        (candidate for candidate in model_contract_candidates(model_file) if candidate.is_file()),
-        None,
-    )
+        return _resolve_project_file(
+            feature_contract_path, base_dir, "feature contract", project_root=project_root
+        )
+    model_file = resolve_model_file(source.model_path, base_dir, project_root=project_root)
+    for candidate in model_contract_candidates(model_file):
+        if candidate.is_file():
+            return _resolve_project_file(
+                str(candidate), base_dir, "feature contract", project_root=project_root
+            )
+    return None
 
 
 def scoring_contract_path(
@@ -247,6 +271,14 @@ def model_source_name(source: ModelSource) -> str:
     return f"registered model {source.registered_model!r}"
 
 
+@dataclass(frozen=True, slots=True)
+class BoundModel:
+    """A loaded model and the contract it is bound to (``None`` without one)."""
+
+    scoring_model: ScoringModel
+    contract_path: str | None
+
+
 def load_scoring_model(
     source: ModelSource,
     task: str,
@@ -254,76 +286,107 @@ def load_scoring_model(
     feature_contract_path: str | None = None,
     base_dir: str | Path | None = None,
 ) -> ScoringModel:
+    """Load the model *source* names as *task*, bound to its feature contract."""
+    return load_bound_model(
+        source, task, feature_contract_path=feature_contract_path, base_dir=base_dir
+    ).scoring_model
+
+
+def load_bound_model(
+    source: ModelSource,
+    task: str,
+    *,
+    feature_contract_path: str | None = None,
+    base_dir: str | Path | None = None,
+) -> BoundModel:
     """Load the model *source* names as *task*, bound to its feature contract.
 
     *feature_contract_path* is the contract the node scores under (see
     :func:`scoring_contract_path`); a file source without one discovers the
     contract saved beside the model, and a run or registered CatBoost model
-    whose offset its file does not declare is bound to the contract the run
-    logged beside it. *base_dir* is the pipeline directory relative file
-    paths may also resolve against.
+    whose offset its file does not declare is bound to the contract its run
+    logged beside it. That model and contract are read from one concrete run,
+    so an alias or ``latest`` that moves between the two reads cannot pair one
+    version's model with another version's contract. *base_dir* is the pipeline
+    directory relative file paths may also resolve against. The returned
+    contract path is the one scoring enforces categorical domains from.
     """
     from haute import _mlflow_io
+    from haute.modelling._feature_contract import load_contract_cached
 
     if isinstance(source, FileModelSource):
         model_file = resolve_model_file(source.model_path, base_dir)
         contract_file = feature_contract_path or model_contract_path(source, None, base_dir)
-        return _mlflow_io.load_local_model_cached(
-            str(model_file),
-            task,
-            str(contract_file) if contract_file is not None else None,
-            model_name=model_source_name(source),
+        contract_arg = str(contract_file) if contract_file is not None else None
+        scoring_model = _mlflow_io.load_local_model_cached(
+            str(model_file), task, contract_arg, model_name=model_source_name(source)
         )
-    if isinstance(source, RunModelSource):
-        scoring_model = _mlflow_io.load_mlflow_model(
-            source_type=source.source_type,
-            run_id=source.run_id,
-            artifact_path=source.artifact_path,
-            task=task,
-            destination=source.mlflow_destination,
-        )
-    else:
-        scoring_model = _mlflow_io.load_mlflow_model(
-            source_type=source.source_type,
-            registered_model=source.registered_model,
-            version=source.version,
-            alias=source.alias,
-            artifact_path=source.artifact_path,
-            task=task,
-            destination=source.mlflow_destination,
-        )
-    from haute.modelling._feature_contract import FeatureContract, load_contract_cached
+        return BoundModel(scoring_model, contract_arg)
 
-    contract: FeatureContract | None
-    if feature_contract_path is not None:
-        contract = load_contract_cached(feature_contract_path)
-    elif not scoring_model.offset_declared:
-        contract = load_contract_cached(run_logged_contract_path(source))
-    else:
-        contract = None
-    return _mlflow_io.bind_feature_contract(
+    scoring_model = _load_mlflow_source(source, task)
+    contract_path = feature_contract_path
+    if contract_path is None and not scoring_model.offset_declared:
+        run_source = _concrete_run_source(source)
+        if run_source != source:
+            scoring_model = _load_mlflow_source(run_source, task)
+        if not scoring_model.offset_declared:
+            contract_path = _mlflow_io.run_logged_contract_path(
+                run_id=run_source.run_id,
+                artifact_path=run_source.artifact_path,
+                destination=run_source.mlflow_destination,
+            )
+    contract = load_contract_cached(contract_path) if contract_path is not None else None
+    bound = _mlflow_io.bind_feature_contract(
         scoring_model, contract, model_name=model_source_name(source)
     )
+    return BoundModel(bound, contract_path)
 
 
-def run_logged_contract_path(source: RunModelSource | RegisteredModelSource) -> str:
-    """The local copy of the contract the source's run logged beside its model."""
+def _load_mlflow_source(source: RunModelSource | RegisteredModelSource, task: str) -> ScoringModel:
     from haute import _mlflow_io
 
     if isinstance(source, RunModelSource):
-        return _mlflow_io.run_logged_contract_path(
+        return _mlflow_io.load_mlflow_model(
             source_type=source.source_type,
             run_id=source.run_id,
             artifact_path=source.artifact_path,
+            task=task,
             destination=source.mlflow_destination,
         )
-    return _mlflow_io.run_logged_contract_path(
+    return _mlflow_io.load_mlflow_model(
         source_type=source.source_type,
         registered_model=source.registered_model,
         version=source.version,
         alias=source.alias,
         artifact_path=source.artifact_path,
+        task=task,
         destination=source.mlflow_destination,
+    )
+
+
+def _concrete_run_source(source: RunModelSource | RegisteredModelSource) -> RunModelSource:
+    """The source as one run and artifact, resolving a registered version or alias once."""
+    from haute import _mlflow_io
+
+    if isinstance(source, RunModelSource):
+        if source.artifact_path:
+            return source
+        run_id, artifact = _mlflow_io.resolve_run_artifact(
+            source_type=source.source_type,
+            run_id=source.run_id,
+            destination=source.mlflow_destination,
+        )
+    else:
+        run_id, artifact = _mlflow_io.resolve_run_artifact(
+            source_type=source.source_type,
+            registered_model=source.registered_model,
+            version=source.version,
+            alias=source.alias,
+            artifact_path=source.artifact_path,
+            destination=source.mlflow_destination,
+        )
+    return RunModelSource(
+        run_id=run_id, artifact_path=artifact, mlflow_destination=source.mlflow_destination
     )
 
 

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from haute._logging import get_logger
 from haute._model_flavors import family_for_artifact
-from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
+from haute._path_resolution import PathPreference, RuntimePathError, resolve_runtime_file_path
 from haute.errors import DeployError
 from haute.graph_utils import NodeType, PipelineGraph
 
@@ -106,8 +106,14 @@ def collect_artifacts(
                         field="feature_contract_path",
                         path=explicit_contract,
                     )
+                # The scoring rule: the project before the pipeline directory.
                 contract_path = _resolve_path(
-                    explicit_contract, pipeline_dir, project_root, nid, "feature_contract_path"
+                    explicit_contract,
+                    pipeline_dir,
+                    project_root,
+                    nid,
+                    "feature_contract_path",
+                    prefer="project",
                 )
                 _check_exists(contract_path, nid, "modelScore feature contract")
                 artifacts[f"{nid}__feature_contract.json"] = contract_path
@@ -224,26 +230,41 @@ def _collect_model_file(
 ) -> None:
     """Bundle a file-sourced Model Scoring node's model and the contract it scores under.
 
-    The model is copied from the project under ``<node>__<file name>``; without
-    an explicit contract (already bundled by the caller), the contract saved
-    beside the model is bundled under ``<node>__feature_contract.json``.
+    The model and its sibling contract resolve exactly as scoring resolves them
+    (:mod:`haute._model_source`): the project before the pipeline directory, and
+    a sibling that leaves the project through a symlink is refused. The model
+    is bundled under ``<node>__<configured file name>``, the key the deployed
+    scorer looks it up by; without an explicit contract (already bundled by the
+    caller), the contract saved beside the model is bundled under
+    ``<node>__feature_contract.json``.
     """
-    from haute._mlflow_io import model_contract_candidates
+    from haute._model_source import model_contract_path
+    from haute.deploy._utils import artifact_basename
     from haute.modelling._feature_contract import CONTRACT_FILENAME
 
     # An unsupported suffix is refused before anything is copied.
     family_for_artifact(model_source.model_path)
     model_path = _resolve_path(
-        model_source.model_path, pipeline_dir, project_root, node_id, "model_path"
+        model_source.model_path,
+        pipeline_dir,
+        project_root,
+        node_id,
+        "model_path",
+        prefer="project",
     )
     _check_exists(model_path, node_id, "modelScore")
-    artifacts[_artifact_name(node_id, model_path)] = model_path
+    artifacts[f"{node_id}__{artifact_basename(model_source.model_path)}"] = model_path
     if explicit_contract is not None:
         return
-    sibling = next(
-        (candidate for candidate in model_contract_candidates(model_path) if candidate.is_file()),
-        None,
-    )
+    try:
+        sibling = model_contract_path(model_source, None, pipeline_dir, project_root=project_root)
+    except RuntimePathError as exc:
+        raise DeployError(
+            f"Node {node_id!r} has a feature contract beside its model file that resolves "
+            "outside the project root. Replace it with a contract file inside the project.",
+            node_id=node_id,
+            field="model_path",
+        ) from exc
     if sibling is not None:
         artifacts[f"{node_id}__{CONTRACT_FILENAME}"] = sibling
 
@@ -396,6 +417,8 @@ def _resolve_path(
     project_root: Path | None = None,
     node_id: str | None = None,
     field_name: str | None = None,
+    *,
+    prefer: PathPreference = "pipeline",
 ) -> Path:
     """Resolve ``raw_path`` to an absolute path at bundle time.
 
@@ -430,7 +453,7 @@ def _resolve_path(
             raw_path,
             pipeline_dir=pipeline_dir,
             project_root=root,
-            prefer="pipeline",
+            prefer=prefer,
             enforce_project_root=True,
         )
     except RuntimePathError as exc:

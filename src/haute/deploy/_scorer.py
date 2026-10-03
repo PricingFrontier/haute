@@ -402,10 +402,11 @@ def _remap_artifact(
 
     Returns the remapped local path if found, otherwise ``None``.
     """
+    from haute.deploy._utils import artifact_basename
+
     raw_path = config.get(key_field, "")
-    # Use Path (platform-aware) to match the bundler's Path(abs_path).name.
-    # PurePosixPath would fail on Windows backslash paths.
-    artifact_key = f"{node_id}__{Path(raw_path).name}" if raw_path else f"{node_id}__"
+    # Either separator: a path saved on Windows is served on Linux.
+    artifact_key = f"{node_id}__{artifact_basename(raw_path)}" if raw_path else f"{node_id}__"
     return remap.get(artifact_key)
 
 

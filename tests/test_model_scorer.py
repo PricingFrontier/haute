@@ -2170,3 +2170,15 @@ def test_a_failed_score_into_a_callers_directory_removes_its_parts_but_not_the_d
 
     assert generation.is_dir()
     assert sorted(path.name for path in generation.iterdir()) == ["keep.txt"]
+
+
+def test_a_self_describing_classifier_without_recorded_labels_is_refused() -> None:
+    from types import SimpleNamespace
+
+    from haute._model_scorer import _declared_score_dtypes
+
+    carrier = SimpleNamespace(raw_model=SimpleNamespace(class_labels=None))
+    with pytest.raises(ValueError, match="no recorded class labels"):
+        _declared_score_dtypes(
+            scoring_model=carrier, flavor="xgboost", task="classification", include_proba=True
+        )

@@ -494,3 +494,141 @@ def test_inspection_reports_the_task_a_contractless_file_was_trained_for(project
     inspection = inspect_model_file("flag.cbm")
 
     assert (inspection.task, inspection.contract_path) == ("classification", None)
+
+
+# ---------------------------------------------------------------------------
+# Codex review round 1: one resolution rule, one run, containment, domains
+# ---------------------------------------------------------------------------
+
+
+def test_scoring_and_bundling_pick_the_project_file_over_the_pipeline_directorys(
+    project: Path,
+) -> None:
+    from haute._model_source import resolve_model_file
+    from haute.deploy._bundler import collect_artifacts
+
+    pipeline_dir = project / "pipe"
+    (pipeline_dir / "models").mkdir(parents=True)
+    (project / "models").mkdir()
+    in_project = external_catboost(project / "models", offset=False, stamp="")
+    external_catboost(pipeline_dir / "models", offset=False, stamp="")
+    graph = _model_score_graph({"sourceType": "file", "model_path": "models/ext.cbm"})
+
+    scored = resolve_model_file("models/ext.cbm", pipeline_dir)
+    bundled = collect_artifacts(graph, ["src"], pipeline_dir, project_root=project)["ms__ext.cbm"]
+
+    assert scored.resolve() == bundled.resolve() == in_project.resolve()
+
+
+def test_a_registered_model_and_its_logged_contract_come_from_one_run(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mlflow.tracking import MlflowClient
+
+    from haute import _mlflow_io
+
+    pairs = []
+    for name, offset in (("v1", True), ("v2", False)):
+        directory = project / name
+        directory.mkdir()
+        model = external_catboost(directory, offset=offset)
+        contract = write_contract(
+            model, offset="exposure" if offset else None, link="log" if offset else None
+        )
+        pairs.append((model, contract))
+    uri = (project / "mlruns").as_uri()
+    client = MlflowClient(tracking_uri=uri, registry_uri=uri)
+    experiment = client.create_experiment("promotion")
+    client.create_registered_model("ext")
+    for model, contract in pairs:
+        run = client.create_run(experiment)
+        client.log_artifact(run.info.run_id, str(model))
+        client.log_artifact(run.info.run_id, str(contract))
+        client.set_terminated(run.info.run_id)
+        client.create_model_version("ext", f"runs:/{run.info.run_id}", run.info.run_id)
+    client.set_registered_model_alias("ext", "champion", "1")
+    resolve = _mlflow_io.resolve_run_artifact
+
+    def promote_then_resolve(**kwargs: Any) -> tuple[str, str]:
+        # The alias moves after the first model load and before the contract read.
+        client.set_registered_model_alias("ext", "champion", "2")
+        return resolve(**kwargs)
+
+    monkeypatch.setattr(_mlflow_io, "resolve_run_artifact", promote_then_resolve)
+    source = RegisteredModelSource(
+        registered_model="ext",
+        version="",
+        alias="champion",
+        artifact_path="ext.cbm",
+        mlflow_destination="",
+    )
+    frame = data(seed=13)
+
+    scored = score(source, frame)
+
+    np.testing.assert_allclose(scored, native_reference(pairs[1][0], frame, offset=False))
+
+
+def test_a_run_logged_contract_enforces_its_categorical_domains(project: Path) -> None:
+    model_path = external_catboost(project, offset=True)
+    contract = model_path.with_name(model_contract_filename(model_path.stem))
+    save_contract(
+        build_contract(
+            features=FEATURES,
+            feature_types={"age": "Float64", "region": "String"},
+            categorical_features=["region"],
+            categorical_levels={"region": ["east", "north"]},
+            target_name="claims",
+            target_type="Float64",
+            task="regression",
+            offset_column="exposure",
+            offset_link="log",
+        ),
+        contract,
+    )
+    frame = data().with_columns(region=pl.lit("south"))
+
+    with pytest.raises(FeatureMismatchError, match="south"):
+        score(source_for("run", model_path, contract), frame)
+
+
+def test_a_sibling_contract_outside_the_project_is_refused(project: Path) -> None:
+    from haute._sandbox import set_project_root
+    from haute.deploy._bundler import collect_artifacts
+    from haute.errors import DeployError
+
+    inner = project / "inner"
+    inner.mkdir()
+    set_project_root(inner)
+    external_catboost(inner, offset=False, stamp="")
+    outside = write_contract(project / "outside.cbm", offset=None, link=None)
+    link = inner / "ext.feature_contract.json"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation is unavailable on this platform")
+
+    with pytest.raises(RuntimePathOutsideProjectError):
+        score(FileModelSource(model_path="ext.cbm"), data())
+    graph = _model_score_graph({"sourceType": "file", "model_path": "ext.cbm"})
+    with pytest.raises(DeployError, match="outside the project"):
+        collect_artifacts(graph, ["src"], inner, project_root=inner)
+
+
+def test_a_backslash_model_path_bundles_and_serves_under_one_key(project: Path) -> None:
+    from haute.deploy._bundler import collect_artifacts
+    from haute.deploy._scorer import _remap_artifact
+    from haute.deploy._utils import artifact_basename
+
+    (project / "models").mkdir()
+    model = external_catboost(project / "models", offset=False, stamp="")
+    config = {"sourceType": "file", "model_path": "models\\ext.cbm"}
+
+    artifacts = collect_artifacts(
+        _model_score_graph(config), ["src"], project, project_root=project
+    )
+    remap = {key: str(path) for key, path in artifacts.items()}
+
+    assert artifact_basename("models\\ext.cbm") == artifact_basename("models/ext.cbm") == "ext.cbm"
+    served = _remap_artifact("ms", config, remap, "model_path")
+    assert served is not None and Path(served).resolve() == model.resolve()

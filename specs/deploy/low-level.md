@@ -138,11 +138,14 @@
    `run_id`/`registered_model` (`IncompleteModelSourceError`) is skipped with a warning, a
    run source without an `artifact_path` is discovered when served, and any other invalid
    source raises its `ConfigError`. A file source (`sourceType: "file"`) is copied from the
-   project: its `model_path` resolves through the same containment check and must exist,
-   and the model is bundled under `<node>__<file name>`. Its contract, the explicit
-   `feature_contract_path` or else the first existing sibling
-   (`model_contract_candidates`), is bundled under `<node>__feature_contract.json`; a file
-   source never contacts MLflow. For a run or registered source without an explicit
+   project: its `model_path` resolves with scoring's rule (the project before the
+   pipeline directory, unlike other local artefacts, so the bundle holds the file the
+   preview scored) and must exist, and the model is bundled under
+   `<node>__<configured file name>` (`artifact_basename`, splitting on either separator).
+   Its contract, the explicit `feature_contract_path` (also project-first for every
+   Model Scoring source) or else the first existing sibling (`model_contract_path`, which
+   refuses a sibling that leaves the project through a symlink as a `DeployError`), is
+   bundled under `<node>__feature_contract.json`; a file source never contacts MLflow. For a run or registered source without an explicit
    contract, the contract logged beside the model in the run is bundled
    (`_resolve_run_contract`, which fails naming the run when there is none) for a
    contract-bound family and for a CatBoost model whose file does not declare its offset
@@ -460,7 +463,8 @@ pair. Deploy never uses the general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair.
    even when the deployed environment configures a remote, and an explicit destination
    that is not configured there fails without consulting another backend); `modelScore` in three sub-cases (remapped
    model artefact present, found by the basename of `model_path` for a file source and of
-   `artifact_path` otherwise → score, loaded and bound to its bundled contract through
+   `artifact_path` otherwise (`_remap_artifact` takes the basename with `artifact_basename`,
+   so a path saved with backslashes on Windows is found on Linux) → score, loaded and bound to its bundled contract through
    `load_local_model_cached`; contract bundled but no model artefact → validate
    contract then raise `RuntimeError`; neither present and no usable model source
    configured → raise `DeployError` immediately, never a silent passthrough).

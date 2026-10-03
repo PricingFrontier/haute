@@ -257,17 +257,34 @@ it to its contract:
   `load_mlflow_model` in the package. The contract is the explicit
   `feature_contract_path`; without one, a model whose offset is undeclared
   (`offset_declared` false) is bound to the contract the run logged beside the
-  model artifact (`run_logged_contract_path`: the source is resolved to its run
-  and artifact, and `_resolve_run_contract` fetches the contract through the
-  disk cache, raising a `ConfigError` naming the run when there is none).
+  model artifact. The model and that contract come from one concrete run:
+  `resolve_run_artifact` resolves a registered version, alias or `latest` (and
+  an absent artifact path) once, the model is reloaded from that run when the
+  source was not already one run and artifact, and
+  `run_logged_contract_path(run_id, artifact_path, destination)` reads the
+  contract beside it through the disk cache (`_resolve_run_contract`, raising
+  a `ConfigError` naming the run when there is none). An alias that moves
+  between the two reads therefore cannot pair one version's model with another
+  version's contract.
 - **File.** `resolve_model_file(model_path, base_dir)` resolves the path through
   `resolve_runtime_file_path` (project preferred, pipeline directory
   `base_dir`, project root enforced) and raises `ConfigError` naming the file
   when it does not exist. `model_contract_path(source, feature_contract_path,
   base_dir)` returns the explicit contract (resolved the same way, which must
-  exist) or the first existing entry of `model_contract_candidates(model)`, or
-  `None`. The model loads through `load_local_model_cached(path, task,
+  exist) or the first existing entry of `model_contract_candidates(model)`,
+  itself passed through the same resolver so a sibling that leaves the project
+  through a symlink raises `RuntimePathOutsideProjectError` before it is read,
+  or `None`. Both take an optional `project_root` (the deploy bundler passes
+  its own). The model loads through `load_local_model_cached(path, task,
   contract_path)` (below), named by its project path in errors.
+
+`load_bound_model` returns a `BoundModel` (`scoring_model`, `contract_path`):
+the bound carrier and the contract it was bound to, whether the node's own or
+the one a run logged. `load_scoring_model` returns its `scoring_model`.
+`ModelScorer` scores through `load_bound_model` and enforces categorical value
+domains from that `contract_path`, so a run-logged contract constrains
+categories exactly as a file source's sibling and a deployed bundle's contract
+do.
 
 `bind_feature_contract(scoring_model, contract, *, model_name)` (`_mlflow_io.py`)
 is the one binding rule. A contract with a model identity runs
@@ -941,7 +958,7 @@ plain `RuntimeError`, not a `HauteError` subclass.
 - `tests/test_model_families.py` verifies the registry: a stub family registered with one call loads and scores from a local file, loads from a run artifact both named and by discovery, appears in the suffix list and maps to its deploy distributions; an unrecognised suffix fails locally and from a run with a `ConfigError` naming the supported suffixes; artifact paths resolve to their family (case, separators, directories); the built-in registrations are exactly `_SUPPORTED_FLAVORS`; duplicates are refused; every training descriptor's suffix is its family's; and `frontend/src/utils/modelFamilies.json` equals `model_family_fixture()`.
 - `tests/test_model_source.py` verifies the parsed source: each invalid config (no run ID, no registered model, no model path, an unknown `sourceType`, a version beside an alias) fails with the same `ConfigError` through the builder, `score_from_config` and the trace explanation; the parser's defaults; the deploy passthrough guard chaining the parse failure; and that `load_mlflow_model` is called only from `_model_source.py`.
 - `tests/test_model_family_acceptance.py` verifies that, for every native family, a model saved with its contract scores through a file source in the preview, in a standalone run (`score_from_config`) and in a deployed bundle with the predictions of the same model scored from its MLflow run.
-- `tests/test_model_file_source.py` verifies the file source and contract binding: a GLM file scores as its run does; an external CatBoost model trained with a nonzero, nonconstant baseline and saved without Haute metadata matches native prediction through a `Pool` baseline under a contract declaring its offset, and the trace reconstructs that prediction; an explicit no-offset contract scores; an undeclared offset, a model/contract disagreement and a missing declared offset input each fail for file, run and registered sources; a missing file, an unsupported suffix, a path outside the project and an EBM without its contract each fail naming the file; the trace explains a file-sourced CatBoost, GLM and XGBoost prediction; `GET /api/model-file` reports a saved model's family, task, features, offset and contract; and the bundler copies a file source's model and contract and bundles an undeclared run CatBoost's logged contract.
+- `tests/test_model_file_source.py` verifies the file source and contract binding: a GLM file scores as its run does; an external CatBoost model trained with a nonzero, nonconstant baseline and saved without Haute metadata matches native prediction through a `Pool` baseline under a contract declaring its offset, and the trace reconstructs that prediction; an explicit no-offset contract scores; an undeclared offset, a model/contract disagreement and a missing declared offset input each fail for file, run and registered sources; a missing file, an unsupported suffix, a path outside the project and an EBM without its contract each fail naming the file; the trace explains a file-sourced CatBoost, GLM and XGBoost prediction; `GET /api/model-file` reports a saved model's family, task, features, offset and contract; and the bundler copies a file source's model and contract and bundles an undeclared run CatBoost's logged contract; scoring and bundling pick the project file over a same-named one in the pipeline directory; a registered model and its logged contract come from one run when the alias moves between the reads; a run-logged contract enforces its categorical domains; a sibling contract symlinked outside the project is refused by scoring and bundling; and a backslash `model_path` bundles and serves under one key. `tests/test_preview_snapshot_seeding.py` verifies that replacing the model file or changing its sibling contract stops a downstream join capture from being seeded.
 - `tests/test_runtime_input_cache_invalidation.py` verifies file-source freshness with warm model, preview and trace caches and a downstream snapshot: replacing the model at the same path, changing only the discovered sibling contract, adding a higher-priority sibling contract, and changing an explicit contract each return the new predictions or refusal and leave the old snapshot not current; deleting the model or its required contract raises a named error.
 - `tests/test_scoring_path_unified.py` verifies explicit flavor dispatch, unified scoring regression guards, structural invariants, wrapper dispatch, and eager/batch equivalence.
 - `tests/test_scoring_prep_perf.py` verifies prediction-frame preparation correctness, pyfunc named-frame dispatch, downstream passthrough, edge cases, and benchmark behavior.

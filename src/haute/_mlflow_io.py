@@ -1154,38 +1154,8 @@ def _resolve_run_contract(
         ) from exc
 
 
-def run_logged_contract_path(
-    *,
-    source_type: str,
-    run_id: str = "",
-    artifact_path: str = "",
-    registered_model: str = "",
-    version: str = "",
-    alias: str = "",
-    destination: str = "",
-) -> str:
-    """The local copy of the contract a model source's run logged beside its model.
-
-    A run source naming its artifact is answered from the disk model cache when
-    the contract is there; otherwise the source resolves through MLflow (not
-    within :func:`disk_cache_only_model_loads`) and the contract downloads into
-    the same cache.
-
-    Raises:
-        ConfigError: the run logged no contract beside the model.
-        ModelNotInDiskCacheError: loads are limited to the disk cache and the
-            contract is not in it.
-    """
-    from haute._mlflow_utils import resolve_backend
-
-    backend = resolve_backend(destination)
-    if source_type == "run" and run_id and artifact_path:
-        _validate_artifact_path(artifact_path)
-        cached = _artifact_cache_path(
-            _disk_cache_root(), backend.digest, run_id, _run_contract_artifact(artifact_path)
-        )
-        if cached.is_file():
-            return str(cached)
+def _require_remote_loads(source_type: str) -> None:
+    """Refuse an MLflow lookup within :func:`disk_cache_only_model_loads`."""
     if _DISK_CACHE_ONLY.get():
         from haute.errors import ModelNotInDiskCacheError
 
@@ -1195,17 +1165,69 @@ def run_logged_contract_path(
             "in the editor, which fills it.",
             source_type=source_type,
         )
-    resolved_run_id, _version, mlflow_mod, client, _backend = resolve_mlflow_source(
+
+
+def resolve_run_artifact(
+    *,
+    source_type: str,
+    run_id: str = "",
+    artifact_path: str = "",
+    registered_model: str = "",
+    version: str = "",
+    alias: str = "",
+    destination: str = "",
+) -> tuple[str, str]:
+    """The concrete ``(run_id, artifact_path)`` a model source names right now.
+
+    A registered version, alias or ``latest`` resolves once, and an absent
+    artifact path is discovered in the run, so both reads that follow name the
+    same run.
+
+    Raises:
+        ModelNotInDiskCacheError: loads are limited to the disk cache.
+    """
+    from haute._mlflow_utils import resolve_backend
+
+    _require_remote_loads(source_type)
+    if artifact_path:
+        _validate_artifact_path(artifact_path)
+    resolved_run_id, _version, _mlflow, client, _backend = resolve_mlflow_source(
         source_type=source_type,
         run_id=run_id,
         registered_model=registered_model,
         version=version,
-        backend=backend,
+        backend=resolve_backend(destination),
         alias=alias,
     )
-    artifact = artifact_path or _find_model_artifact(client, resolved_run_id)[0]
-    with _disk_cache_run_in_use(resolved_run_id):
-        return _resolve_run_contract(mlflow_mod, backend, resolved_run_id, artifact)
+    return resolved_run_id, artifact_path or _find_model_artifact(client, resolved_run_id)[0]
+
+
+def run_logged_contract_path(*, run_id: str, artifact_path: str, destination: str) -> str:
+    """The local copy of the contract a run logged beside its model artifact.
+
+    Answered from the disk model cache when the contract is there; otherwise it
+    downloads into the same cache (not within :func:`disk_cache_only_model_loads`).
+
+    Raises:
+        ConfigError: the run logged no contract beside the model.
+        ModelNotInDiskCacheError: loads are limited to the disk cache and the
+            contract is not in it.
+    """
+    from haute._mlflow_utils import resolve_backend
+
+    _validate_artifact_path(artifact_path)
+    backend = resolve_backend(destination)
+    cached = _artifact_cache_path(
+        _disk_cache_root(), backend.digest, run_id, _run_contract_artifact(artifact_path)
+    )
+    if cached.is_file():
+        return str(cached)
+    _require_remote_loads("run")
+    _run_id, _version, mlflow_mod, _client, _backend = resolve_mlflow_source(
+        source_type="run", run_id=run_id, backend=backend
+    )
+    with _disk_cache_run_in_use(run_id):
+        return _resolve_run_contract(mlflow_mod, backend, run_id, artifact_path)
 
 
 def _load_xgboost_file(
