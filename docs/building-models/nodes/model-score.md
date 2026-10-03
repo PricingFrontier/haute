@@ -16,20 +16,13 @@ This node takes a single input. It outputs the input rows with the prediction ad
 
 The **INPUT** strip at the top names the connected input; its **×** removes the connection.
 
-Below it, for a model in MLflow, the destination buttons choose where the node browses for and loads the model: **Databricks**, **MLflow server** or **Local folder** (the default, the project's local MLflow folder). A remote that is not configured is greyed out, and clicking it opens MLflow settings instead. Switching destination clears the chosen model and says **Selection cleared - run and model identifiers are not portable across destinations.**
-
 **MODEL SOURCE** chooses how the model is found:
 
-- **Registered Model** (the default): a named, versioned model in the registry. This is the most common setup.
 - **Experiment Run**: one specific training run, picked by experiment. Useful during development, before a model is registered.
-- **Model file**: a model file in your project folder. The destination buttons are hidden, because the file is read from the project, not from MLflow.
+- **Registered Model** (the default): a named, versioned model in the registry. This is the most common setup.
+- **Model file**: a model file in your project folder.
 
-With **Registered Model**:
-
-| Field | What it does |
-|---|---|
-| **MODEL NAME** | The registered model, from the destination's registry (**Select a model...** until you choose). With an empty registry the pane says **No registered models yet - haute logs training runs; your promotion process registers them.** |
-| **VERSION** | **latest** (the default), an alias such as **@champion → v3**, or a version, listed as `v3` with its status and description. |
+Below it, for **Experiment Run** and **Registered Model**, the destination buttons choose where the node browses for and loads the model: **Databricks**, **MLflow server** or **Local folder** (the default, the project's local MLflow folder). A remote that is not configured is greyed out, and clicking it opens MLflow settings instead. Switching destination clears the chosen model and says **Selection cleared - run and model identifiers are not portable across destinations.** A **Model file** has no destination buttons, because the file is read from the project, not from MLflow.
 
 With **Experiment Run**:
 
@@ -39,6 +32,13 @@ With **Experiment Run**:
 | **RUN** | A finished run in that experiment that holds a model. An experiment without one shows **No finished runs with a model artifact in this experiment yet.** |
 | **RUN ID** | The chosen run's ID. You can also paste one here. |
 | **ARTIFACT PATH** | The model's path inside the run (for example `model.cbm`). Picking a run fills it with the run's first artifact. |
+
+With **Registered Model**:
+
+| Field | What it does |
+|---|---|
+| **MODEL NAME** | The registered model, from the destination's registry (**Select a model...** until you choose). With an empty registry the pane says **No registered models yet - haute logs training runs; your promotion process registers them.** |
+| **VERSION** | **latest** (the default), an alias such as **@champion → v3**, or a version, listed as `v3` with its status and description. |
 
 With **Model file**:
 

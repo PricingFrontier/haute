@@ -157,6 +157,26 @@ export default function ModelScoreEditor({
     <div className="flex-1 flex flex-col min-h-0 px-3 py-2 gap-3">
       <InputSourcesBar inputSources={inputSources} onDeleteInput={onDeleteInput} />
 
+      {/* Source Type Toggle */}
+      <div>
+        <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Model Source</label>
+        <div className="mt-1">
+          <ToggleButtonGroup
+            value={sourceType}
+            onChange={(v) => onUpdate("sourceType", v)}
+            options={[
+              { key: "run", label: "Experiment Run" },
+              { key: "registered", label: "Registered Model" },
+              { key: "file", label: "Model file" },
+            ]}
+            accentColor={accentColor}
+          />
+        </div>
+        <p className="mt-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
+          {SOURCE_DESCRIPTIONS[sourceType] ?? SOURCE_DESCRIPTIONS.registered}
+        </p>
+      </div>
+
       {/* Where this node browses and loads from (MLflow sources only) */}
       {sourceType !== "file" && (
         <div>
@@ -176,26 +196,6 @@ export default function ModelScoreEditor({
           )}
         </div>
       )}
-
-      {/* Source Type Toggle */}
-      <div>
-        <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Model Source</label>
-        <div className="mt-1">
-          <ToggleButtonGroup
-            value={sourceType}
-            onChange={(v) => onUpdate("sourceType", v)}
-            options={[
-              { key: "registered", label: "Registered Model" },
-              { key: "run", label: "Experiment Run" },
-              { key: "file", label: "Model file" },
-            ]}
-            accentColor={accentColor}
-          />
-        </div>
-        <p className="mt-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
-          {SOURCE_DESCRIPTIONS[sourceType] ?? SOURCE_DESCRIPTIONS.registered}
-        </p>
-      </div>
 
       {/* File-based Selection */}
       {sourceType === "file" && (

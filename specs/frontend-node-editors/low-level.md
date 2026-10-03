@@ -150,10 +150,11 @@
    fetched for each later editor mount, while consumers mounting during one pending fetch share
    that request. Request state is local to the editor; the editor never assumes an out-of-order response still describes a
    changed node unless its own effect/request guards accept it.
-   `ModelScoreEditor` and `OptimiserApplyEditor` (for its MLflow source
+   `ModelScoreEditor` and `OptimiserApplyEditor` (for their MLflow source
    types) mount the shared `MlflowDestinationSelector`
-   ([frontend-shared](../frontend-shared/low-level.md)) above the source
-   picker, bound to the node's `mlflow_destination` (absent = the local
+   ([frontend-shared](../frontend-shared/low-level.md)), `OptimiserApplyEditor`
+   above its source picker and `ModelScoreEditor` directly below its **MODEL
+   SOURCE** toggle, bound to the node's `mlflow_destination` (absent = the local
    folder; Local folder is stored by removing the key); there is
    no status badge. Choosing a different destination clears the picked run
    or model (`run_id`, `run_name`, `experiment_id`, `experiment_name`,
@@ -186,7 +187,7 @@
    stored task that differs shows an alert naming both with a "Use <task>"
    button that writes the recorded one; a model without a recorded task (or
    whose run or versions are not loaded) keeps the explicit Task select.
-   **MODEL SOURCE** offers **Registered Model**, **Experiment Run** and **Model
+   **MODEL SOURCE** offers **Experiment Run**, **Registered Model** and **Model
    file**. **Model file** hides the destination selector (a file source never
    reads MLflow) and shows a `PathPickerField` whose browser lists only the
    registered model-file suffixes (`modelFileSuffixes` from the generated

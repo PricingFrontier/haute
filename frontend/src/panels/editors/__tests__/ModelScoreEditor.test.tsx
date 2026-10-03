@@ -498,6 +498,19 @@ describe("ModelScoreEditor", () => {
     expect(screen.queryByRole("button", { name: /mlflow status/i })).not.toBeInTheDocument()
   })
 
+  it("orders the sources run, registered, file with the destination below them", () => {
+    render(<ModelScoreEditor {...defaultProps()} config={{ sourceType: "run" }} />)
+
+    const labels = ["Experiment Run", "Registered Model", "Model file"].map((label) =>
+      screen.getByText(label),
+    )
+    for (const [earlier, later] of [[labels[0], labels[1]], [labels[1], labels[2]]]) {
+      expect(earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    }
+    const destination = screen.getByRole("radiogroup", { name: "MLflow destination" })
+    expect(labels[2].compareDocumentPosition(destination) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
   it("browses the node's own destination", () => {
     const props = defaultProps()
     props.config = { mlflow_destination: "server" }
