@@ -355,7 +355,7 @@ test.describe("Transform step builder journey", () => {
     await sourceInput.press("Enter")
     await expect(page.getByTitle("Data source")).toContainText("nb_batch")
     await page.getByTestId("toolbar-constants").click()
-    await page.getByTestId("constants-add").click()
+    await page.getByRole("button", { name: "Add constant" }).click()
     const name = page.getByTestId("constant-name-0")
     await name.fill("threshold")
     await name.press("Enter")

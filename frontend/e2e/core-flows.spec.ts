@@ -449,14 +449,14 @@ test.describe("core browser flows", () => {
     await expect(page.getByTitle("Data source")).toContainText("nb_batch")
 
     await page.getByTestId("toolbar-constants").click()
-    await page.getByTestId("constants-add").click()
+    await page.getByRole("button", { name: "Add constant" }).click()
     const name = page.getByTestId("constant-name-0")
     await name.fill("rate")
     await name.press("Enter")
     await page.getByTestId("constant-split-0").click()
     await page.getByTestId("constant-value-0-live").fill("1.5")
     await page.getByTestId("constant-value-0-nb_batch").fill("2.5")
-    await expect(page.getByTestId("constant-readers-0")).toHaveText("Read by enriched")
+    await expect(page.getByTestId("constant-readers-0")).toHaveText("enriched")
 
     await page.getByRole("button", { name: /enriched/i }).click()
     await page.getByRole("button", { name: "Refresh" }).click()

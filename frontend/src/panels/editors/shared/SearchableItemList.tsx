@@ -9,7 +9,8 @@ export interface SearchableItemListProps {
   list: SearchableList
   selectedIndex: number
   onSelect: (index: number) => void
-  onAdd: () => void
+  /** Given only while an item may be added. */
+  onAdd?: () => void
   /** Given only while an item may be removed. */
   onRemove?: (index: number) => void
   /** Given when the order means something the user may change. */
@@ -98,15 +99,17 @@ export default function SearchableItemList({
             </button>
           ))}
         </div>
-        <button
-          type="button"
-          onClick={onAdd}
-          aria-label={labels.add}
-          className="accent-hover-btn p-1.5 rounded-lg shrink-0"
-          style={{ color: "var(--text-muted)", border: "1px dashed var(--border)", ["--node-accent" as string]: accentColor }}
-        >
-          <Plus size={12} />
-        </button>
+        {onAdd && (
+          <button
+            type="button"
+            onClick={onAdd}
+            aria-label={labels.add}
+            className="accent-hover-btn p-1.5 rounded-lg shrink-0"
+            style={{ color: "var(--text-muted)", border: "1px dashed var(--border)", ["--node-accent" as string]: accentColor }}
+          >
+            <Plus size={12} />
+          </button>
+        )}
       </div>
 
       <div

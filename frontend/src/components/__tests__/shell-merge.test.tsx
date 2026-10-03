@@ -236,7 +236,7 @@ describe("Phase 2D-3 shell merge - consumer regression guards", () => {
     // this caller, the rendered output must be identical to a user.
     render(<GlobalConstantsPanel onClose={vi.fn()} />)
     expect(screen.getByText("Global Constants")).toBeInTheDocument()
-    expect(screen.getByText("global_constants.<name>")).toBeInTheDocument()
+    expect(screen.getByText("No constants yet")).toBeInTheDocument()
     expect(screen.getByTitle("Close")).toBeInTheDocument()
   })
 

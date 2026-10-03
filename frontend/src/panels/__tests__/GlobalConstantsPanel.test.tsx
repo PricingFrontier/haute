@@ -41,9 +41,11 @@ describe("GlobalConstantsPanel", () => {
     load([uniform("constant_1", "1")])
     render(<GlobalConstantsPanel onClose={vi.fn()} />)
 
-    fireEvent.click(screen.getByTestId("constants-add"))
+    fireEvent.click(screen.getByRole("button", { name: "Add constant" }))
 
+    // The new constant is selected for editing.
     expect(constants()[1]).toEqual(uniform("constant_2", ""))
+    expect(screen.getByTestId("constant-name-1")).toHaveValue("constant_2")
     expect(screen.getByTestId("constant-value-issue-1")).toHaveTextContent("Enter a value.")
     expect(useGraphStore.getState().dirty).toBe(true)
     expect(useGraphStore.getState().undoStack).toEqual([])
@@ -87,20 +89,37 @@ describe("GlobalConstantsPanel", () => {
     load([{ name: "rate", type: "float", split: true, value: "", bySource: { live: "2.0", nb_batch: "2.5" } }])
     render(<GlobalConstantsPanel onClose={vi.fn()} />)
 
-    fireEvent.change(screen.getByTestId("constant-type-0"), { target: { value: "integer" } })
+    fireEvent.click(screen.getByRole("radio", { name: "Integer" }))
 
     expect(constants()[0]).toMatchObject({ type: "integer", bySource: { live: "2", nb_batch: "" } })
     expect(screen.getByTestId("constant-value-issue-0-nb_batch")).toHaveTextContent("Missing")
   })
 
-  it("lists the nodes that read each constant", () => {
-    load([uniform("rate", "1"), uniform("unused", "2")], {
+  it("lists the constants with their type and value, and shows the selected one's readers", () => {
+    load([uniform("rate", "1.5"), { name: "cap", type: "integer", split: true, value: "", bySource: { live: "3" } }], {
       nodes: [reader("n1", "Pricing", "df = df.with_columns(r=pl.lit(global_constants.rate))")],
     })
     render(<GlobalConstantsPanel onClose={vi.fn()} />)
 
-    expect(screen.getByTestId("constant-readers-0")).toHaveTextContent("Read by Pricing")
-    expect(screen.getByTestId("constant-readers-1")).toHaveTextContent("Not read")
+    const rate = screen.getByRole("button", { name: "rate complete" })
+    expect(rate).toHaveTextContent("Decimal")
+    expect(rate).toHaveTextContent("1.5")
+    const cap = screen.getByRole("button", { name: "cap needs attention" })
+    expect(cap).toHaveTextContent("1/2 sources")
+    expect(cap).toHaveAttribute("title", "No nb_batch value")
+    expect(screen.getByTestId("constant-readers-0")).toHaveTextContent("Pricing")
+
+    fireEvent.click(cap)
+    expect(screen.getByTestId("constant-readers-1")).toHaveTextContent("No node reads it")
+  })
+
+  it("moves a constant within the list", () => {
+    load([uniform("first", "1"), uniform("second", "2")])
+    render(<GlobalConstantsPanel onClose={vi.fn()} />)
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "first complete" }), { key: "ArrowDown", altKey: true })
+
+    expect(constants().map((draft) => draft.name)).toEqual(["second", "first"])
   })
 
   it("asks before deleting a constant that is read, naming its readers", () => {
@@ -108,11 +127,11 @@ describe("GlobalConstantsPanel", () => {
     render(<GlobalConstantsPanel onClose={vi.fn()} />)
     const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true)
 
-    fireEvent.click(screen.getByTestId("constant-delete-0"))
+    fireEvent.click(screen.getByRole("button", { name: "Remove rate" }))
     expect(confirm).toHaveBeenLastCalledWith("Delete rate? Pricing read it.")
     expect(constants()).toHaveLength(1)
 
-    fireEvent.click(screen.getByTestId("constant-delete-0"))
+    fireEvent.click(screen.getByRole("button", { name: "Remove rate" }))
     expect(constants()).toEqual([])
   })
 
@@ -121,7 +140,7 @@ describe("GlobalConstantsPanel", () => {
     render(<GlobalConstantsPanel onClose={vi.fn()} />)
     const confirm = vi.spyOn(window, "confirm")
 
-    fireEvent.click(screen.getByTestId("constant-delete-0"))
+    fireEvent.click(screen.getByRole("button", { name: "Remove rate" }))
 
     expect(confirm).not.toHaveBeenCalled()
     expect(constants()).toEqual([])
@@ -147,6 +166,7 @@ describe("GlobalConstantsPanel", () => {
   it("marks an invalid or duplicate name", () => {
     load([uniform("rate", "1"), uniform("other", "2")])
     render(<GlobalConstantsPanel onClose={vi.fn()} />)
+    fireEvent.click(screen.getByRole("button", { name: "other complete" }))
 
     const name = screen.getByTestId("constant-name-1")
     fireEvent.change(name, { target: { value: "rate" } })
@@ -160,7 +180,7 @@ describe("GlobalConstantsPanel", () => {
     render(<GlobalConstantsPanel onClose={vi.fn()} />)
 
     expect(screen.getByTestId("constants-load-error")).toHaveTextContent("bad JSON")
-    expect(screen.getByTestId("constants-add")).toBeDisabled()
+    expect(screen.queryByRole("button", { name: "Add constant" })).not.toBeInTheDocument()
   })
 
   it("lists values for sources the pipeline lacks and removes them", () => {
