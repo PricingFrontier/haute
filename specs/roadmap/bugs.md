@@ -23,7 +23,6 @@ Current rating behaviour is specified in
 | BUG-04 | Planned | P2 | A pickled XGBoost or LightGBM model loads in a Load File node, or is refused by name. |
 | BUG-06 | Planned | P2 | A Delta table folder can be chosen as a Lakehouse Data Input in the editor. |
 | BUG-10 | Planned | P2 | A CSV Data Input's detected schema is read with the node's reader arguments. |
-| BUG-11 | Planned | P3 | Setting every Source Switch input back to `-` returns the node to passing through its first input. |
 | BUG-12 | Planned | P1 | A save never drops a statement written after the pipeline constructor; such a statement is reported and saving waits for it to move. |
 | BUG-13 | Planned | P2 | Deployed External File code sees the preamble's names, as it does in the editor. |
 | BUG-14 | Planned | P2 | Model Score code sees the preamble's names on the canvas and when deployed, as it does standalone. |
@@ -169,27 +168,6 @@ them; the Data Input page drops its warning.
 **Evidence:** `frontend/src/panels/editors/DataInputEditor.tsx` (`useSchemaFetch`
 is given only the path); `src/haute/routes/files.py::get_schema`
 (`graph_utils.read_source` on the path); `docs/building-models/nodes/data-input.md`.
-
-### BUG-11 — Setting every Source Switch input to `-` restores passthrough
-**Why:** Choosing `-` for an input stores it in `input_scenario_map` with an
-empty string instead of removing it. `select_live_switch_input` treats a
-non-empty map as exhaustive and passes through the first input only when the
-map is empty, so once an input has been mapped, setting every input back to
-`-` leaves a map of empty strings and the node fails for every source with
-`LiveSwitchScenarioError`, where a new switch would pass its first input
-through. The Source Switch page documents this.
-
-**Plan:** Make `-` delete the input's key, so a switch whose inputs are all on
-`-` has an empty map and behaves as a new one.
-
-**Acceptance:** A frontend test maps an input, sets it back to `-`, and the
-committed config has no key for it; the Source Switch page drops its note.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/editors/LiveSwitchEditor.tsx` (`setMapping`);
-`src/haute/_node_apply.py::select_live_switch_input`;
-`docs/building-models/nodes/source-switch.md`.
 
 ### BUG-12 — A save keeps the statements written after the pipeline constructor
 **Why:** Codegen regenerates a pipeline file from the parsed graph, and the
