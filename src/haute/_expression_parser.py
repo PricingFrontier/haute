@@ -1432,6 +1432,10 @@ def _wrap_expression_code(code: str) -> str:
 
 
 _GLOBAL_CONSTANT_READ = re.compile(r"\bglobal_constants\.([A-Za-z][A-Za-z0-9_]*)\b")
+#: A quoted string (group 1, kept as written) or a constant read outside one (group 2).
+_DISPLAYED_CONSTANT_READ = re.compile(
+    r"""('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")|\bglobal_constants\.([A-Za-z][A-Za-z0-9_]*)\b"""
+)
 
 
 def _global_constant_values(namespace: Mapping[str, Any], code: str) -> dict[str, Any]:
@@ -1579,10 +1583,10 @@ def _evaluate_expression_impl(
         )
 
     # Show each global constant's value where the formula reads it.
-    substituted_text = _GLOBAL_CONSTANT_READ.sub(
+    substituted_text = _DISPLAYED_CONSTANT_READ.sub(
         lambda match: (
-            _format_value(constant_values[match.group(1)])
-            if match.group(1) in constant_values
+            _format_value(constant_values[match.group(2)])
+            if match.group(2) in constant_values
             else match.group(0)
         ),
         substituted_text,

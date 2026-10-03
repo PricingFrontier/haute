@@ -75,6 +75,19 @@ describe("trainingLineage", () => {
     preamble: "import polars as pl",
   }
 
+  it("changes when a global constant's value changes, so a restored result reads as stale", () => {
+    const withConstants = (value: number) => ({
+      ...graph,
+      global_constants: [{ name: "min_age", type: "integer", value }],
+      global_constants_error: null,
+    })
+
+    expect(trainingLineage(withConstants(18))).toBe(trainingLineage(withConstants(18)))
+    expect(trainingLineage(withConstants(70))).not.toBe(trainingLineage(withConstants(18)))
+    expect(trainingLineage({ ...withConstants(18), global_constants_error: "bad JSON" }))
+      .not.toBe(trainingLineage(withConstants(18)))
+  })
+
   it("ignores key order, positions, runtime config keys and modelling export settings", () => {
     const reordered = {
       ...graph,

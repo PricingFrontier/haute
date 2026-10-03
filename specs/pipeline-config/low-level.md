@@ -443,8 +443,10 @@ forwards projection/profile fields; external-file resolution validates
 
 **Global constants.** `src/haute/parser.py::load_declared_global_constants` loads the file a
 pipeline constructor declares, from the pipeline's folder or through an injected byte reader,
-and returns no constants with the reason when the file is missing, unreadable or invalid,
-which never fails the parse. `src/haute/_config_io.py::parse_global_constants` decodes the
+and returns no constants with the reason when the file is missing, unreadable or invalid, or
+resolves outside the pipeline folder (a link that leaves it, checked with
+`src/haute/_sandbox.py::contained_path`), which never fails the parse. Save refuses with HTTP 400
+any config file whose path resolves outside the pipeline folder rather than skipping its write. `src/haute/_config_io.py::parse_global_constants` decodes the
 bytes as strict UTF-8, rejects duplicate keys and validates each entry through
 `src/haute/_types.py::GlobalConstant`, naming the entry and the field in a `ConfigError`.
 The reads analysis in `src/haute/_global_constants.py::node_constant_reads` takes the

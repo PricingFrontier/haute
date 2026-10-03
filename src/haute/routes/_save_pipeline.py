@@ -1781,7 +1781,15 @@ class SavePipelineService:
         for rel_path, json_content in self._last_config_files.items():
             out_path = (self._pipeline_root / rel_path).resolve()
             if not out_path.is_relative_to(self._pipeline_root):
-                continue
+                # A link out of the pipeline folder: writing would leave it,
+                # and skipping would drop the edit while the save succeeds.
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Cannot save {rel_path}: it resolves outside the pipeline folder. "
+                        "Replace the link with a folder inside the project, then save again."
+                    ),
+                )
             self._stage_write(out_path, json_content, touched)
 
     @staticmethod

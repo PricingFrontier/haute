@@ -145,7 +145,8 @@ Out of scope (owned by neighbouring components, cross-linked below):
 
 **Global constants.** The strict parser reads the pipeline constructor's `global_constants`
 keyword, which may name only `config/global_constants.json`, and loads that file into the
-graph. A missing, unreadable or invalid file never fails the parse: the graph carries no
+graph. A missing, unreadable or invalid file, or one reached through a link out of the
+pipeline folder, never fails the parse: the graph carries no
 constants, the reason as `global_constants_error`, and a warning. The generated
 `global_constants = pipeline.global_constants` (or `submodel.global_constants`) is recognised as
 generated code; any other module-level binding of the name, a node function of that name, and a

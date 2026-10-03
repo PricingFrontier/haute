@@ -717,3 +717,78 @@ class TestCodexFindings:
         GlobalConstant(name="big", type="integer", value=2**53 - 1)
         with pytest.raises(ValidationError, match="between -9007199254740991 and 9007199254740991"):
             GlobalConstant(name="big", type="integer", value=2**53 + 1)
+
+
+def _link_directory(link: Path, target: Path) -> None:
+    """Make *link* a directory link to *target*: a junction on Windows, which needs no privilege."""
+    import os
+
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+class TestFinalReviewFindings:
+    def test_a_constants_file_outside_the_pipeline_folder_is_a_load_error(
+        self, tmp_path: Path
+    ) -> None:
+        from haute.parser import load_declared_global_constants
+
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "global_constants.json").write_text(
+            json.dumps({"constants": [{"name": "rate", "type": "float", "value": 1.0}]})
+        )
+        project = tmp_path / "project"
+        project.mkdir()
+        _link_directory(project / "config", outside)
+
+        constants, error = load_declared_global_constants(project)
+
+        assert constants == []
+        assert error is not None and "resolves outside the pipeline folder" in error
+
+    def test_saving_through_a_config_link_out_of_the_pipeline_folder_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from fastapi import HTTPException
+
+        from haute.routes._save_pipeline import SavePipelineService
+        from haute.schemas import SavePipelineRequest
+        from tests.conftest import current_source_revision
+
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        project = tmp_path / "project"
+        project.mkdir()
+        _link_directory(project / "config", outside)
+        monkeypatch.chdir(project)
+        graph = _graph([make_transform_node("t", "df = df")], [], RATE)
+        request = SavePipelineRequest(
+            name="main",
+            graph=graph,
+            source_file="main.py",
+            base_revision=current_source_revision(project / "main.py", project),
+        )
+
+        with pytest.raises(HTTPException) as refused:
+            SavePipelineService(project).save(request)
+
+        assert refused.value.status_code == 400
+        assert "resolves outside the pipeline folder" in str(refused.value.detail)
+        assert not (outside / "global_constants.json").exists()
+
+    def test_a_trace_leaves_quoted_text_that_looks_like_a_constant_read_alone(self) -> None:
+        from haute._expression_parser import evaluate_expression
+
+        rate = GlobalConstant(name="rate", type="float", value=2.0)
+        namespace = {"global_constants": GlobalConstantsNamespace([rate], source="live")}
+        code = 'df = df.with_columns(pl.lit("global_constants.rate").alias("label"))'
+
+        result = evaluate_expression(code, "label", {}, namespace)
+
+        assert result.substituted_text == '"global_constants.rate"'
+        assert result.result_value == "global_constants.rate"

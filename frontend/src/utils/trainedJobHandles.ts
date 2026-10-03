@@ -107,6 +107,8 @@ export type TrainingLineageInput = {
   edges?: readonly LineageEdge[]
   preamble?: string
   submodels?: Record<string, unknown>
+  global_constants?: readonly unknown[]
+  global_constants_error?: string | null
 }
 
 /** Runtime-only config keys the canvas injects; they never describe the pipeline. */
@@ -176,7 +178,16 @@ function lineageMaterial(graph: TrainingLineageInput): unknown {
   const submodels = Object.keys(graph.submodels ?? {})
     .sort()
     .map((name) => [name, submodelMaterial(graph.submodels?.[name])])
-  return { nodes, edges, preamble: graph.preamble ?? "", submodels }
+  return { nodes, edges, preamble: graph.preamble ?? "", submodels, ...constantsMaterial(graph) }
+}
+
+/** The pipeline's global constants, which any node's code may read; absent in a submodel's graph. */
+function constantsMaterial(graph: TrainingLineageInput): Record<string, unknown> {
+  if (graph.global_constants === undefined && graph.global_constants_error === undefined) return {}
+  return {
+    globalConstants: canonical(graph.global_constants ?? []),
+    globalConstantsError: graph.global_constants_error ?? null,
+  }
 }
 
 /** A submodel's interface and file, plus its own graph by the same rules. */
@@ -197,8 +208,8 @@ function submodelMaterial(definition: unknown): unknown {
  * type, label, description, code, function name and config (keys sorted,
  * runtime keys and modelling export settings omitted), every edge, the
  * preamble, and every submodel definition — its interface, file and internal
- * graph by the same rules. Positions, selection and preview results never
- * contribute.
+ * graph by the same rules — and the pipeline's global constants and their
+ * load error. Positions, selection and preview results never contribute.
  */
 export function trainingLineage(graph: TrainingLineageInput): string {
   return digest(JSON.stringify(lineageMaterial(graph)))

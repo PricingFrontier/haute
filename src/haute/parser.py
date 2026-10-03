@@ -102,7 +102,16 @@ def load_declared_global_constants(
         return [], (
             f"{GLOBAL_CONSTANTS_FILE} cannot be located: the pipeline source has no folder."
         )
-    path = base_dir / GLOBAL_CONSTANTS_FILE
+    from haute._sandbox import contained_path
+    from haute.errors import InvalidPathError, PathOutsideProjectError
+
+    try:
+        path = contained_path(base_dir, GLOBAL_CONSTANTS_FILE)
+    except (PathOutsideProjectError, InvalidPathError):
+        return [], (
+            f"{GLOBAL_CONSTANTS_FILE} resolves outside the pipeline folder, so it can be neither "
+            "read nor saved. Replace the link with a file inside the project."
+        )
     try:
         raw = read_bytes(path) if read_bytes is not None else path.read_bytes()
     except FileNotFoundError:
