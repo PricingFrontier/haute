@@ -114,6 +114,41 @@ def normalise_banding_factors(config: dict[str, Any]) -> list[dict[str, Any]]:
     return list(expanded_factors)
 
 
+def banding_factor_is_active(factor: dict[str, Any]) -> bool:
+    """Return whether execution applies *factor* rather than skipping it as a draft.
+
+    A factor missing its column, output column, or rules is a draft: the
+    node passes the frame through for it. The node's column contract asks
+    the same question, so it never promises a draft's output column.
+    """
+    return bool(factor.get("column") and factor.get("outputColumn") and factor.get("rules"))
+
+
+def require_distinct_banding_outputs(factors: list[dict[str, Any]]) -> None:
+    """Refuse two active factors writing one output column.
+
+    Execution aliases each active factor's ``outputColumn`` in order, so the
+    later band would silently replace the earlier one. A draft factor writes
+    nothing and is left out. Factors are named by 1-based position, as the
+    editor lists them, and by input column.
+    """
+    first_writer: dict[str, int] = {}
+    for index, factor in enumerate(factors):
+        if not banding_factor_is_active(factor):
+            continue
+        output_column = factor["outputColumn"]
+        earlier = first_writer.setdefault(output_column, index)
+        if earlier == index:
+            continue
+        raise ConfigSettingError(
+            f"Banding output {output_column!r} is written by factor {earlier + 1} "
+            f"({factors[earlier]['column']!r}) and factor {index + 1} "
+            f"({factor['column']!r}); give each factor its own output column",
+            setting="factors",
+            values=(output_column, factors[earlier]["column"], factor["column"]),
+        )
+
+
 def _compact_rule_map(rules: dict[Any, Any], banding_type: str) -> dict[str, Any]:
     compact: dict[str, Any] = {}
     if banding_type == "categorical":

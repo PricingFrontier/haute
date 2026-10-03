@@ -18,6 +18,7 @@ from haute._rating import (
     parse_breakpoint_boundary,
     validate_banding_config,
 )
+from haute._validation_error import ConfigSettingError
 from haute.executor import _build_node_fn
 from haute.graph_utils import GraphNode, NodeData, NodeType, PipelineGraph
 from tests.conftest import write_node_config
@@ -978,6 +979,25 @@ def _strip_contract_kwarg(block: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+_DUPLICATE_OUTPUT_FACTORS = [
+    {
+        "banding": "breakpoints",
+        "column": "age",
+        "outputColumn": "age_band",
+        "rules": [{"boundary": "25", "label": "young"}, {"boundary": "", "label": "older"}],
+    },
+    {
+        "banding": "breakpoints",
+        "column": "driver_age",
+        "outputColumn": "age_band",
+        "rules": [{"boundary": "40", "label": "young"}, {"boundary": "", "label": "older"}],
+    },
+]
+_DUPLICATE_OUTPUT_MESSAGE = re.escape(
+    "Banding output 'age_band' is written by factor 1 ('age') and factor 2 ('driver_age')"
+)
+
+
 class TestMultiFactor:
     def test_executor_applies_all_factors(self):
         node = _multi_banding_node(
@@ -1033,6 +1053,29 @@ class TestMultiFactor:
         result = fn(lf).collect()
         assert "x_band" in result.columns
         assert result.columns == ["x", "x_band"]
+
+    def test_two_active_factors_writing_one_column_fail_naming_both(self):
+        """The later band would silently replace the earlier one."""
+        node = _multi_banding_node("dup", _DUPLICATE_OUTPUT_FACTORS)
+        _, fn, _ = _build_node_fn(node)
+        lf = pl.DataFrame({"age": [20, 40], "driver_age": [30, 50]}).lazy()
+
+        with pytest.raises(ConfigSettingError, match=_DUPLICATE_OUTPUT_MESSAGE):
+            fn(lf)
+
+    def test_validation_refuses_two_active_factors_writing_one_column(self):
+        with pytest.raises(ConfigSettingError, match=_DUPLICATE_OUTPUT_MESSAGE):
+            validate_banding_config({"factors": _DUPLICATE_OUTPUT_FACTORS})
+
+    def test_a_draft_factor_sharing_an_output_column_does_not_count(self):
+        draft = {"banding": "breakpoints", "column": "", "outputColumn": "age_band", "rules": []}
+        factors = [_DUPLICATE_OUTPUT_FACTORS[0], draft]
+        validate_banding_config({"factors": factors})
+        _, fn, _ = _build_node_fn(_multi_banding_node("draft", factors))
+
+        result = fn(pl.DataFrame({"age": [20, 40]}).lazy()).collect()
+
+        assert result["age_band"].to_list() == ["young", "older"]
 
     def test_codegen_multi_factor_uses_factors_kwarg(self):
         from haute.codegen import graph_to_code

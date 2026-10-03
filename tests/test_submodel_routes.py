@@ -244,6 +244,39 @@ class TestCreateSubmodel:
             response = client.post("/api/submodel/create", json=body)
         assert response.status_code == 409
 
+    @pytest.mark.parametrize(
+        ("name", "message"),
+        [
+            pytest.param("pl", "takes the name `pl`", id="reserved"),
+            pytest.param("calc", "take one name, `calc`", id="named-after-a-selected-child"),
+        ],
+    )
+    def test_a_name_the_naming_rule_refuses_is_refused(
+        self, client: TestClient, tmp_path: Path, name: str, message: str
+    ) -> None:
+        body = _create_body()
+        body["name"] = name
+        with _patch_parent_document(tmp_path, _simple_graph()):
+            response = client.post("/api/submodel/create", json=body)
+
+        assert response.status_code == 400
+        assert "Nothing was changed" in response.json()["detail"]
+        assert message in response.json()["detail"]
+
+    def test_a_violation_the_graph_already_had_does_not_block_grouping(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """Grouping moves an existing `pl` node into the submodel; it adds nothing."""
+        graph = _simple_graph()
+        for node in graph["nodes"]:
+            if node["id"] == "calc":
+                node["data"]["label"] = "pl"
+        body = _create_body(graph=graph)
+        with _patch_parent_document(tmp_path, graph):
+            response = client.post("/api/submodel/create", json=body)
+
+        assert response.status_code == 200, response.text
+
     def test_too_few_nodes(self, client: TestClient, tmp_path: Path) -> None:
         """A submodel must contain at least 2 nodes."""
         body = _create_body()

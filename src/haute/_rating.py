@@ -23,8 +23,10 @@ from typing import Any, Literal, cast
 import polars as pl
 
 from haute._banding_config import (
+    banding_factor_is_active,
     normalise_banding_factors,
     normalise_banding_rules,
+    require_distinct_banding_outputs,
 )
 from haute._logging import get_logger
 from haute._polars_dtypes import dtype_to_spec, parse_dtype
@@ -611,17 +613,8 @@ def validate_banding_config(config: dict[str, Any]) -> list[dict[str, Any]]:
             raise ConfigSettingError(
                 _no_usable_rule_message(output_column, "breakpoints"), setting="factors"
             )
+    require_distinct_banding_outputs(factors)
     return factors
-
-
-def banding_factor_is_active(factor: dict[str, Any]) -> bool:
-    """Return whether execution applies *factor* rather than skipping it as a draft.
-
-    A factor missing its column, output column, or rules is a draft: the
-    node passes the frame through for it. The node's column contract asks
-    the same question, so it never promises a draft's output column.
-    """
-    return bool(factor.get("column") and factor.get("outputColumn") and factor.get("rules"))
 
 
 def apply_banding_factors(lf: _Frame, factors: Iterable[dict[str, Any]]) -> _Frame:
@@ -635,8 +628,11 @@ def apply_banding_factors(lf: _Frame, factors: Iterable[dict[str, Any]]) -> _Fra
     Draft factors (see :func:`banding_factor_is_active`) are skipped — the
     node is a passthrough for those factors (an empty config is a
     documented no-op) — but only once their type is checked: a draft names
-    one of the banding types too.
+    one of the banding types too. Two active factors writing one output
+    column are refused before the frame is touched.
     """
+    factors = list(factors)
+    require_distinct_banding_outputs(factors)
     for index, factor in enumerate(factors):
         require_banding_type(
             str(factor.get("banding", "") or ""), subject=f"Banding factor {index}"

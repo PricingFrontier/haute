@@ -51,13 +51,20 @@ backend API modules own validation and persistence.
   of those structured formats fetches its schema preview, and all four expose the cache/infer
   action. Directory rows remain navigable when the server reports a null size; only numeric file
   sizes are rendered.
+- Constant lists its named values. A name another row also uses marks both rows inline, and
+  typing one into a row is refused without being applied, the typed name kept; Add value offers
+  the first `constant_<n>` no row uses.
+- Banding's Output Column field refuses, inline and without applying it, a name another active
+  factor writes while the factor being edited is active (it has its input column and rules);
+  a draft factor may share a name, since it writes nothing.
 - Banding exposes categorical/numeric rule editing, preview-derived suggestions and histogram
   context. The Numeric type is disabled, with the reason as its tooltip, while the selected
   input column's dtype is known and neither numeric nor a date: numeric bands compare the column
   against number or date boundaries, which a text or boolean column cannot satisfy. Banding lists its
   factors the way Rating Step lists its tables, with the same shared list: a search over each
   factor's output and input column names, an All/Issues filter (an issue is a factor without
-  its input column, output column or rules), an Add button, and a scrollable box of rows with
+  its input column, output column or rules, or an active factor whose output column another
+  active factor also writes, which marks both, as execution refuses them), an Add button, and a scrollable box of rows with
   a health dot, the output name, a rule-count badge and, when there is more than one factor, a
   remove control. Banding's rows can also be dragged, or moved with Alt+Up/Down, to reorder
   the factors; list order is the order execution applies them in, so a factor that bands

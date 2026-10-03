@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { Plus, AlertTriangle } from "lucide-react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
-import { CommittedTextField, SavedValueOption } from "../../components/form"
+import { CommittedTextField, SavedValueOption, ValidatedTextField } from "../../components/form"
 import type { InputSource, OnUpdateConfig, SimpleNode } from "./_shared"
 import type { CategoricalRule, BandingFactor, BandingMode, BreakpointRule } from "../../types/banding"
 import {
@@ -10,6 +10,8 @@ import {
   isNumericDtype,
   suggestOutputColumn,
   detectDuplicateCategorical,
+  bandingOutputCollisions,
+  bandingOutputCollisionMessage,
   categoricalRuleCounts,
   generateSettingsFromBreakpoints,
   breakpointKinds,
@@ -145,12 +147,16 @@ export default function BandingEditor({
     )
   }
 
+  // Execution refuses two active factors writing one column, so both are issues.
+  const outputCollisions = bandingOutputCollisions(factors)
   const factorItems: SearchableListItem[] = factors.map((f, i) => {
     const ruleCount = (f.rules || []).length
+    const collidesWith = outputCollisions.get(i)
     const issues = [
       ...(f.column ? [] : ["No input column"]),
       ...(f.outputColumn ? [] : ["No output column"]),
       ...(ruleCount > 0 ? [] : ["No rules yet"]),
+      ...(collidesWith ? [bandingOutputCollisionMessage(collidesWith, f.outputColumn)] : []),
     ]
     return {
       index: i,
@@ -443,13 +449,18 @@ export default function BandingEditor({
         </div>
         <div>
           <label htmlFor={`banding-output-col-${safeIdx}`} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>Output Column</label>
-          <CommittedTextField
+          <ValidatedTextField
             id={`banding-output-col-${safeIdx}`}
             key={`out-${safeIdx}`}
-            type="text"
-            placeholder=""
+            dataTestId="banding-output-column"
             value={factor.outputColumn || ""}
+            validate={(candidate) => {
+              const next = factors.map((f, i) => (i === safeIdx ? { ...f, outputColumn: candidate } : f))
+              const others = bandingOutputCollisions(next).get(safeIdx)
+              return others ? bandingOutputCollisionMessage(others, candidate) : null
+            }}
             onCommit={(v) => updateFactor(safeIdx, { outputColumn: v })}
+            containerClassName=""
             className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
             style={INPUT_STYLE} />
         </div>

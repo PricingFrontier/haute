@@ -786,10 +786,26 @@
           },
           "title": "Identities",
           "type": "array"
+        },
+        "violations": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/PipelineNameViolation"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Violations"
         }
       },
       "required": [
-        "identities"
+        "identities",
+        "violations"
       ],
       "title": "EditorIdentitiesResponse",
       "type": "object"
@@ -797,6 +813,29 @@
     "EditorIdentityResponseNode": {
       "additionalProperties": false,
       "properties": {
+        "alias": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Alias"
+        },
+        "collision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Collision"
+        },
         "config_reference": {
           "anyOf": [
             {
@@ -826,6 +865,11 @@
           "title": "Function Name",
           "type": "string"
         },
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
         "node_id": {
           "minLength": 1,
           "title": "Node Id",
@@ -845,6 +889,9 @@
       },
       "required": [
         "node_id",
+        "label",
+        "alias",
+        "collision",
         "function_name",
         "config_reference",
         "default_input_name",
@@ -11088,6 +11135,86 @@
         "execution_metrics"
       ],
       "title": "OptimiserStatusResponse",
+      "type": "object"
+    },
+    "PipelineNameViolation": {
+      "additionalProperties": false,
+      "description": "One name violation (codegen's naming rule, or support code's), with its message.\n\nA support-code violation that involves no node (two helpers binding one\nname, a statement the inventory cannot read) has no parties, and an\nunreadable statement has no name.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "duplicate",
+            "reserved",
+            "builtin",
+            "reserved_input",
+            "support_collision",
+            "support_input",
+            "support_conflict",
+            "support_reserved",
+            "support_unsupported",
+            "output_destination"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "message": {
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "parties": {
+          "items": {
+            "$ref": "#/$defs/PipelineNameViolationParty"
+          },
+          "title": "Parties",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "message",
+        "parties"
+      ],
+      "title": "PipelineNameViolation",
+      "type": "object"
+    },
+    "PipelineNameViolationParty": {
+      "additionalProperties": false,
+      "description": "A node taking part in a name violation; ``submodel`` is its definition, if any.",
+      "properties": {
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "node_id": {
+          "minLength": 1,
+          "title": "Node Id",
+          "type": "string"
+        },
+        "submodel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submodel"
+        }
+      },
+      "required": [
+        "node_id",
+        "label",
+        "submodel"
+      ],
+      "title": "PipelineNameViolationParty",
       "type": "object"
     },
     "PipelineSettingsAutomatic": {

@@ -43,13 +43,20 @@ interface SubmodelNavParams {
   resolveCanonicalIdentities?: typeof resolveCanonicalGraphIdentities
 }
 
+/** A created submodel, or the reason it was not created. */
+export type SubmodelCreateResult = { ok: true } | { ok: false; error: string }
+
+const STALE_CREATE_SUBMODEL =
+  "Create submodel was not applied because the workspace changed while the transform was running."
+
 export interface SubmodelNavReturn {
   viewStack: ViewLevel[]
   handleDrillIntoSubmodel: (nodeId: string) => Promise<void>
   handleBreadcrumbNavigate: (depth: number) => void
   resetToAuthoritativeRoot: (sourceFile: string, pipelineName: string) => void
   handleDocumentReload: (reloaded: { nodes: Node[]; edges: Edge[] }) => void
-  handleCreateSubmodel: (name: string, nodeIds: string[]) => Promise<void>
+  /** Creates the submodel, or says why not; the dialog shows a refusal inline. */
+  handleCreateSubmodel: (name: string, nodeIds: string[]) => Promise<SubmodelCreateResult>
   handleDissolveSubmodel: (instanceId: string) => Promise<void>
 }
 
@@ -171,10 +178,12 @@ export default function useSubmodelNavigation({
     sourceRevisionRef,
   ])
 
-  const handleCreateSubmodel = useCallback(async (name: string, nodeIds: string[]) => {
+  const handleCreateSubmodel = useCallback(async (
+    name: string,
+    nodeIds: string[],
+  ): Promise<SubmodelCreateResult> => {
     if (parentGraphRef.current) {
-      addToast("error", "Return to the main pipeline before creating a submodel.")
-      return
+      return { ok: false, error: "Return to the main pipeline before creating a submodel." }
     }
     try {
       const request = beginTransformRequest()
@@ -190,8 +199,7 @@ export default function useSubmodelNavigation({
         preserved_blocks: request.preservedBlocks,
       })
       if (transformRequestIsStale(request)) {
-        addToast("error", "Create submodel was not applied because the workspace changed while the transform was running.")
-        return
+        return { ok: false, error: STALE_CREATE_SUBMODEL }
       }
       const newGraph = data.graph
       if (newGraph) {
@@ -207,8 +215,7 @@ export default function useSubmodelNavigation({
           reservedApiInputFrameLabels,
         })
         if (transformRequestIsStale(request)) {
-          addToast("error", "Create submodel was not applied because the workspace changed while the transform was running.")
-          return
+          return { ok: false, error: STALE_CREATE_SUBMODEL }
         }
         graphRef.current = { nodes: resolved.nodes, edges: resolved.edges }
         submodelsRef.current = resolved.submodels
@@ -223,8 +230,12 @@ export default function useSubmodelNavigation({
         addToast("success", `Submodel "${name}" created - save to apply`)
         setTimeout(() => fitView({ padding: 0.8 }), 100)
       }
+      return { ok: true }
     } catch (err: unknown) {
-      addToast("error", `Create submodel failed: ${err instanceof Error ? err.message : String(err)}`)
+      return {
+        ok: false,
+        error: `Create submodel failed: ${err instanceof Error ? err.message : String(err)}`,
+      }
     }
   }, [graphRef, parentGraphRef, submodelsRef, preambleRef, preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale, reservedApiInputFrameLabels, resolveCanonicalIdentities])
 

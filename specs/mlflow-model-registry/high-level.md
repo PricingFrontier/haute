@@ -240,6 +240,10 @@ Out of scope (owned elsewhere):
   probability), its column contract declares that column as produced, so
   deployed projection and output mappings can use it; a prediction-only
   classifier declares none.
+- The output column and the `_proba` column replace a same-named column
+  already in the input frame, by design: a pipeline may score over an
+  existing column. Two Model Score nodes that should both survive need
+  distinct output columns.
 - A per-prediction explanation reconstructs the traced prediction from
   its own decomposition (SHAP values for CatBoost, contribution terms for
   RustyStats) and verifies the reconstruction matches the model's actual

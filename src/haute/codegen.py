@@ -27,6 +27,7 @@ from haute._contracts import (
     get_column_contract,
 )
 from haute._edge_join import resolve_edge_join_role_indices
+from haute._executable_names import executable_name_violations, format_name_violations
 from haute._graph_shape import (
     validate_graph_shape_contracts,
     validate_pipeline_graph_shape_contracts,
@@ -67,7 +68,7 @@ only the node's declaration.
 """
 
 __all__ = [
-    "check_function_name_collisions",
+    "check_executable_names",
     "graph_to_code",
     "graph_to_code_multi",
 ]
@@ -410,85 +411,25 @@ def _build_id_to_func(sorted_nodes: list[GraphNode]) -> dict[str, str]:
     return {node.id: _sanitize_func_name(node.data.label) for node in sorted_nodes}
 
 
-def _error_on_name_collisions(labels: list[str]) -> None:
-    """Raise :class:`ParseError` on any pair of labels that sanitize to the
-    same identifier.
+def check_executable_names(graph: PipelineGraph) -> None:
+    """Raise :class:`ParseError` listing every executable-name violation.
 
-    A collision is a silent user-data-loss bug: codegen emits two
-    ``def <name>(...)`` blocks and the second shadows the first at import
-    time. Failing at codegen time prevents corrupting the pipeline on disk.
-
-    Pass a flat list of every label that will ultimately become a
-    function name in any emitted file (root graph + every submodel).
-    The scope is deliberately GLOBAL, not per-file: a root node and a
-    submodel node emit ``def``s into different Python modules (legal as
-    files), but at run/preview/trace time ``flatten_graph`` dissolves
-    every submodel into ONE graph keyed by ``node.id`` — which
-    round-trips to the sanitised function name — so a cross-module
-    duplicate silently shadows its twin in ``PipelineGraph.node_map``.
-    Do NOT relax this to per-file bucketing without changing how the
-    flattened execution graph is keyed.
-
-    The raised :class:`ParseError` enumerates every colliding bucket
-    so the user can fix them all in one editing pass.
+    Resolves the submodel occurrences first (an invalid occurrence fails
+    there), then applies :mod:`haute._executable_names` to every node
+    function name, occurrence alias and input binding in the root graph and
+    each submodel graph. Save validation runs it so a graph codegen would
+    refuse fails before anything is written.
     """
-    buckets: dict[str, list[str]] = {}
-    for label in labels:
-        sanitized = _sanitize_func_name(label)
-        buckets.setdefault(sanitized, []).append(label)
-
-    # Every emitted function name must be unique, including exact label
-    # duplicates: either form would shadow one node in generated Python.
-    collisions = {
-        sanitized: sorted(originals)
-        for sanitized, originals in buckets.items()
-        if len(originals) > 1
-    }
-    if not collisions:
+    if graph.submodels or any(node.data.nodeType == NodeType.SUBMODEL for node in graph.nodes):
+        resolve_submodel_instances(graph)
+    violations = executable_name_violations(graph)
+    if not violations:
         return
-
-    bullets = "\n".join(
-        f"  - `{sanitized}` is produced by: {', '.join(repr(o) for o in originals)}"
-        for sanitized, originals in sorted(collisions.items())
-    )
     logger.error(
-        "sanitize_name_collision",
-        collisions={k: list(v) for k, v in collisions.items()},
+        "executable_name_violation",
+        violations=[violation.message() for violation in violations],
     )
-    raise ParseError(
-        "Multiple node labels sanitize to the same Python function name. "
-        "Node names must be unique across the whole pipeline, including "
-        "its submodels: submodels run in one flattened namespace with the "
-        "main pipeline, so a duplicate would silently shadow its twin at "
-        "execution time. Rename the offending nodes so each label "
-        "produces a unique identifier:\n"
-        f"{bullets}",
-        collisions={k: list(v) for k, v in collisions.items()},
-    )
-
-
-def check_function_name_collisions(graph: PipelineGraph) -> None:
-    """Raise :class:`ParseError` if codegen would emit two functions of one name.
-
-    Checks every label :func:`graph_to_code_multi` turns into a function
-    name: every node label for a graph without submodels; otherwise each
-    root node that is not a submodel occurrence, each occurrence alias, and
-    the nodes of each referenced definition once. Save validation runs it so
-    a graph codegen would refuse fails before anything is written.
-    """
-    has_occurrences = any(node.data.nodeType == NodeType.SUBMODEL for node in graph.nodes)
-    if not graph.submodels and not has_occurrences:
-        _error_on_name_collisions([node.data.label for node in graph.nodes])
-        return
-    instances = resolve_submodel_instances(graph)
-    definitions = graph.submodels or {}
-    labels = [node.data.label for node in graph.nodes if node.id not in instances]
-    labels.extend(instance.config.alias for instance in instances.values())
-    for definition_id in dict.fromkeys(
-        instance.config.definition_id for instance in instances.values()
-    ):
-        labels.extend(node.data.label for node in definitions[definition_id].graph.nodes)
-    _error_on_name_collisions(labels)
+    raise ParseError(format_name_violations(violations))
 
 
 def _edge_input_name_for_codegen(
@@ -1004,7 +945,7 @@ def _graph_to_code_multi_instances(
     root_nodes = [node for node in graph.nodes if node.id not in instances]
     root_node_ids = {node.id for node in root_nodes}
     validate_graph_shape_contracts(graph, graph_label=pipeline_name)
-    check_function_name_collisions(graph)
+    check_executable_names(graph)
 
     files: dict[str, str] = {}
     for definition_id in definition_order:
@@ -1276,7 +1217,7 @@ def graph_to_code_multi(
         )
 
     validate_pipeline_graph_shape_contracts(graph, graph_label=pipeline_name)
-    check_function_name_collisions(graph)
+    check_executable_names(graph)
 
     main_key = source_file or f"{pipeline_name}.py"
     node_map = {node.id: node for node in graph.nodes}

@@ -105,26 +105,57 @@ function requestNode(
   }
 }
 
+/**
+ * The document's naming context for an identity request: the whole graph as
+ * save would receive it, and whether the server allocates free names (node
+ * creation) or reports a collision (rename).
+ */
+export interface EditorNamingContext {
+  graph: NonNullable<EditorIdentityBatchRequest["graph"]>
+  allocate: boolean
+  /** The submodel definition the nodes belong to (a drilled view), or null at the root. */
+  scope: string | null
+}
+
+/** A name the naming rule refuses; nothing was applied. */
+export class EditorNameCollisionError extends Error {
+  readonly nodeId: string
+
+  constructor(nodeId: string, message: string) {
+    super(message)
+    this.name = "EditorNameCollisionError"
+    this.nodeId = nodeId
+  }
+}
+
 export function buildEditorIdentityRequest(
   nodes: readonly Node[],
   submodels: SubmodelRegistry,
   reservedApiInputFrameLabels: ReadonlySet<string>,
+  naming?: EditorNamingContext,
 ): EditorIdentityBatchRequest {
   if (new Set(nodes.map((node) => node.id)).size !== nodes.length) {
     throw new Error("Cannot resolve editor identities: node ids are duplicated")
   }
   return {
-    nodes: nodes.map((node) => requestNode(
-      node,
-      submodels,
-      reservedApiInputFrameLabels,
-    )),
+    nodes: nodes.map((node) => {
+      const request = requestNode(node, submodels, reservedApiInputFrameLabels)
+      return naming?.scope ? { ...request, submodel: naming.scope } : request
+    }),
+    ...(naming ? { graph: naming.graph, allocate: naming.allocate } : {}),
   }
 }
 
 function attachIdentity(node: Node, identity: EditorNodeIdentity): Node {
+  // The server's name: the node's own, or the one allocation gave it. An
+  // occurrence's label is its alias.
+  const config = identity.alias === null
+    ? node.data.config
+    : { ...(node.data.config as Record<string, unknown> | undefined), alias: identity.alias }
   const data: Record<string, unknown> = {
     ...node.data,
+    label: identity.label,
+    ...(config === undefined ? {} : { config }),
     _functionName: identity.function_name,
     _defaultInputName: identity.default_input_name,
     _sourceHandleInputNames: structuredClone(identity.source_handle_input_names),
@@ -146,6 +177,10 @@ export function applyEditorIdentityResponse(
     || response.identities.some((identity, index) => identity.node_id !== nodes[index]?.id)
   ) {
     throw new Error("Cannot attach editor identities: response does not match node order")
+  }
+  const collision = response.identities.find((identity) => identity.collision !== null)
+  if (collision?.collision) {
+    throw new EditorNameCollisionError(collision.node_id, collision.collision)
   }
   return nodes.map((node, index) => attachIdentity(node, response.identities[index]))
 }
@@ -211,15 +246,18 @@ export async function resolveEditorGraphIdentities({
   edges,
   submodels,
   reservedApiInputFrameLabels,
+  naming,
   resolve = resolveEditorNodeIdentities,
 }: {
   nodes: readonly Node[]
   edges: readonly Edge[]
   submodels: SubmodelRegistry
   reservedApiInputFrameLabels: ReadonlySet<string>
+  /** With a naming context the nodes are named against the whole document. */
+  naming?: EditorNamingContext
   resolve?: IdentityResolver
 }): Promise<{ nodes: Node[]; edges: PipelineEdge[] }> {
-  const request = buildEditorIdentityRequest(nodes, submodels, reservedApiInputFrameLabels)
+  const request = buildEditorIdentityRequest(nodes, submodels, reservedApiInputFrameLabels, naming)
   const response = await resolve(request)
   const resolvedNodes = applyEditorIdentityResponse(nodes, response)
   return {

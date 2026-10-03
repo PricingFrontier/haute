@@ -86,6 +86,9 @@ vi.mock("../api/client", async () => {
           || node.node_type === "submodelPort"
         return {
           node_id: node.node_id,
+          label: node.label,
+          alias: node.alias ?? null,
+          collision: null,
           function_name: functionName,
           config_reference: node.node_type === "submodel" || node.node_type === "submodelPort"
             ? null
@@ -2064,8 +2067,12 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
     const stateAfterNewerEdit = graphCommitStateBytes()
     await act(async () => {
       resolveIdentity({
+        violations: null,
         identities: [{
           node_id: "ordinary_source",
+          label: "Renamed Source",
+          alias: null,
+          collision: null,
           function_name: "Renamed_Source",
           default_input_name: "Renamed_Source",
           source_handle_input_names: {},

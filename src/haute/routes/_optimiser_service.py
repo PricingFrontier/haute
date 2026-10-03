@@ -41,6 +41,7 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
+from haute._flatten import flatten_executable_graph
 from haute._graph_utils import (
     upstream_node_ids,
 )
@@ -82,7 +83,7 @@ from haute.errors import (
 from haute.execution import (
     execute_lazy_graph,
 )
-from haute.graph_utils import flatten_graph, graph_fingerprint
+from haute.graph_utils import graph_fingerprint
 from haute.routes import _optimiser_artifacts
 from haute.routes._background_jobs import (
     BackgroundJobStoppedError,
@@ -310,7 +311,7 @@ def _with_flattened_optimiser_graph(
     body: OptimiserSolveRequest | OptimiserEstimateRequest | OptimiserFrontierAutoRangeRequest,
 ) -> OptimiserSolveRequest | OptimiserEstimateRequest | OptimiserFrontierAutoRangeRequest:
     """Return an optimiser request whose graph is executable by the lazy engine."""
-    flat_graph = flatten_graph(body.graph)
+    flat_graph = flatten_executable_graph(body.graph)
     if flat_graph is body.graph:
         return body
     return body.model_copy(update={"graph": flat_graph})

@@ -687,7 +687,9 @@ class TestRatingStepParser:
         )
         code = f'''
 import polars as pl
-from haute import pipeline
+import haute
+
+pipeline = haute.Pipeline("rating")
 
 @pipeline.rating_step(config="{rating_config}")
 def rating(df: pl.LazyFrame) -> pl.LazyFrame:
@@ -714,7 +716,9 @@ def rating(df: pl.LazyFrame) -> pl.LazyFrame:
         )
         code = f'''
 import polars as pl
-from haute import pipeline
+import haute
+
+pipeline = haute.Pipeline("rating")
 
 @pipeline.rating_step(config="{rating_config}")
 def rating(df: pl.LazyFrame) -> pl.LazyFrame:
@@ -740,7 +744,9 @@ def rating(df: pl.LazyFrame) -> pl.LazyFrame:
         )
         code = f'''
 import polars as pl
-from haute import pipeline
+import haute
+
+pipeline = haute.Pipeline("rating")
 
 @pipeline.rating_step(config="{rating_config}")
 def rating(df: pl.LazyFrame) -> pl.LazyFrame:
@@ -770,7 +776,9 @@ def rating(df: pl.LazyFrame) -> pl.LazyFrame:
         )
         code = f'''
 import polars as pl
-from haute import pipeline
+import haute
+
+pipeline = haute.Pipeline("rating")
 
 @pipeline.rating_step(config="{rating_config}")
 def rating(df: pl.LazyFrame) -> pl.LazyFrame:
@@ -800,7 +808,9 @@ def rating(df: pl.LazyFrame) -> pl.LazyFrame:
         )
         code = f'''
 import polars as pl
-from haute import pipeline
+import haute
+
+pipeline = haute.Pipeline("rating")
 
 @pipeline.rating_step(config="{rating_config}")
 def rating(df: pl.LazyFrame) -> pl.LazyFrame:
@@ -823,7 +833,9 @@ def rating(df: pl.LazyFrame) -> pl.LazyFrame:
         )
         code = f'''
 import polars as pl
-from haute import pipeline
+import haute
+
+pipeline = haute.Pipeline("rating")
 
 @pipeline.rating_step(config="{rating_config}")
 def rating(source: pl.LazyFrame) -> pl.LazyFrame:

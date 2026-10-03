@@ -127,7 +127,12 @@
    Zero/multiple sources, or a sole `constant`/other unsupported source, fail with a
    correction that names the node/type and asks for an API Input.
 7. `collect_artifacts(pruned_graph, deploy_inputs, pipeline_dir, project_root=...)` →
-   `artifacts` dict. The pipeline and every local runtime input are already canonicalised
+   `artifacts` dict, an `ArtifactKeys` whose `add(node_id, key, path)` refuses, with a
+   `DeployError` naming both nodes and files before anything is uploaded, a `<node>__<filename>`
+   key equal to another artifact's or equal to it ignoring case: the scheme is not injective
+   (node `a` with `b__c.pkl` and node `a__b` with `c.pkl` both give `a__b__c.pkl`), and keys
+   differing only in case clobber each other on a case-insensitive file system. Adding the
+   same file under the same key again is accepted. The pipeline and every local runtime input are already canonicalised
    and checked for project-root containment. Bundling repeats that check at the copy
    boundary. Explicit `modelScore.feature_contract_path` files are copied under the
    canonical `<node>__feature_contract.json` key and override an adjacent downloaded

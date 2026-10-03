@@ -37,7 +37,7 @@ def test_preview_inputs_invalid_flattening_is_advisory(
     def invalid_graph(_graph: Any) -> Any:
         raise (ParseError if kind == "parse" else ConfigError)("invalid authored graph")
 
-    monkeypatch.setattr(pipeline, "flatten_graph", invalid_graph)
+    monkeypatch.setattr(pipeline, "flatten_executable_graph", invalid_graph)
     response = api.post(
         "/api/pipeline/preview/inputs",
         json={"graph": _join_graph(project).model_dump(mode="json"), "node_id": "banding"},

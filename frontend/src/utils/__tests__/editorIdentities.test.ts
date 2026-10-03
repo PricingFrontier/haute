@@ -7,6 +7,7 @@ import type {
 } from "../../api/types"
 import type { SubmodelDefinition } from "../../types/node"
 import {
+  EditorNameCollisionError,
   applyEditorIdentityResponse,
   attachEditorEdgeIdentities,
   buildEditorIdentityRequest,
@@ -93,9 +94,13 @@ describe("editor identity resolution", () => {
       node("api", "Quotes", "apiInput"),
     ]
     const response: EditorIdentityBatchResponse = {
+      violations: null,
       identities: [
         {
           node_id: "ordinary",
+          label: "class café",
+          alias: null,
+          collision: null,
           function_name: "node_class_cafe",
           config_reference: "config/polars/node_class_cafe.json",
           default_input_name: "node_class_cafe",
@@ -103,6 +108,9 @@ describe("editor identity resolution", () => {
         },
         {
           node_id: "api",
+          label: "Quotes",
+          alias: null,
+          collision: null,
           function_name: "quotes",
           config_reference: "config/quote_input/quotes.json",
           default_input_name: null,
@@ -147,8 +155,12 @@ describe("editor identity resolution", () => {
     const nodes = [node("source", "class", "polars")]
     const edges = [{ id: "edge", source: "source", target: "target" }]
     const resolve = vi.fn(async (): Promise<EditorIdentityBatchResponse> => ({
+      violations: null,
       identities: [{
         node_id: "source",
+        label: "class",
+        alias: null,
+        collision: null,
         function_name: "node_class",
         config_reference: null,
         default_input_name: "node_class",
@@ -183,8 +195,12 @@ describe("editor identity resolution", () => {
     }
     const root = node("instance", "Pricing", "submodel", { definitionId: "pricing", alias: "pricing" })
     const resolve = vi.fn(async (request): Promise<EditorIdentityBatchResponse> => ({
+      violations: null,
       identities: request.nodes.map((requestNode: EditorIdentityRequestNode) => ({
         node_id: requestNode.node_id,
+        label: requestNode.label,
+        alias: null,
+        collision: null,
         function_name: `fn_${requestNode.node_id}`,
         config_reference: null,
         default_input_name: `in_${requestNode.node_id}`,
@@ -245,5 +261,80 @@ describe("editor identity resolution", () => {
         RESERVED,
       ),
     ).toThrow("Cannot resolve editor identity for submodel pricing: malformed occurrence")
+  })
+})
+
+describe("naming against the document", () => {
+  const context = { nodes: [], edges: [], submodels: undefined, preamble: undefined }
+  const identity = (nodeId: string, label: string, alias: string | null, collision: string | null) => ({
+    node_id: nodeId,
+    label,
+    alias,
+    collision,
+    function_name: label.replaceAll(" ", "_"),
+    config_reference: null,
+    default_input_name: alias === null ? label.replaceAll(" ", "_") : null,
+    source_handle_input_names: {},
+  })
+
+  it("sends the naming context and applies the labels and aliases the server allocated", async () => {
+    const definition: SubmodelDefinition = {
+      definitionId: "rates",
+      file: "modules/rates.py",
+      graph: { nodes: [], edges: [] },
+      inputPorts: [],
+      outputPorts: [],
+    }
+    const copy = node("copy", "X copy", "polars")
+    const pasted = node("pasted", "rates copy", "submodel", { definitionId: "rates", alias: "rates" })
+    const resolve = vi.fn(async (): Promise<EditorIdentityBatchResponse> => ({
+      violations: [],
+      identities: [identity("copy", "X copy 2", null, null), identity("pasted", "rates_2", "rates_2", null)],
+    }))
+
+    const resolved = await resolveEditorGraphIdentities({
+      nodes: [copy, pasted],
+      edges: [],
+      submodels: { rates: definition },
+      reservedApiInputFrameLabels: RESERVED,
+      naming: { graph: context, allocate: true, scope: null },
+      resolve,
+    })
+
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ graph: context, allocate: true }))
+    expect(resolved.nodes.map((n) => n.data.label)).toEqual(["X copy 2", "rates_2"])
+    expect(resolved.nodes[1].data.config).toMatchObject({ definitionId: "rates", alias: "rates_2" })
+  })
+
+  it("refuses the whole batch when the server names a collision", async () => {
+    const renamed = node("first", "pl", "polars")
+    const message = "Node 'pl' (the pipeline) takes the name `pl`, which the generated module binds to polars."
+    const resolve = vi.fn(async (): Promise<EditorIdentityBatchResponse> => ({
+      violations: [],
+      identities: [identity("first", "pl", null, message)],
+    }))
+
+    await expect(resolveEditorGraphIdentities({
+      nodes: [renamed],
+      edges: [],
+      submodels: {},
+      reservedApiInputFrameLabels: RESERVED,
+      naming: { graph: context, allocate: false, scope: null },
+      resolve,
+    })).rejects.toEqual(new EditorNameCollisionError("first", message))
+  })
+})
+
+describe("naming inside a drilled submodel", () => {
+  it("scopes every node to the definition being edited", () => {
+    const request = buildEditorIdentityRequest(
+      [node("child", "rate child", "polars")],
+      {},
+      RESERVED,
+      { graph: { nodes: [], edges: [], submodels: undefined, preamble: undefined }, allocate: true, scope: "rates" },
+    )
+
+    expect(request.nodes[0]).toMatchObject({ node_id: "child", submodel: "rates" })
+    expect(request.allocate).toBe(true)
   })
 })

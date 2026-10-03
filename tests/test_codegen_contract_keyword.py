@@ -151,7 +151,12 @@ def _graph() -> PipelineGraph:
                 "n-results-declared",
                 "Results Declared",
                 NodeType.DATA_OUTPUT,
-                {**_RESULTS, "contract": {"inputs": [], "outputs": []}},
+                # Its own destination: two Data Outputs may not write one file.
+                {
+                    **_RESULTS,
+                    "path": "outputs/results_declared.csv",
+                    "contract": {"inputs": [], "outputs": []},
+                },
             ),
         ],
         edges=[

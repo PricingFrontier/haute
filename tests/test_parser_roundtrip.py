@@ -22,7 +22,7 @@ Skipped types (complex edge cases):
 from __future__ import annotations
 
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import hypothesis.strategies as st
@@ -143,7 +143,9 @@ def _valid_label() -> st.SearchStrategy[str]:
     """
     import keyword
 
-    _reserved = {"df", "pl", "pipeline", "haute"}
+    from haute._executable_names import BUILTIN_NAMES, RESERVED_NAMES
+
+    _reserved = {"df", *RESERVED_NAMES, *BUILTIN_NAMES}
     return (
         st.text(
             alphabet=st.sampled_from("abcdefghijklmnopqrstuvwxyz"),
@@ -368,6 +370,10 @@ def _pipeline_graph(draw: st.DrawFn) -> PipelineGraph:
         ntype = draw(st.sampled_from(downstream_types))
         config = draw(_CONFIG_STRATEGY[ntype])
         func_name = _sanitize_func_name(labels[i])
+        if ntype == NodeType.DATA_OUTPUT:
+            # Two Data Outputs may not write one destination.
+            stem = PurePosixPath(config["path"])
+            config = {**config, "path": str(stem.with_stem(f"{stem.stem}_{func_name}"))}
         nodes.append(
             GraphNode(
                 id=func_name,

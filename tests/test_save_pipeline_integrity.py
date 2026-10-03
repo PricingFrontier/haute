@@ -773,7 +773,7 @@ class TestRenameCollisionPositionWarning:
     The plan specifies the response must include a warning in these cases
     and preserve the position where possible.  This is tricky because the
     SavePipelineService already blocks outright collisions via
-    ``_validate_unique_sanitized_names`` and returns 400.  The realistic
+    ``_validate_executable_names`` and returns 400.  The realistic
     scenario is a *reload* collision: the user had nodes labeled
     ``"Feature X"`` and ``"Feature-X"``.  The .py on disk stores only
     ``feature_x`` (the sanitized function name).  On reload, both original
@@ -808,7 +808,7 @@ class TestRenameCollisionPositionWarning:
     ) -> None:
         """Scenario: a previously-saved graph has two nodes whose labels
         both sanitize to the same function name.  The current
-        ``_validate_unique_sanitized_names`` raises 400, which is the
+        ``_validate_executable_names`` raises 400, which is the
         correct guard when the user tries to create a duplicate.  But the
         legitimate path — renaming one of the two and saving — must
         still surface a warning about dropped positions when it happens.
@@ -878,7 +878,7 @@ class TestRenameCollisionPositionWarning:
         #    positions may be lost due to sanitized-name collision.
         if resp.status_code == 400:
             detail = resp.json()["detail"]
-            assert "sanitized" in detail.lower() or "duplicate" in detail.lower(), (
+            assert "take one name, `Feature_X`" in detail, (
                 f"#51: 400 detail must explain the collision, got: {detail!r}"
             )
             return

@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import SubmodelDialog from "../SubmodelDialog"
 
 function renderDialog(overrides: Partial<Parameters<typeof SubmodelDialog>[0]> = {}) {
   const props = {
     nodeCount: 5,
     onClose: vi.fn(),
-    onSubmit: vi.fn(),
+    onSubmit: vi.fn(async () => ({ ok: true as const })),
     ...overrides,
   }
   return { ...render(<SubmodelDialog {...props} />), props }
@@ -44,6 +44,19 @@ describe("SubmodelDialog", () => {
     fireEvent.change(input, { target: { value: "  my_submodel  " } })
     fireEvent.click(screen.getByText("Create"))
     expect(props.onSubmit).toHaveBeenCalledWith("my_submodel")
+  })
+
+  it("a refused name keeps the dialog's typed name and shows why", async () => {
+    const error = "Nodes 'pricing' (the pipeline) and 'pricing' (submodel 'pricing') take one name, `pricing`."
+    const { props } = renderDialog({ onSubmit: vi.fn(async () => ({ ok: false as const, error })) })
+    const input = screen.getByPlaceholderText("e.g. model_scoring")
+    fireEvent.change(input, { target: { value: "pricing" } })
+    fireEvent.click(screen.getByText("Create"))
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(error)
+    expect(input).toHaveValue("pricing")
+    expect(props.onClose).not.toHaveBeenCalled()
+    await waitFor(() => expect(screen.getByText("Create")).not.toBeDisabled())
   })
 
   it("Escape key calls onClose", () => {

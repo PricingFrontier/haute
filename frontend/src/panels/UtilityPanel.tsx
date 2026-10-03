@@ -65,6 +65,9 @@ export default function UtilityPanel({
   useClickOutside(dropdownRef, () => setDropdownOpen(false), dropdownOpen)
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState("")
+  // A refused create, shown under the selector in every state; the typed
+  // name stays until a create succeeds.
+  const [createError, setCreateError] = useState<string | null>(null)
 
   const inflightSaveRef = useRef<Promise<boolean> | null>(null)
   // A rejected draft remains dirty after its request settles. Keep that
@@ -193,10 +196,11 @@ export default function UtilityPanel({
   const handleCreate = useCallback(async () => {
     const name = newName.trim().replace(/\.py$/, "")
     if (!name) return
-    setCreating(false)
-    setNewName("")
+    setCreateError(null)
     try {
       const res = await createUtilityFile({ name })
+      setCreating(false)
+      setNewName("")
       // Auto-add import to preamble
       if (res.import_line) {
         onImportAdded(res.import_line)
@@ -205,11 +209,7 @@ export default function UtilityPanel({
       loadFile(res.module)
     } catch (err) {
       const syntaxErr = parseSyntaxError(err)
-      if (syntaxErr) {
-        setErrorMsg(syntaxErr.error)
-      } else {
-        setErrorMsg(err instanceof Error ? err.message : "Failed to create")
-      }
+      setCreateError(syntaxErr ? syntaxErr.error : err instanceof Error ? err.message : "Failed to create")
     }
   }, [newName, loadFiles, loadFile, onImportAdded])
 
@@ -247,8 +247,10 @@ export default function UtilityPanel({
             <input
               autoFocus
               value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              onBlur={() => { setCreating(false); setNewName("") }}
+              aria-label="New utility module name"
+              aria-invalid={createError !== null}
+              onChange={(e) => { setNewName(e.target.value); setCreateError(null) }}
+              onBlur={() => { if (createError === null) { setCreating(false); setNewName("") } }}
               placeholder="module_name"
               className="flex-1 px-2 py-1 text-[12px] font-mono rounded focus:outline-none"
               style={{ background: 'var(--bg-input)', border: '1px solid var(--accent)', color: 'var(--text-primary)' }}
@@ -328,6 +330,17 @@ export default function UtilityPanel({
           </>
         )}
       </div>
+
+      {createError && (
+        <div
+          role="alert"
+          data-testid="utility-create-error"
+          className="px-3 py-1.5 text-[11px] shrink-0"
+          style={{ color: 'var(--danger)', borderBottom: '1px solid var(--border)' }}
+        >
+          {createError}
+        </div>
+      )}
 
       {/* Editor */}
       <div className="flex-1 min-h-0 overflow-y-auto">

@@ -88,11 +88,14 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // and constant completion in the step editor (SteppedCodePane +1.1 KiB) and
 // the eager core counted below. The complete production bundle is
 // 1,586.9 KiB; 1,588 KiB restores about 1 KiB.
+// Name collisions add the name-violations banner and revalidation, allocated
+// node names, the shared rename validator and the naming context. The complete
+// production bundle is 1,589.8 KiB; 1,591 KiB restores about 1.2 KiB.
 // Model Scoring's Model file source adds its lazy editor option and file
 // inspection panel and the generated ModelFileInspectionResponse validator.
-// The complete production bundle is 1,588.4 KiB; 1,590 KiB restores about
-// 1.6 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1590
+// With both, the complete production bundle is 1,591.3 KiB; 1,593 KiB
+// restores about 1.7 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1593
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
@@ -206,7 +209,11 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // parser reads them. The pane's editing helpers and the reads analysis stay
 // lazy (utils/globalConstantsEditing.ts). The merged initial bundle is
 // 285.7 KiB; 287 KiB restores ~1.3 KiB of headroom.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 287
+// Name collisions add eager core: the document's name violations (parser,
+// status store fence, banner, revalidation hook) and the naming context every
+// node creation and rename sends. The merged initial bundle is 287.6 KiB;
+// 289 KiB restores ~1.4 KiB of headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 289
 
 // Chunks that should only be fetched when their preview or editor is needed.
 // If one appears as a startup modulepreload, the app has likely

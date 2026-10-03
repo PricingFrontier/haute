@@ -18,8 +18,8 @@ from haute._types import NodeType
 from haute.codegen import (
     _contract_keyword,
     _contract_value,
-    _error_on_name_collisions,
     _node_to_code,
+    check_executable_names,
     graph_to_code,
     graph_to_code_multi,
 )
@@ -845,7 +845,7 @@ def test_graph_to_code_multi_refuses_parent_binding_to_unrouted_input_port() -> 
     }
 
 
-def test_error_on_name_collisions_raises_for_root_and_submodel_labels() -> None:
+def test_check_executable_names_raises_for_root_and_submodel_labels() -> None:
     graph = _g(
         {
             "nodes": [
@@ -892,7 +892,7 @@ def test_error_on_name_collisions_raises_for_root_and_submodel_labels() -> None:
         }
     )
 
-    with pytest.raises(ParseError, match="sanitize to the same Python function name"):
+    with pytest.raises(ParseError, match="take one name, `My_Node`"):
         graph_to_code_multi(graph, pipeline_name="main")
 
 
@@ -912,9 +912,19 @@ def test_submodel_placeholder_codegen_is_unreachable() -> None:
         _gen_submodel_placeholder_unreachable(node, [])
 
 
-def test_error_on_name_collisions_reports_all_buckets() -> None:
+def test_check_executable_names_reports_all_buckets() -> None:
+    labels = ["Rate Step", "Rate-Step", "Quoted Name", "Quoted-Name"]
+    graph = _g(
+        {
+            "nodes": [
+                {"id": f"n{index}", "data": {"label": label, "nodeType": "polars"}}
+                for index, label in enumerate(labels)
+            ],
+            "edges": [],
+        }
+    )
     with pytest.raises(ParseError) as exc_info:
-        _error_on_name_collisions(["Rate Step", "Rate-Step", "Quoted Name", "Quoted-Name"])
+        check_executable_names(graph)
 
     rendered = str(exc_info.value)
     assert "Rate_Step" in rendered

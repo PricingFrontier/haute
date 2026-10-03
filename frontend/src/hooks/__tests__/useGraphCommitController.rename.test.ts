@@ -3,6 +3,7 @@ import type { Edge, Node } from "@xyflow/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import useGraphCommitController from "../useGraphCommitController"
+import { EditorNameCollisionError } from "../../utils/editorIdentities"
 import { makeNode } from "../../test-utils/factories"
 
 function createController(
@@ -25,6 +26,8 @@ function createController(
       readOnly: false,
       reservedApiInputFrameLabels: new Set<string>(),
       resolveNodeIdentities,
+      resolveRenameIdentities: resolveNodeIdentities,
+      readNamingContextKey: () => "naming context",
       commitGraph,
       setSelectedNode,
       addToast,
@@ -53,7 +56,7 @@ describe("useGraphCommitController submodel occurrence rename", () => {
     const hook = renderHook(() => useGraphCommitController({
       graphRef, submodelsRef: { current: {} },
       readDocumentIdentity: () => context.document, readOnly: context.readOnly,
-      reservedApiInputFrameLabels: new Set(), resolveNodeIdentities,
+      reservedApiInputFrameLabels: new Set(), resolveNodeIdentities, resolveRenameIdentities: resolveNodeIdentities, readNamingContextKey: () => "naming context",
       commitGraph, setSelectedNode: vi.fn(), addToast: vi.fn(),
     }))
     let pending!: ReturnType<typeof hook.result.current.onRenameNode>
@@ -72,6 +75,54 @@ describe("useGraphCommitController submodel occurrence rename", () => {
     expect(graphRef.current.nodes[0]).toBe(original)
     expect(resolveNodeIdentities).toHaveBeenCalledOnce()
   })
+
+  it.each(["document", "newer edit"] as const)(
+    "a refused rename superseded by a %s is not retried",
+    async (change) => {
+      const original = makeNode("source", "polars", { data: { label: "source", nodeType: "polars" } })
+      const graphRef = { current: { nodes: [original], edges: [] as Edge[] } }
+      const commitGraph = vi.fn()
+      const context = { document: "a.py:1", naming: "taken" }
+      let refuse!: () => void
+      const resolveRenameIdentities = vi.fn((nodes: readonly Node[]) => {
+        if (resolveRenameIdentities.mock.calls.length === 1) {
+          return new Promise<Node[]>((_resolve, reject) => {
+            refuse = () => reject(new EditorNameCollisionError("source", "Name taken."))
+          })
+        }
+        return Promise.resolve(nodes.map((n) => ({ ...n, data: { ...n.data, _functionName: String(n.data.label) } })))
+      })
+      const hook = renderHook(() => useGraphCommitController({
+        graphRef, submodelsRef: { current: {} },
+        readDocumentIdentity: () => context.document, readOnly: false,
+        reservedApiInputFrameLabels: new Set(),
+        resolveNodeIdentities: resolveRenameIdentities,
+        resolveRenameIdentities,
+        readNamingContextKey: () => context.naming,
+        commitGraph, setSelectedNode: vi.fn(), addToast: vi.fn(),
+      }))
+      let older!: ReturnType<typeof hook.result.current.onRenameNode>
+      act(() => { older = hook.result.current.onRenameNode("source", "renamed") })
+      // The name is freed too, so only the cancellation keeps the old refusal from retrying.
+      context.naming = "freed"
+      if (change === "document") {
+        context.document = "b.py:1"
+        hook.rerender()
+      } else {
+        // A newer rename of the same node supersedes the older one.
+        await act(async () => { await hook.result.current.onRenameNode("source", "newest") })
+      }
+      commitGraph.mockClear()
+      let outcome: unknown
+      await act(async () => {
+        refuse()
+        outcome = await older
+      })
+
+      expect(outcome).toMatchObject({ ok: false, error: expect.stringContaining("superseded") })
+      expect(commitGraph).not.toHaveBeenCalled()
+    },
+  )
 
   afterEach(() => {
     cleanup()
@@ -213,84 +264,94 @@ describe("useGraphCommitController submodel occurrence rename", () => {
     expect(commitGraph).not.toHaveBeenCalled()
   })
 
-  it("refuses a name equal to another node's label, id, or submodel alias", async () => {
-    const submodelNode: Node = {
-      id: "sub_1",
-      type: "submodel",
-      position: { x: 0, y: 0 },
-      data: {
-        label: "pricing",
-        nodeType: "submodel",
-        config: { definitionId: "def_pricing", alias: "pricing" },
-        _functionName: "pricing",
-        _sourceHandleInputNames: { out__rates: "pricing" },
-      },
-    }
+  it("judges a rename again when another name changed while the server judged it", async () => {
+    const first = makeNode("first", "polars", { data: { label: "first", nodeType: "polars" } })
+    const second = makeNode("second", "polars", { data: { label: "second", nodeType: "polars" } })
+    const graphRef = { current: { nodes: [first, second], edges: [] as Edge[] } }
+    let namingKey = "before"
+    const resolveRenameIdentities = vi.fn(async (candidateNodes: readonly Node[]) => {
+      // The other node is renamed while the first verdict is on its way.
+      if (resolveRenameIdentities.mock.calls.length === 1) namingKey = "after"
+      return candidateNodes.map((n) => ({ ...n, data: { ...n.data, _functionName: String(n.data.label) } }))
+    })
+    const commitGraph = vi.fn()
+    const { result } = renderHook(() => useGraphCommitController({
+      graphRef,
+      submodelsRef: { current: {} },
+      readDocumentIdentity: () => "doc-1",
+      readOnly: false,
+      reservedApiInputFrameLabels: new Set<string>(),
+      resolveNodeIdentities: resolveRenameIdentities,
+      resolveRenameIdentities,
+      readNamingContextKey: () => namingKey,
+      commitGraph,
+      setSelectedNode: vi.fn(),
+      addToast: vi.fn(),
+    }))
 
+    await act(async () => {
+      await result.current.onRenameNode("first", "renamed")
+    })
+
+    expect(resolveRenameIdentities).toHaveBeenCalledTimes(2)
+    expect(commitGraph).toHaveBeenCalledOnce()
+  })
+
+  it("judges a refused rename again when the other node gave up the name meanwhile", async () => {
+    const first = makeNode("first", "polars", { data: { label: "first", nodeType: "polars" } })
+    const graphRef = { current: { nodes: [first], edges: [] as Edge[] } }
+    let namingKey = "taken"
+    const resolveRenameIdentities = vi.fn(async (candidateNodes: readonly Node[]) => {
+      if (resolveRenameIdentities.mock.calls.length === 1) {
+        namingKey = "freed"
+        throw new EditorNameCollisionError("first", "Nodes 'second' and 'renamed' take one name.")
+      }
+      return candidateNodes.map((n) => ({ ...n, data: { ...n.data, _functionName: String(n.data.label) } }))
+    })
+    const commitGraph = vi.fn()
+    const { result } = renderHook(() => useGraphCommitController({
+      graphRef,
+      submodelsRef: { current: {} },
+      readDocumentIdentity: () => "doc-1",
+      readOnly: false,
+      reservedApiInputFrameLabels: new Set<string>(),
+      resolveNodeIdentities: resolveRenameIdentities,
+      resolveRenameIdentities,
+      readNamingContextKey: () => namingKey,
+      commitGraph,
+      setSelectedNode: vi.fn(),
+      addToast: vi.fn(),
+    }))
+
+    let outcome: unknown
+    await act(async () => {
+      outcome = await result.current.onRenameNode("first", "renamed")
+    })
+
+    expect(outcome).toEqual({ ok: true })
+    expect(resolveRenameIdentities).toHaveBeenCalledTimes(2)
+    expect(commitGraph).toHaveBeenCalledOnce()
+  })
+
+  it("refuses a rename the server names a collision for, applying nothing", async () => {
     const otherNode = makeNode("other_node", "polars", {
-      data: {
-        label: "existing_label",
-        nodeType: "polars",
-      },
+      data: { label: "existing_label", nodeType: "polars" },
+    })
+    const renamed = makeNode("renamed", "polars", { data: { label: "first", nodeType: "polars" } })
+    const message =
+      "Nodes 'existing_label' (the pipeline) and 'existing_label' (the pipeline) take one name, "
+      + "`existing_label`; node names must differ by more than case across the pipeline and its submodels."
+    const resolveNodeIdentities = vi.fn(async (candidateNodes: readonly Node[]): Promise<Node[]> => {
+      throw new EditorNameCollisionError(candidateNodes[0].id, message)
     })
 
-    const siblingSubmodel: Node = {
-      id: "sub_2",
-      type: "submodel",
-      position: { x: 0, y: 100 },
-      data: {
-        label: "scoring",
-        nodeType: "submodel",
-        config: { definitionId: "def_scoring", alias: "scoring" },
-        _functionName: "scoring",
-      },
-    }
+    const { hook, commitGraph } = createController([renamed, otherNode], [], {}, resolveNodeIdentities)
 
-    const resolveNodeIdentities = vi.fn(async (candidateNodes: readonly Node[]) => {
-      return candidateNodes.map((n) => ({
-        ...n,
-        data: {
-          ...n.data,
-          _functionName: String(n.data.label),
-          _sourceHandleInputNames: {},
-        },
-      }))
-    })
-
-    const { hook, commitGraph } = createController(
-      [submodelNode, otherNode, siblingSubmodel],
-      [],
-      {},
-      resolveNodeIdentities,
-    )
-
-    let labelCollisionResult: unknown
+    let result: unknown
     await act(async () => {
-      labelCollisionResult = await hook.result.current.onRenameNode("sub_1", "existing_label")
+      result = await hook.result.current.onRenameNode("renamed", "existing_label")
     })
-    expect(labelCollisionResult).toEqual({
-      ok: false,
-      error: '"existing_label" is already used by another node.',
-    })
-
-    let idCollisionResult: unknown
-    await act(async () => {
-      idCollisionResult = await hook.result.current.onRenameNode("sub_1", "other_node")
-    })
-    expect(idCollisionResult).toEqual({
-      ok: false,
-      error: '"other_node" is already used by another node.',
-    })
-
-    let aliasCollisionResult: unknown
-    await act(async () => {
-      aliasCollisionResult = await hook.result.current.onRenameNode("sub_1", "scoring")
-    })
-    expect(aliasCollisionResult).toEqual({
-      ok: false,
-      error: '"scoring" is already used by another node.',
-    })
-
+    expect(result).toEqual({ ok: false, error: message })
     expect(commitGraph).not.toHaveBeenCalled()
   })
   function ordinarySource(): Node {
