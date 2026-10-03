@@ -26,6 +26,7 @@ from haute._model_source import (
     require_model_source,
 )
 from haute.errors import ConfigError
+from tests._source_files import source_files
 
 INVALID_SOURCES: dict[str, dict[str, Any]] = {
     "run without run_id": {"sourceType": "run", "run_id": ""},
@@ -283,7 +284,7 @@ def test_the_deploy_passthrough_guard_chains_the_parse_failure(source: dict[str,
 def test_load_mlflow_model_is_called_only_through_the_source_seam() -> None:
     package = Path(__file__).resolve().parents[1] / "src" / "haute"
     callers: list[str] = []
-    for path in sorted(package.rglob("*.py")):
+    for path in source_files(package):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
