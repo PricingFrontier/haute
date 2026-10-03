@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import polars as pl
 import pytest
@@ -428,26 +428,14 @@ class TestLoadExternalObjectJoblib:
         assert result is sentinel
 
 
-class TestLoadExternalObjectCatboost:
+class TestLoadExternalObjectHasNoModelFileType:
     @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_classifier_by_default(self, tmp_path: Path) -> None:
+    def test_a_catboost_file_type_is_unsupported(self, tmp_path: Path) -> None:
+        """Model files are scored through Model Scoring; Load File refuses them."""
         path = tmp_path / "model.cbm"
-        path.write_bytes(b"fake")
-        mock_model = MagicMock()
-        with patch("catboost.CatBoostClassifier", return_value=mock_model):
-            result = load_external_object(str(path), "catboost")
-        mock_model.load_model.assert_called_once_with(str(path))
-        assert result is mock_model
-
-    @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_regressor_class(self, tmp_path: Path) -> None:
-        path = tmp_path / "model.cbm"
-        path.write_bytes(b"fake")
-        mock_model = MagicMock()
-        with patch("catboost.CatBoostRegressor", return_value=mock_model):
-            result = load_external_object(str(path), "catboost", model_class="regressor")
-        mock_model.load_model.assert_called_once_with(str(path))
-        assert result is mock_model
+        path.write_bytes(b"model")
+        with pytest.raises(ValueError, match="Unsupported file_type: 'catboost'"):
+            load_external_object(str(path), "catboost")
 
 
 class TestObjectCacheBehavior:
@@ -601,18 +589,8 @@ class TestApiInputSourceAdapterErrors:
             build_data_source_adapter({"sourceType": "warehouse", "path": "data.parquet"})
 
 
-class TestObjectCacheDifferentModelClass:
-    """Cache keys include model_class — different model_class = cache miss."""
-
-    @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_different_model_class_is_cache_miss(self, tmp_path: Path) -> None:
-        path = tmp_path / "model.json"
-        path.write_text('{"x": 1}')
-        r1 = load_external_object(str(path), "json", model_class="classifier")
-        r2 = load_external_object(str(path), "json", model_class="regressor")
-        # Both calls load the same data, but cache has 2 entries (different keys)
-        assert r1 == r2
-        assert _object_cache_size() == 2
+class TestObjectCacheKey:
+    """Cache keys are the path, its content and the file type."""
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_same_key_is_cache_hit(self, tmp_path: Path) -> None:

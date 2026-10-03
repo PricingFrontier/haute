@@ -403,7 +403,8 @@ first (see [modelling](../modelling/low-level.md)). The client creates the
 model-from-code with the manifest + every bundled artefact attached, the bundled `utility` package as its only MLflow
 `code_paths` entry (MLflow copies it under the model's `code/` directory and puts that on
 `sys.path` when the model loads), a `conda_env` with Python 3.11.11 and Haute exactly
-pinned but `polars>=1.44.2` (Haute's own Polars floor) and optional `catboost>=1.2.8` as lower bounds, and
+pinned but `polars>=1.44.2` (Haute's own Polars floor) as a lower bound (the pinned Haute
+brings its own model engines, CatBoost among them), and
 `registered_model_name` set to the UC
 three-level name. The client marks the run `FINISHED`, or `FAILED` when logging
 raised. Fetches the newly registered version through the client, then creates or updates the

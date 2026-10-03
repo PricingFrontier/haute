@@ -48,9 +48,7 @@ def _examples():
             "feature_contract_path": "models/features.json",
         }
     )
-    by_type[NodeType.EXTERNAL_FILE].data.config.update(
-        {"fileType": "catboost", "modelClass": "regressor"}
-    )
+    by_type[NodeType.EXTERNAL_FILE].data.config.update({"fileType": "joblib"})
     by_type[NodeType.MODELLING].data.config.update(
         {
             "mlflow_destination": "server",

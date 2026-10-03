@@ -776,7 +776,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
             },
         ),
         NodeType.EXTERNAL_FILE: _classify_config_fields(
-            node_config=("fileType", "modelClass"),
+            node_config=("fileType",),
             user_code=("code", "steps"),
             artifacts=("path",),
         ),

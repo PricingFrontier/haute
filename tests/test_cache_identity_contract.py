@@ -376,15 +376,9 @@ def test_graph_identity_is_stable_for_presentation_only_changes(changed) -> None
     [
         (
             NodeType.EXTERNAL_FILE,
-            {"path": "artifact.bin", "fileType": "pickle", "modelClass": "Estimator"},
+            {"path": "artifact.bin", "fileType": "pickle"},
             "fileType",
             "joblib",
-        ),
-        (
-            NodeType.EXTERNAL_FILE,
-            {"path": "artifact.bin", "fileType": "pickle", "modelClass": "Estimator"},
-            "modelClass",
-            "OtherEstimator",
         ),
         (
             NodeType.MODEL_SCORE,

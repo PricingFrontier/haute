@@ -630,20 +630,15 @@ class TestNodeToCode:
                 id="pickle",
             ),
             pytest.param(
-                "CB Model",
-                {
-                    "path": "model.cbm",
-                    "fileType": "catboost",
-                    "modelClass": "regressor",
-                    "code": "df = obj.predict(df)",
-                },
+                "Rates",
+                {"path": "rates.joblib", "fileType": "joblib", "code": "df = obj.predict(df)"},
                 [],
                 # A disconnected External File has no inputs and no binding line.
-                '@pipeline.external_file(config="config/load_file/CB_Model.json")\n'
-                "def CB_Model(*, obj) -> pl.LazyFrame:\n"
+                '@pipeline.external_file(config="config/load_file/Rates.json")\n'
+                "def Rates(*, obj) -> pl.LazyFrame:\n"
                 "    df = obj.predict(df)\n"
                 "    return df\n",
-                id="catboost",
+                id="disconnected",
             ),
         ],
     )
@@ -661,8 +656,6 @@ class TestNodeToCode:
         assert "load_external_object" not in code
         assert config["path"] not in code
         assert config["fileType"] not in code
-        if "modelClass" in config:
-            assert config["modelClass"] not in code
         _compile_node_code(code)
 
 

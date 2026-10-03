@@ -121,10 +121,10 @@ _USAGE_NOTES: dict[NodeType, str] = {
         "output, so it ends an analysis branch and is never a pricing stage."
     ),
     NodeType.EXTERNAL_FILE: (
-        "Load a pickle, JSON, joblib or CatBoost file and expose the loaded object "
-        "as `obj`; the first input is `df` and further inputs are named by their "
-        "edges. Without steps or code the node returns its first input unchanged. "
-        "Set fileType, and modelClass for a CatBoost file."
+        "Load a pickle, JSON or joblib file and expose the loaded object as `obj`; "
+        "the first input is `df` and further inputs are named by their edges. "
+        "Without steps or code the node returns its first input unchanged. Set "
+        "fileType. A model Haute trains is scored with Model Scoring, not loaded here."
     ),
     NodeType.LIVE_SWITCH: (
         "Route one of several connected frames by scenario; use at most one "

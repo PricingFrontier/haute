@@ -3,8 +3,7 @@
   "authorable": true,
   "fields": {
     "path": "The file to load, relative to the project root. The dry-run loads it, so it must exist and load as fileType.",
-    "fileType": "\"json\", \"pickle\", \"joblib\" or \"catboost\".",
-    "modelClass": "For a CatBoost file only: \"regressor\" or \"classifier\".",
+    "fileType": "\"json\", \"pickle\" or \"joblib\". A model file Haute trains is scored with a modelScore node instead.",
     "steps": "Step cards over the first input: df is already the first input (no source step), the loaded object is obj, and further inputs are read by their edge names. With steps [] the node returns its first input unchanged and never uses the file."
   },
   "inputs": [

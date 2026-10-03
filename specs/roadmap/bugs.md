@@ -20,7 +20,6 @@ wrong. Current rating behaviour is specified in
 | BUG-04 | Planned | P2 | A pickled XGBoost or LightGBM model loads in a Load File node, or is refused by name. |
 | BUG-05 | Planned | P3 | The Data Input editor describes the Databricks query field as the SELECT clause it is. |
 | BUG-06 | Planned | P2 | A Delta table folder can be chosen as a Lakehouse Data Input in the editor. |
-| BUG-07 | Planned | P3 | The Load File picker offers only files a File Type can load. |
 | BUG-08 | Planned | P3 | A table added to a Quote Input by hand starts with a valid label. |
 | BUG-10 | Planned | P2 | A CSV Data Input's detected schema is read with the node's reader arguments. |
 | BUG-11 | Planned | P3 | Setting every Source Switch input back to `-` returns the node to passing through its first input. |
@@ -180,22 +179,6 @@ selection.
 (`manualEntry={direction === "output"}`); `frontend/src/panels/editors/_shared.tsx`
 (the browser's folder click); `src/haute/routes/files.py` (directory items);
 `src/haute/_polars_io_registry.py` (the `delta` and `iceberg` formats).
-
-### BUG-07 — The Load File picker offers only loadable files
-**Why:** The Load File path browser lists `.onnx` and `.pmml` files, but no
-File Type loads them (Pickle, JSON, Joblib and CatBoost are the only loaders),
-so choosing one produces a node that cannot run.
-
-**Plan:** Drop the two extensions from the picker, or add loaders for them if
-Load File is meant to support those formats.
-
-**Acceptance:** The picker's extensions and the File Type loaders agree; a
-frontend test pins the extension list.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/editors/ExternalFileEditor.tsx` (the
-picker's `extensions`); `src/haute/_io.py::_load_external_object_uncached`.
 
 ### BUG-08 — A table added by hand starts with a valid label
 **Why:** A Quote Input table's label becomes its frame name downstream and

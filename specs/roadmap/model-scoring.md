@@ -4,8 +4,7 @@
 
 Where a scored model comes from, which model families load, and how a model
 Haute did not train is described well enough to score safely. This covers the
-Model Scoring node (`modelScore`) and the model-loading part of the Load File
-node (`externalFile`). Current behaviour is specified in
+Model Scoring node (`modelScore`). Current behaviour is specified in
 [the MLflow model registry specification](../mlflow-model-registry/high-level.md)
 and its [low-level specification](../mlflow-model-registry/low-level.md), with
 the editors in
@@ -17,15 +16,14 @@ Model Scoring loads every family Haute trains (CatBoost `.cbm`, RustyStats
 GLM `.rsglm`, XGBoost `.ubj`, LightGBM `.lgbm`, EBM `.ebm`) from an experiment
 run, a registered model or a model file in the project, and MLflow pyfunc
 models from a run or the registry. Every loaded model is bound to its feature
-contract, which declares the offset a CatBoost file cannot. Load File still
-reads CatBoost as a raw object for hand-written `obj.predict(...)` code, with
-none of those checks.
+contract, which declares the offset a CatBoost file cannot. Model Scoring is
+the one way to score a model; Load File loads objects for custom code
+(pickle, joblib, JSON).
 
 The target is one node that scores a model. Model Scoring finds the model in a
 registry, a run or a project file, for every family Haute trains, through one
 model source and one family registry, so that a further family is a single
-registration. Load File goes back to loading objects for custom code (pickle,
-joblib, JSON). Registry and run pyfunc models already work. The file-source
+registration. Registry and run pyfunc models already work. The file-source
 delivery adds native files under a declared contract, then local pyfunc
 packages with an explicit executable-import trust policy, then ONNX if there
 is demand. Pickled estimators stay with Load File's restricted unpickler
@@ -42,53 +40,15 @@ file defaults to a family.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| MSC-04 | Planned | P2 | Load File no longer loads CatBoost models; Model Scoring is the one way to score a model. |
 | MSC-05 | Planned | P3 | Model Scoring scores an MLflow pyfunc model saved in the project. |
 | MSC-06 | Planned | P2 | An XGBoost or LightGBM model trained outside Haute scores under a declared contract. |
 | MSC-07 | Deferred | P3 | ONNX models score in Model Scoring. |
 
 ## Planned improvements
 
-`MSC-04`, `MSC-05` and `MSC-06` each build on the file source on their own.
+`MSC-05` and `MSC-06` each build on the file source on their own.
 Each family they add is one registration in the model family registry
 (`src/haute/_model_flavors.py`).
-
-### MSC-04 — Load File no longer loads CatBoost models
-**Why:** Once Model Scoring scores a file, Load File's **CATBOOST** file type
-is a second, weaker way to score the same file: no feature checks, a **MODEL
-TYPE** that repeats the task, and scoring code the analyst writes by hand. It
-also keeps model concerns in a generic loader: the `modelClass` field, its
-cache classification and recovery check, the deploy scorer's handling of it,
-and a CatBoost line in the Databricks serving requirements keyed on
-`fileType`, which is redundant because haute itself depends on CatBoost.
-Decided on 3 October 2026: CatBoost leaves Load File, and Model Scoring is the
-one way to score a model. No pipeline uses a CatBoost Load File node, so the
-removal carries no migration or dedicated recovery path.
-
-**Plan:** Remove the `catboost` file type and `modelClass` from the Load File
-config, loader, editor, cache classification, recovery check, deploy scorer
-and Databricks requirements. A config that still names `catboost` fails as an
-unsupported file type through the existing Load File validation, like any
-other unknown type. The Load File picker's extensions match its remaining
-loaders (pickle, joblib, JSON), which closes `BUG-07` in the same change.
-Update the Load File and Model Scoring pages, the node cards and the assistant
-catalogue with the specifications.
-
-**Acceptance:** `catboost` and `modelClass` no longer appear in the Load File
-config, loader, editor, cache classification or deploy code; a Load File
-config with `fileType: "catboost"` is refused as an unsupported file type; a
-frontend test pins the picker's extensions; the Load File page no longer
-mentions CatBoost and points model files to Model Scoring.
-
-**Dependencies:** None. Model Scoring already scores model files.
-
-**Evidence:** `src/haute/_io.py::_load_external_object_uncached`;
-`src/haute/_types.py::ExternalFileConfig`;
-`src/haute/_node_config_recovery.py`;
-`src/haute/deploy/_mlflow.py::_pip_requirements`;
-`frontend/src/panels/editors/ExternalFileEditor.tsx`;
-`src/haute/assistant/assets/node_cards/externalFile.json`;
-`docs/building-models/nodes/external-file.md`.
 
 ### MSC-05 — Model Scoring scores an MLflow pyfunc model saved in the project
 **Why:** MLflow's pyfunc format is how most Python models trained outside Haute
@@ -280,9 +240,8 @@ completed declarations.
 [XGBoost model IO: custom objective and metric](https://xgboost.readthedocs.io/en/release_3.1.0/tutorials/saving_model.html#custom-objective-and-metric).
 
 ### MSC-07 — ONNX models score in Model Scoring
-**Why:** ONNX is the common export format across frameworks, and the Load File
-picker and the container's dependency map already name `.onnx`, yet nothing
-loads one. The package is deferred because `onnxruntime` is not a Haute
+**Why:** ONNX is the common export format across frameworks, and the
+container's dependency map already names `.onnx`, yet nothing loads one. The package is deferred because `onnxruntime` is not a Haute
 dependency, no user has asked for it, and pyfunc (`MSC-05`) covers Python
 models first.
 
@@ -299,4 +258,4 @@ extra.
 **Dependencies:** Demand for ONNX.
 
 **Evidence:** `src/haute/deploy/_container.py` (`_ARTIFACT_EXT_TO_DEPS`);
-`frontend/src/panels/editors/ExternalFileEditor.tsx`.
+`frontend/src/panels/editors/ModelScoreEditor.tsx`.

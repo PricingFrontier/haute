@@ -437,7 +437,7 @@ also accept the executor's already-resolved inline mapping. Path inputs go
 through `load_node_config` and shared project/pipeline resolution. API input
 validates non-empty paths and JSON `tables[]` before reading/shredding and
 forwards projection/profile fields; external-file resolution validates
-`path`/`fileType` and forwards `modelClass`. Invalid tables raise
+`path`/`fileType`. Invalid tables raise
 `ApiInputSchemaError`, which the HTTP contract adapter maps to 422.
 
 ## Edge cases and invariants

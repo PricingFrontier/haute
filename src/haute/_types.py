@@ -572,8 +572,7 @@ class ExternalFileConfig(TypedDict, total=False):
     """Config for externalFile nodes."""
 
     path: str
-    fileType: str  # "pickle" | "json" | "joblib" | "catboost"
-    modelClass: str  # "classifier" | "regressor" (catboost only)
+    fileType: str  # "pickle" | "json" | "joblib"
     code: str
     steps: list[
         dict[str, Any]

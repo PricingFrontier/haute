@@ -264,7 +264,7 @@ def _pyfunc_model_arguments(resolved: ResolvedDeploy, manifest_path: Path) -> di
         "artifacts": artifacts,
         "code_paths": [str(utility)] if utility is not None else None,
         "signature": _build_signature(resolved),
-        "conda_env": _conda_env(resolved),
+        "conda_env": _conda_env(),
     }
 
 
@@ -292,22 +292,17 @@ def _build_signature(resolved: ResolvedDeploy) -> object:
     return ModelSignature(inputs=input_schema, outputs=output_schema)
 
 
-def _pip_requirements(resolved: ResolvedDeploy) -> list[str]:
-    """Build pip requirements for the deployed model."""
+def _pip_requirements() -> list[str]:
+    """Build pip requirements for the deployed model.
+
+    The pinned Haute brings its own model engines, so no node adds one.
+    """
     import haute
 
-    reqs = [
+    return [
         f"haute=={haute.__version__}",
         "polars>=1.44.2",
     ]
-
-    # Check if catboost is used
-    for node in resolved.pruned_graph.nodes:
-        if node.data.config.get("fileType") == "catboost":
-            reqs.append("catboost>=1.2.8")
-            break
-
-    return reqs
 
 
 # Databricks Model Serving uses conda to build the container.
@@ -316,7 +311,7 @@ def _pip_requirements(resolved: ResolvedDeploy) -> list[str]:
 _SERVING_PYTHON_VERSION = "3.11.11"
 
 
-def _conda_env(resolved: ResolvedDeploy) -> dict:
+def _conda_env() -> dict:
     """Build a conda environment dict for Databricks Model Serving.
 
     Pins Python to a version available on Databricks' internal conda
@@ -328,7 +323,7 @@ def _conda_env(resolved: ResolvedDeploy) -> dict:
         "dependencies": [
             f"python={_SERVING_PYTHON_VERSION}",
             "pip",
-            {"pip": _pip_requirements(resolved)},
+            {"pip": _pip_requirements()},
         ],
         "name": "mlflow-env",
     }

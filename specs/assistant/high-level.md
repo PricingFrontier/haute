@@ -1788,8 +1788,8 @@ offending node of the lineage in topological order, ties broken by node id:
 2. `sink_only`: a Quote Response, Data Output, Explore, Model Training or
    Optimisation node, which has no output frame to measure.
 3. `artifact_in_lineage`: the node or an ancestor is a Load File whose
-   `fileType` deserialises an opaque object: `pickle`, `joblib` or `catboost`
-   (the loaders in `src/haute/_io.py`). A `json` Load File is data and stays
+   `fileType` deserialises an opaque object: `pickle` or `joblib` (the loaders
+   in `src/haute/_io.py`). A `json` Load File is data and stays
    eligible. The check never invokes an excluded node's loader; that the
    dry-run's schema tier may already have loaded it in the server process does
    not make the check load it again.

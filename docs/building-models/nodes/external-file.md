@@ -1,6 +1,6 @@
 # Load File
 
-You have a model file on disk  - a pickle, joblib, or CatBoost `.cbm` file  - and you want to score your data with it. The Load File node loads the file as `obj`, and you apply it in the node's **TRANSFORM** tab: add a **Free code** step, or click **Switch to code** to write the node as code.
+You have an object on disk  - a pickled or joblib model from a colleague, or a JSON lookup  - and you want to apply it to your data. The Load File node loads the file as `obj`, and you apply it in the node's **TRANSFORM** tab: add a **Free code** step, or click **Switch to code** to write the node as code.
 
 !!! info "When to use"
     - Your model is a standalone file not tracked in MLflow (e.g. a `.pkl` from a colleague), and its class is one Haute can load (see the warning below).
@@ -15,9 +15,8 @@ The **INPUT** chips at the top name the node's connections; the × on a chip rem
 
 | Field | What it does |
 |---|---|
-| **FILE TYPE** | How to read the file: **PICKLE** (the default), **JSON**, **JOBLIB** or **CATBOOST**. |
-| **MODEL TYPE** | Shown for **CATBOOST** only: **Classifier** (the default) or **Regressor**, the kind of CatBoost model the file holds. |
-| **FILE PATH** | The file, chosen in the file browser: a `.pkl`, `.json`, `.joblib` or `.cbm` file inside your project folder. Once a file is chosen, **change** opens the browser again. |
+| **FILE TYPE** | How to read the file: **PICKLE** (the default), **JSON** or **JOBLIB**. |
+| **FILE PATH** | The file, chosen in the file browser: a `.pkl`, `.pickle`, `.json` or `.joblib` file inside your project folder. Once a file is chosen, **change** opens the browser again. |
 
 !!! warning "Pickle and joblib files load only known classes"
     For safety, Haute loads pickle and joblib files through an exact list of allowed classes: NumPy arrays, pandas and Polars DataFrames and Series, plain Python values such as dictionaries and lists, CatBoost models, scikit-learn's `RandomForestRegressor`, `LinearRegression` and `DecisionTreeRegressor`, and InterpretML's `ExplainableBoostingRegressor` and `ExplainableBoostingClassifier`. Any other class fails with "Blocked unpickling of ...". That includes other scikit-learn estimators (classifiers among them) and pickled XGBoost or LightGBM models.
@@ -79,8 +78,7 @@ df = df.with_columns(
 
     | Setting in the editor | Stored as |
     |---|---|
-    | **FILE TYPE** | `fileType`: `"pickle"`, `"json"`, `"joblib"` or `"catboost"` |
-    | **MODEL TYPE** | `modelClass`: `"classifier"` or `"regressor"` (CatBoost only; absent reads as `"classifier"`) |
+    | **FILE TYPE** | `fileType`: `"pickle"`, `"json"` or `"joblib"` |
     | **FILE PATH** | `path`: the file, relative to your project folder |
     | **TRANSFORM** tab | `steps`, or the function body after **Switch to code** |
     | **COLUMNS** tab | `selected_columns` |

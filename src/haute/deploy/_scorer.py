@@ -795,7 +795,6 @@ def _score_graph_lazy(
             if remapped_path is not None:
                 code = config.get("code", "").strip()
                 file_type = config.get("fileType", "pickle")
-                model_class = config.get("modelClass", "classifier")
                 _src_names = list(source_names)
 
                 _remapped: str = remapped_path  # narrowed by the `is not None` guard above
@@ -805,13 +804,12 @@ def _score_graph_lazy(
                         *dfs: _Frame,
                         _p: str = _remapped,
                         _ft: str = file_type,
-                        _mc: str = model_class,
                         _code: str = code,
                         _sn: list[str] = _src_names,
                     ) -> _Frame:
                         from haute._user_exec import _exec_user_code
 
-                        obj = load_external_object(_p, _ft, _mc)
+                        obj = load_external_object(_p, _ft)
                         return _exec_user_code(
                             _code,
                             _sn,

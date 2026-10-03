@@ -22,6 +22,7 @@ from haute._contracts import Contract
 from haute._explore_charts import validate_explore_charts
 from haute._explore_overview import validate_explore_overview
 from haute._explore_pivots import validate_explore_pivot_state
+from haute._io import EXTERNAL_FILE_TYPES
 from haute._output_assembler import OutputMappingSchemaError, validate_v2_output_mapping
 from haute._polars_io_registry import (
     PolarsIoConfigError,
@@ -534,7 +535,7 @@ def _validator_issues(
     if node_type is NodeType.EXTERNAL_FILE:
         if not isinstance(config.get("path"), str) or not config["path"]:
             issues.append(_issue("path", "required", "External file path is required."))
-        if config.get("fileType") not in {"pickle", "json", "joblib", "catboost"}:
+        if config.get("fileType") not in EXTERNAL_FILE_TYPES:
             issues.append(
                 _issue("fileType", "invalid_value", "Select a supported external file type.")
             )
