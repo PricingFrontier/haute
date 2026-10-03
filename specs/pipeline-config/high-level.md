@@ -73,10 +73,11 @@ code (API Input, Data Output, Edge Join, Banding, Output, Live Switch, Modelling
 Optimiser Apply, Constant) every function is a declaration, and a parameter named `df` is
 just an input. Registration fails loudly for a declaration with a body (the code would never
 run; on a type that accepts no code the message says so) and for a hook without one. The
-static parser enforces the same shapes. Canvas execution gives a hook's code the same names
-the saved function has: `df` and the node's other inputs (an External File's inputs and
-`obj`), never the first input under its own name. One difference remains: a Model Score's
-code on the canvas can also use `model`, which a standalone run does not provide. Node code
+static parser enforces the same shapes. Canvas execution and the deployed scorer give a hook's
+code the same names the saved function has: the preamble's names, `df` and the node's other
+inputs (an External File's inputs and `obj`), never the first input under its own name. One
+difference remains: a Model Score's code on the canvas and when deployed can also use
+`model`, which a standalone run does not provide. Node code
 leaves its result in `df`; a closing `return <expr>` reads as `df = <expr>`, and an earlier
 return is a parse error rather than an assignment that would fall through. The decorator returns a callable that runs the node:
 calling a configured node's function directly — `quotes()` in a notebook — performs the same
@@ -85,13 +86,6 @@ function itself. A sidecar-typed node registered without `config=` has no settin
 decorator to act on, so the live API treats it as a plain function and a standalone run calls
 its body as written; the static parser rejects that form, so it never appears in a saved
 pipeline file.
-
-> NOTE: A Model Score's code on the canvas and in the deployed scorer also lacks the
-> preamble's names, which its saved function sees in a standalone run, and deployed External
-> File code sees `obj` without the preamble's names it has in the editor.
-> [BUG-14](../roadmap/bugs.md#bug-14--model-score-code-sees-the-preamble-on-the-canvas-and-when-deployed)
-> and [BUG-13](../roadmap/bugs.md#bug-13--deployed-external-file-code-sees-the-preamble-as-in-the-editor)
-> give both the preamble's names.
 
 **Strict parsing and editor recovery.** `parse_pipeline_file()` and
 `parse_pipeline_source()` are strict canonical entry points: Python syntax, decorator,

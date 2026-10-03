@@ -94,7 +94,6 @@ from haute._registry import (
     register_exec as _register_exec_in_registry,
 )
 from haute._types import (
-    GLOBAL_CONSTANTS_NAME,
     GraphEdge,
     GraphNode,
     NodeType,
@@ -1275,7 +1274,7 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         reuse_loaded_model=ctx.reuse_loaded_model,
         input_fanout=_upstream_scenario_fanout(ctx.upstream_ids, ctx.node_map),
         base_dir=base_dir,
-        global_constants=(ctx.preamble_ns or {}).get(GLOBAL_CONSTANTS_NAME),
+        preamble_ns=dict(ctx.preamble_ns) if ctx.preamble_ns else None,
     )
 
     return ctx.func_name, scorer.score, False

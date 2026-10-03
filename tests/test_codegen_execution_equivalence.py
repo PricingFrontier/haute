@@ -46,6 +46,7 @@ from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.codegen import graph_to_code
 from haute.execution import ExecutionProfile, execute_lazy_graph
+from haute.executor import _compile_preamble
 from tests.conftest import make_ready_file_input_config
 
 # ---------------------------------------------------------------------------
@@ -118,7 +119,11 @@ def _executor_frame(graph: PipelineGraph, target_id: str, source: str) -> pl.Dat
     )
     try:
         outputs, _, _, _ = execute_lazy_graph(
-            graph, _build_node_fn, source=source, execution_context=context
+            graph,
+            _build_node_fn,
+            source=source,
+            execution_context=context,
+            preamble_ns=_compile_preamble(graph.preamble or "") or None,
         )
         return _collect(outputs[target_id])
     finally:
@@ -627,8 +632,12 @@ def _stub_scoring_model() -> ScoringModel:
 
 @pytest.mark.parametrize(
     "code",
-    ["", "df = df.with_columns(doubled=pl.col('prediction') * 2)"],
-    ids=["declaration", "hook"],
+    [
+        "",
+        "df = df.with_columns(doubled=pl.col('prediction') * 2)",
+        "df = df.with_columns(doubled=double(pl.col('prediction')))",
+    ],
+    ids=["declaration", "hook", "hook_calling_a_preamble_helper"],
 )
 def test_model_score_run_matches_executor_batch(tmp_path, code):
     src = _const("c", "features", [{"name": "a", "value": 1.0}, {"name": "b", "value": 2.0}])
@@ -641,7 +650,11 @@ def test_model_score_run_matches_executor_batch(tmp_path, code):
         **({"code": code} if code else {}),
     }
     score = _node("score", "score", NodeType.MODEL_SCORE, config)
-    graph = PipelineGraph(nodes=[src, score], edges=[_edge("c", "score")])
+    graph = PipelineGraph(
+        nodes=[src, score],
+        edges=[_edge("c", "score")],
+        preamble="def double(value):\n    return value * 2\n",
+    )
 
     module = _write_and_import(graph, tmp_path)
     with patch("haute._mlflow_io.load_mlflow_model", return_value=_stub_scoring_model()):

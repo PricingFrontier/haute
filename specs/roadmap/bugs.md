@@ -23,8 +23,6 @@ Current rating behaviour is specified in
 | BUG-06 | Planned | P2 | A Delta table folder can be chosen as a Lakehouse Data Input in the editor. |
 | BUG-10 | Planned | P2 | A CSV Data Input's detected schema is read with the node's reader arguments. |
 | BUG-12 | Planned | P1 | A save never drops a statement written after the pipeline constructor; such a statement is reported and saving waits for it to move. |
-| BUG-13 | Planned | P2 | Deployed External File code sees the preamble's names, as it does in the editor. |
-| BUG-14 | Planned | P2 | Model Score code sees the preamble's names on the canvas and when deployed, as it does standalone. |
 | BUG-15 | Decision | P2 | A bare `pipeline.run()` routes a source the pipeline has instead of a `batch` scenario no pipeline declares. |
 | BUG-16 | Planned | P2 | The optimiser's estimate, auto-range and solve requests carry the preamble, as every other execution request does. |
 | BUG-17 | Decision | P3 | A standalone run of a pipeline with a submodel runs it, or refuses up front naming the submodel, instead of reporting it as an unknown node. |
@@ -178,58 +176,6 @@ preserve markers save and regenerate unchanged.
 `src/haute/_ast_helpers.py::_extract_preamble_from_ast`;
 `src/haute/_ast_helpers.py::_extract_preserved_blocks`;
 `src/haute/parser.py::parse_pipeline_source`.
-
-### BUG-13 — Deployed External File code sees the preamble, as in the editor
-**Why:** In the editor an External File's code runs with the preamble's names
-and `obj` (`_build_external_file` copies the preamble namespace and adds the
-loaded object), and in a standalone run its hook is a module function that sees
-the module's globals. The deploy scorer's External File intercept, which every
-bundled External File with code runs through because its artifact path is
-remapped into the bundle, runs the code with `obj` alone. Code that calls a
-preamble helper or a module the preamble imports (`np`, a `utility` function)
-previews in the editor and raises `NameError` in the deployed scorer, against
-the rule that the same pipeline runs the same way in every context.
-
-**Plan:** Run the intercepted External File code with the preamble namespace
-the intercept already receives in its build arguments, plus `obj`, exactly as
-the editor builder does.
-
-**Acceptance:** A deploy scorer test serves an External File whose code calls a
-preamble helper and returns the editor preview's result.
-
-**Dependencies:** None. The run's global constants are already bound in the
-same namespace.
-
-**Evidence:** `src/haute/deploy/_scorer.py::_intercept`;
-`src/haute/_builders.py::_build_external_file`;
-`src/haute/_user_exec.py::_exec_user_code`.
-
-### BUG-14 — Model Score code sees the preamble on the canvas and when deployed
-**Why:** The pipeline-config specification says canvas execution gives a hook's
-code the names its saved function has, with `model` as the one difference. A
-Model Score's code runs with `df`, its other inputs and `model` only
-(`_run_score_pipeline` passes no preamble namespace), so it never sees the
-preamble's names on the canvas or in the deployed scorer, which builds the node
-the same way. In a standalone run its hook is a module function that sees them.
-Code that calls a preamble helper therefore runs standalone and raises
-`NameError` on the canvas and when served. Every other code box (Transform,
-Data Input, External File, Rating Step, Scenario Expander and Explore) gets the
-preamble's names on the canvas.
-
-**Plan:** Pass the build context's preamble namespace through the Model Score
-builder to the code execution, with `model` beside it, and state the names in
-the specification's hook paragraph.
-
-**Acceptance:** An executor test runs Model Score code that calls a preamble
-helper and gets the standalone run's result, and a deploy scorer test serves
-the same node.
-
-**Dependencies:** None. The run's global constants are already bound in the
-same namespace.
-
-**Evidence:** `src/haute/_model_scorer.py::_run_score_pipeline`;
-`src/haute/_builders.py::_build_model_score`;
-`specs/pipeline-config/high-level.md` (declarations and hooks).
 
 ### BUG-15 — A bare `pipeline.run()` routes a source the pipeline has
 **Why:** `Pipeline.run()` sets the scenario to `"batch"`, while `haute run`
