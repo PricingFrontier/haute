@@ -1913,7 +1913,6 @@ function FlowEditor() {
                   <ConnectionDropMenu
                     x={connectionDropMenu.x}
                     y={connectionDropMenu.y}
-                    existingSingletonTypes={existingSingletonTypes}
                     onSelect={createNodeFromConnectionDrop}
                     onClose={closeConnectionDropMenu}
                   />

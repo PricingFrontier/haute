@@ -390,7 +390,7 @@ describe("useNodeHandlers", () => {
   // An instance is a second node like any other, so the singleton rule that
   // handleDuplicateNode and the paste path enforce has to hold here too — the
   // toolbar's Instance button reaches every node type, not just submodels.
-  it.each(["apiInput", "output", "liveSwitch"])(
+  it.each(["apiInput", "output"])(
     "handleCreateInstance refuses singleton node type %s",
     (nodeType) => {
       const params = makeParams()

@@ -5,7 +5,7 @@
     "input_scenario_map": "Maps each input, by its name, to the run scenario that selects it: \"live\" for the quote request, and a batch scenario name such as \"nb_batch\" for a data source. A run passes through the one input mapped to its scenario and fails when none is.",
     "inputs": "The incoming edge names in order, the same names the map uses.",
     "input names": "An input is named after its incoming edge: the upstream node's name, except that an edge from a Quote Input frame, which `add_edge`'s `source_handle` selects, is named by that frame, and an edge from a submodel output by its port. add_edge's target_handle does not name it, so a new source is mapped and listed under the name its edge gives.",
-    "wiring": "One edge per scenario input; the inputs must carry the same columns so downstream nodes work under every scenario. At most one Source Switch per pipeline."
+    "wiring": "One edge per scenario input; the inputs must carry the same columns so downstream nodes work under every scenario. A pipeline may have several Source Switches; each routes the input mapped to the active source."
   },
   "inputs": [
     {

@@ -84,7 +84,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/components/ComparisonInspector.tsx` | Read-only comparison-view config panel: renders the real node editor `inert` for the available side(s), with a Historical/Current switcher. |
 | `frontend/src/components/ComparisonView.tsx` | The historical-vs-current comparison canvas pair: fetches the historical pipeline, diffs it, and renders two non-interactive `ReactFlow` instances (`ReadonlyCanvas`) with diff-ring highlighting, a draggable split, and orientation toggle. |
 | `frontend/src/utils/canvasHitTest.ts` | `isEmptyCanvasAtPoint`: whether the uppermost element under a client point is the React Flow pane itself. |
-| `frontend/src/components/ConnectionDropMenu.tsx` | Add node menu opened by releasing a source-handle connection on empty canvas: Edge Join plus the palette types that take a data input (not Load File), occupied singletons disabled, viewport-clamped, arrow-key focus, Escape/outside-click close. |
+| `frontend/src/components/ConnectionDropMenu.tsx` | Add node menu opened by releasing a source-handle connection on empty canvas: Edge Join plus the palette types that take a data input (not Load File), none of them a singleton, viewport-clamped, arrow-key focus, Escape/outside-click close. |
 | `frontend/src/components/EdgeJoinInsertionFeedback.tsx` | Renders the conditional polite live-region status for a compatible edge-join insertion candidate. |
 | `frontend/src/components/PolarsIcon.tsx` | Memoized SVG icon for the Polars node type. |
 | `frontend/src/components/RenameDialog.tsx` | Node-rename modal with the shared name-shape validation; shows the rename's refusal (including the server's collision) inline. |
@@ -634,14 +634,13 @@ reconciliation rather than dropping them or committing a second mutation.
     Escape, or an outside mousedown calls `closeConnectionDropMenu`. The menu
     lists `CONNECTION_DROP_TYPES` (`nodeTypes.ts`): `EDGE_JOIN`, then
     `PALETTE_TYPES` without `SOURCE_ONLY_TYPES`, `OUTPUT`, and `EXTERNAL_FILE`, each with its
-    palette icon, colour, name, and description; an occupied `SINGLETON_TYPES`
-    entry is disabled. The menu is clamped inside the viewport, focuses its
-    first enabled item, and moves focus with the arrow keys. Escape closes it
+    palette icon, colour, name, and description; none is a `SINGLETON_TYPES`
+    entry, so every item is enabled. The menu is clamped inside the viewport, focuses its
+    first item, and moves focus with the arrow keys. Escape closes it
     wherever focus is: a document `keydown` listener prevents the event, so
     the window-level canvas shortcuts skip it.
 
-    `createNodeFromConnectionDrop(type)` closes the menu, refuses an occupied
-    singleton with the palette's info toast, and builds the node with `appNode`
+    `createNodeFromConnectionDrop(type)` closes the menu and builds the node with `appNode`
     at `position`. The candidate edge targets the default handle, or
     `EDGE_JOIN_BASE_HANDLE` for an Edge Join, and is checked with
     `validatePipelineConnection` against `graphRef.current` plus the new node
@@ -1504,7 +1503,7 @@ again through the editor and save paths.
     reusable occurrence creation with retained definition id, collision-free
     immutable id, normalized deterministic alias suffix (including past-nine
     numbering), empty bindings, and one undo snapshot; the singleton-type
-    instance refusal for each of the three singleton types; instancing an
+    instance refusal for each of the two singleton types; instancing an
     instance resolving to a validated original rather than chaining, including
     explicit refusal of malformed ordinary-instance identity; duplicate and
     auto-layout behavior.
@@ -1530,7 +1529,7 @@ again through the editor and save paths.
     ignore-if-no-edge-under-pointer case; the empty-canvas connection drop
     menu (opening only for a source release over the pane and not from a
     submodel port, node plus identified edge created as one undo step, Edge
-    Join base role, singleton and invalid-connection refusal, stale-graph
+    Join base role, invalid-connection refusal, stale-graph
     refusal); touch-event coordinate
     resolution via `changedTouches`; selection-change drag-safety and
     `graphRefreshingRef`-guarded deselection skip; node-click panel-open +
@@ -1753,7 +1752,8 @@ again through the editor and save paths.
     sink shape; Data Input/Data Output source/sink and non-singleton
     membership with strict branch-shaped defaults; Edge Join's compact
     centre-origin shape; label/name casing
-    convention; exact `SINGLETON_TYPES` membership including `liveSwitch`,
+    convention; exact `SINGLETON_TYPES` membership excluding `liveSwitch`,
+    no singleton among `CONNECTION_DROP_TYPES`,
     plus `SOURCE_ONLY_TYPES`/`SINK_ONLY_TYPES` membership and counts;
     `isSingletonType` true/false/undefined
     cases; `PALETTE_TYPES` validity, submodel/edgeJoin exclusion, explore
@@ -1804,7 +1804,7 @@ again through the editor and save paths.
   - `frontend/src/components/__tests__/PolarsIcon.test.tsx` — default-prop SVG rendering; custom size/color.
   - `frontend/src/components/__tests__/ConnectionDropMenu.test.tsx` — Edge Join first then palette order
     without Quote Input/Response, Load File, and the no-input types; choosing an item
-    reports its type; an occupied singleton is disabled; Escape and an
+    reports its type; Escape and an
     outside mousedown close, Escape also after focus has left the menu and
     with the event prevented for the canvas shortcuts; arrow keys move focus.
   - `frontend/src/utils/__tests__/canvasHitTest.test.ts` — the pane counts as

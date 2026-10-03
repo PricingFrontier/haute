@@ -97,7 +97,6 @@ class StaleDocumentRevisionError(Exception):
 _SINGLETON_NODE_TYPES: list[tuple[NodeType, str]] = [
     (NodeType.API_INPUT, "API Input"),
     (NodeType.OUTPUT, "Output"),
-    (NodeType.LIVE_SWITCH, "Source Switch"),
 ]
 
 # Allowlist for codegen output paths.

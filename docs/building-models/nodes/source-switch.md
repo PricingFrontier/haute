@@ -7,7 +7,7 @@ You want your pipeline to use live API data in production but a batch file durin
 
 A **source** is a named mode of the pipeline, such as `live` or `batch`. The Source Switch takes one input per source you want to support, and outputs whichever input is mapped to the active source. Everything downstream sees the same columns regardless of which source is active.
 
-A pipeline can have only one Source Switch: once it has one, the palette entry is greyed out with "Only one Source Switch allowed per pipeline". The panel has two tabs: **CONFIG** and **COLUMNS**.
+A pipeline can have several Source Switches, for example one for policies and one for claims. Every Source Switch follows the same active source, so switching the source in the toolbar switches them all. The panel has two tabs: **CONFIG** and **COLUMNS**.
 
 ## Choosing the active source
 
@@ -41,7 +41,7 @@ When the active source is `live`, the node outputs data from the `quotes` input.
     If the active source doesn't match any input mapping, the Source Switch node itself fails with an error naming the missing source, such as `Live switch 'switch' has no input for scenario 'batch'`. A new Source Switch, before any input is mapped, passes through its first input. Once an input has been mapped, setting every input back to `-` does not restore that: the node fails for every source.
 
 !!! note "At deployment"
-    The deployed pipeline runs with the `live` source active, so one input must be mapped to the source named exactly `live`.
+    The deployed pipeline runs with the `live` source active, so every Source Switch must map one input to the source named exactly `live`.
 
 ??? note "In the pipeline file"
     The node's settings are stored in a JSON sidecar, `config/source_switch/<node name>.json`, which the node's decorator in the pipeline's `.py` file names: `@pipeline.live_switch(config="config/source_switch/<node name>.json")`. The pipeline's sources themselves are not part of the node.

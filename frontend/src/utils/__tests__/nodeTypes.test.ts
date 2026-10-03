@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { NODE_TYPES, NODE_TYPE_META, PALETTE_TYPES, SINK_ONLY_TYPES, SOURCE_ONLY_TYPES, isSingletonType } from "../nodeTypes"
+import { CONNECTION_DROP_TYPES, NODE_TYPES, NODE_TYPE_META, PALETTE_TYPES, SINK_ONLY_TYPES, SOURCE_ONLY_TYPES, isSingletonType } from "../nodeTypes"
 import { ALGORITHM_CAPABILITIES } from "../../panels/modelling/algorithmCapabilities"
 
 describe("canonical data IO node types", () => {
@@ -24,8 +24,13 @@ describe("canonical data IO node types", () => {
   it("keeps only the canonical singleton types", () => {
     expect(isSingletonType("apiInput")).toBe(true)
     expect(isSingletonType("output")).toBe(true)
-    expect(isSingletonType("liveSwitch")).toBe(true)
+    expect(isSingletonType("liveSwitch")).toBe(false)
     expect(isSingletonType("dataInput")).toBe(false)
+  })
+
+  // The connection-drop menu never disables an item: keep singletons out of it.
+  it("offers no singleton type from a connection drop", () => {
+    expect(CONNECTION_DROP_TYPES.filter(isSingletonType)).toEqual([])
   })
 })
 

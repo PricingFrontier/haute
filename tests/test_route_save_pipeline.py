@@ -221,16 +221,13 @@ class TestValidateSingletons:
         assert exc_info.value.status_code == 400
         assert "Output" in exc_info.value.detail
 
-    def test_duplicate_live_switch_raises_400(self) -> None:
-        """Two Live Switch nodes should raise 400."""
+    def test_several_source_switches_pass(self) -> None:
+        """A pipeline may hold more than one Source Switch."""
         graph = _make_graph(
             _make_node("ls1", "Switch 1", "liveSwitch", {"live": "a", "batch": "b"}),
             _make_node("ls2", "Switch 2", "liveSwitch", {"live": "c", "batch": "d"}),
         )
-        with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_singletons(graph)
-        assert exc_info.value.status_code == 400
-        assert "Source Switch" in exc_info.value.detail
+        SavePipelineService._validate_singletons(graph)
 
     def test_no_singletons_passes(self) -> None:
         """A graph with only transform nodes passes validation."""

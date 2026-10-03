@@ -309,8 +309,7 @@ candidate, with the error toast.
   closing only on success.
 - **Node CRUD.** Deleting an ordinary node removes it and every edge touching
   it as one atomic undo step. Duplicating offsets the copy's position and is a
-  no-op for singleton node types (Quote Input, Quote Response, and Source
-  Switch). Generic Duplicate is unavailable for reusable-submodel occurrences,
+  no-op for singleton node types (Quote Input and Quote Response). Generic Duplicate is unavailable for reusable-submodel occurrences,
   and the handler directs callers to Create Instance. The palette, duplicate,
   paste, instance, and context-menu paths consume the same singleton metadata,
   matching the backend save invariant; the instance guard lives in the shared
@@ -371,8 +370,7 @@ candidate, with the error toast.
   node menu at the release point instead of cancelling. It lists Edge Join
   first, then every palette type in palette order except the types that
   take no input (Quote Input, Data Input, Constant), Quote Response, and
-  Load File; an
-  occupied singleton type is listed but disabled, as in the palette.
+  Load File, so no singleton type is ever offered.
   Choosing a type creates that node at the release point with the dragged
   output as its input (an Edge Join's base input), selects it, and records
   node and edge as one undoable action. A connection the new node could

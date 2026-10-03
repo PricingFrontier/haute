@@ -37,7 +37,7 @@ Wherever the original reads from `policies`, the instance reads from `claims_dat
 
 ## Which node types support instances?
 
-Every node type can have instances except Quote Input, Quote Response and Source Switch, because a pipeline allows only one of each; for the same reason, neither can a submodel that contains one of them. Submodels have instances too; see [Submodel](submodel.md).
+Every node type can have instances except Quote Input and Quote Response, because a pipeline allows only one of each; for the same reason, neither can a submodel that contains one of them. Submodels have instances too; see [Submodel](submodel.md).
 
 ??? note "In the pipeline file"
     An instance has no JSON sidecar. The pipeline's `.py` file declares it with an instance decorator naming the original, and the instance's function takes the instance's own inputs:
