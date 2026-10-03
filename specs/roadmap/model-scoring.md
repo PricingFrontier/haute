@@ -45,7 +45,6 @@ file defaults to a family.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| MSC-02 | Planned | P2 | A model family is registered in one place, and an unrecognised file is refused by name. |
 | MSC-03 | Planned | P2 | Model Scoring scores a model file in the project, for every family Haute trains. |
 | MSC-04 | Planned | P2 | Load File no longer loads CatBoost models; Model Scoring is the one way to score a model. |
 | MSC-05 | Planned | P3 | Model Scoring scores an MLflow pyfunc model saved in the project. |
@@ -54,56 +53,9 @@ file defaults to a family.
 
 ## Planned improvements
 
-The order is `MSC-02`, `MSC-03`, then `MSC-04`; `MSC-05` and `MSC-06` each
-follow `MSC-03` on their own.
-
-### MSC-02 — A model family is registered in one place
-**Why:** What Haute knows about each family is spread over sites that must
-agree by hand: the flavor literal and native-wrapper suffixes, the extension
-chains in `load_local_model` and `_flavor_from_artifact`, run artifact
-discovery, the algorithm-to-flavor map used to verify a contract, predict-frame
-preparation, the scorer's offset dispatch, the explanation dispatch, the
-container's extension-to-package map, and the frontend's export extensions.
-The chains already disagree at the edges: `_flavor_from_artifact` maps any
-unrecognised extension to pyfunc, so an unsupported file fails as a confusing
-pyfunc load rather than by name, and discovery's not-found message still lists
-only `.cbm`, `.rsglm` and a pyfunc directory although it searches every native
-suffix. A file source (`MSC-03`) and each later family would add one more edit
-to every site.
-
-**Plan:** Define one adapter per family in a leaf module: its flavor name, file
-suffixes, which scoring semantics the particular artifact records and which
-need a feature contract, its loader, its predict-frame preparation, supported
-response transforms, how it reads its offset, its explanation method (or none),
-and the distributions its runtime needs. Contract requirements depend on the
-artifact's metadata, not just its family: a CatBoost suffix alone does not
-establish whether a training baseline must be supplied. A registry keyed by
-flavor and by suffix replaces the chains and maps above. An unrecognised
-suffix raises a `ConfigError` naming the supported ones, and only a directory holding an
-`MLmodel` file is pyfunc. A suffix several families share (`MSC-06`'s external
-XGBoost and LightGBM files) resolves only through a family the node names, and
-the family's loader confirms the file is its own. Discovery and its message
-read the registry. The frontend reads the suffix list from a generated JSON
-file that a parity test holds equal to the registry, as it does for the
-algorithm capabilities.
-
-**Acceptance:** A test registers a stub family, and it loads from a local file
-and from a run artifact, appears in the suffix list and maps to its
-distributions with no other edit. An unrecognised suffix fails naming the
-supported suffixes. The frontend parity test pins the generated list.
-
-**Dependencies:** None. It lands before `MSC-03`, so the file source reads the
-registry.
-
-**Evidence:** `src/haute/_model_flavors.py`;
-`src/haute/_mlflow_io.py::load_local_model`;
-`src/haute/_mlflow_io.py::_flavor_from_artifact`;
-`src/haute/_mlflow_io.py::_find_model_artifact`;
-`src/haute/_mlflow_io.py::verify_contract_identity`;
-`src/haute/_mlflow_io.py::_prepare_predict_frame`;
-`src/haute/_model_explainability.py::explain_model_score_from_config`;
-`src/haute/deploy/_container.py` (`_ARTIFACT_EXT_TO_DEPS`);
-`frontend/src/panels/modelling/modelExport.ts`.
+The order is `MSC-03`, then `MSC-04`; `MSC-05` and `MSC-06` each follow
+`MSC-03` on their own. Each family they add is one registration in the model
+family registry (`src/haute/_model_flavors.py`).
 
 ### MSC-03 — Model Scoring scores a model file in the project
 **Why:** **Save model to file** writes a native model and its feature contract
@@ -176,7 +128,8 @@ without its contract each fail with an error naming the file. The trace
 explains a file-sourced CatBoost, GLM and XGBoost prediction. A frontend test
 chooses a file and commits `sourceType` and `model_path`.
 
-**Dependencies:** `MSC-02`.
+**Dependencies:** None. It reads the model family registry for the
+supported suffixes and loaders.
 
 **Evidence:** `src/haute/_mlflow_io.py::load_local_model`;
 `src/haute/_mlflow_io.py::model_contract_candidates`;
@@ -312,8 +265,8 @@ LightGBM models therefore have no route in short of retraining in Haute or
 wrapping the model as pyfunc (`MSC-05`). Decided on 3 October 2026: Model
 Scoring supports these files.
 
-**Plan:** Register an external XGBoost and an external LightGBM family through
-`MSC-02`, each needing a feature contract. The libraries save to generic
+**Plan:** Register an external XGBoost and an external LightGBM family in the
+model family registry, each needing a feature contract. The libraries save to generic
 extensions (XGBoost to `.json` or `.ubj`, LightGBM usually to `.txt`), so the
 suffix alone does not decide the family: the node records the family the
 analyst chose, loading checks that the file really is that library's model,
@@ -405,7 +358,7 @@ are each refused by name. A frontend test drafts a contract, keeps missing-value
 semantics and objective provenance unresolved until supplied, and saves the
 completed declarations.
 
-**Dependencies:** `MSC-02`, `MSC-03`.
+**Dependencies:** `MSC-03`.
 
 **Evidence:** `src/haute/modelling/_xgboost.py::XGBoostModel`;
 `src/haute/modelling/_lightgbm.py::LightGBMModel`;
@@ -422,7 +375,7 @@ loads one. The package is deferred because `onnxruntime` is not a Haute
 dependency, no user has asked for it, and pyfunc (`MSC-05`) covers Python
 models first.
 
-**Plan:** If reopened, register an ONNX family through `MSC-02`: input names
+**Plan:** If reopened, register an ONNX family in the model family registry: input names
 from the graph, a required feature contract for categorical domains, task and
 offset, `onnxruntime` as an optional extra, and probability outputs mapped to
 the binary positive-class rule.
@@ -432,7 +385,7 @@ framework score with predictions equal to the source model within float
 tolerance. Without the extra installed, choosing an ONNX file fails naming the
 extra.
 
-**Dependencies:** `MSC-02`, `MSC-03`, and demand for ONNX.
+**Dependencies:** `MSC-03`, and demand for ONNX.
 
 **Evidence:** `src/haute/deploy/_container.py` (`_ARTIFACT_EXT_TO_DEPS`);
 `frontend/src/panels/editors/ExternalFileEditor.tsx`.

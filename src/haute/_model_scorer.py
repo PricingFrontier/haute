@@ -26,9 +26,7 @@ from haute._file_ops import ensure_disk_headroom
 from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
-from haute._model_flavors import _SUPPORTED_FLAVORS as _SUPPORTED_MODEL_FLAVORS
-from haute._model_flavors import NATIVE_WRAPPER_FLAVORS
-from haute._model_flavors import ModelFlavor as _ModelFlavor
+from haute._model_flavors import is_registered_flavor, model_families, model_family
 from haute._model_source import ModelSource, require_model_source
 from haute._polars_utils import bounded_collect_batches
 from haute._types import _Frame
@@ -572,41 +570,24 @@ def _declared_offset_column(scoring_model: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _model_offset_column(model: Any, flavor: _ModelFlavor) -> str | None:
+def _model_offset_column(model: Any, flavor: str) -> str | None:
     """Return the offset column a raw model was trained with, if any.
 
-    Both native flavors are self-describing: CatBoost via the
+    The family's registered reader answers: CatBoost via the
     ``haute_offset_column`` model-metadata key stamped at fit time,
-    RustyStats via its serialised exposure (log link) or offset spec.  Pyfunc
-    models expose no offset surface (their signature declares the column as an
-    input, and the wrapped model owns applying it).
+    RustyStats via its serialised exposure (log link) or offset spec, the
+    Haute wrappers via their stored declaration.  Pyfunc registers no reader
+    (its signature declares the column as an input, and the wrapped model
+    owns applying it).
     """
-    if flavor == "catboost":
-        from haute._mlflow_io import _catboost_offset_column
-
-        return _catboost_offset_column(model)
-    if flavor == "rustystats":
-        from haute._mlflow_io import rustystats_offset_column
-
-        return rustystats_offset_column(model)
-    if flavor in NATIVE_WRAPPER_FLAVORS:
-        return model.offset_column  # type: ignore[no-any-return]
-    return None
+    reader = model_family(flavor).offset_column
+    return None if reader is None else reader(model)
 
 
-def _model_offset_link(model: Any, flavor: _ModelFlavor) -> str | None:
+def _model_offset_link(model: Any, flavor: str) -> str | None:
     """How a native model applies its offset: ``log`` multiplies, ``identity`` adds."""
-    if flavor == "catboost":
-        from haute._mlflow_io import _catboost_offset_link
-
-        return _catboost_offset_link(model)
-    if flavor == "rustystats":
-        from haute._mlflow_io import rustystats_offset_link
-
-        return rustystats_offset_link(model)
-    if flavor in NATIVE_WRAPPER_FLAVORS:
-        return model.offset_link  # type: ignore[no-any-return]
-    return None
+    reader = model_family(flavor).offset_link
+    return None if reader is None else reader(model)
 
 
 def _require_positive_log_link_offset(
@@ -680,30 +661,26 @@ def _catboost_baseline_pool(
     )
 
 
-# Flavors whose model consumes a named frame and owns applying the offset
-# itself, so the offset column must ride along in the predict frame.  RustyStats
-# extracts its offset column by name; a pyfunc model receives it as a declared
-# signature input and the wrapped model applies it (there is no baseline haute
-# can re-inject into an opaque pyfunc).  CatBoost is the exception — its offset
-# is a numeric ``Pool`` baseline, never a design-matrix column.
-_OFFSET_PASSTHROUGH_FLAVORS: frozenset[_ModelFlavor] = frozenset(
-    {"rustystats", "pyfunc", *NATIVE_WRAPPER_FLAVORS}
-)
-
-
 def _offset_predict_features(
     features: list[str],
-    flavor: _ModelFlavor,
+    flavor: str,
     offset_column: str | None,
 ) -> list[str]:
     """Feature selection handed to ``_prepare_predict_frame``.
 
-    For passthrough flavors (rustystats, pyfunc) the offset column rides
-    along with the features so the model can apply it; CatBoost keeps the
-    pure feature list and receives the offset separately as a ``Pool``
+    A family whose offset input is ``column`` consumes a named frame and owns
+    applying the offset, so the offset column rides along with the features:
+    RustyStats and the wrappers extract it by name, and a pyfunc model
+    receives it as a declared signature input (there is no baseline Haute can
+    re-inject into an opaque pyfunc). A ``baseline`` family (CatBoost) keeps
+    the pure feature list and receives the offset separately as a ``Pool``
     baseline.
     """
-    if offset_column and flavor in _OFFSET_PASSTHROUGH_FLAVORS and offset_column not in features:
+    if (
+        offset_column
+        and model_family(flavor).offset_input == "column"
+        and offset_column not in features
+    ):
         return [*features, offset_column]
     return list(features)
 
@@ -835,7 +812,7 @@ def _score_eager_unified(
     lf: pl.LazyFrame,
     features: list[str],
     cat_feature_names: frozenset[str],
-    flavor: _ModelFlavor,
+    flavor: str,
     task: str,
     output_col: str,
     write_projection: ScoreWriteProjection | None = None,
@@ -912,7 +889,7 @@ def _score_collected_frame(
     frame: pl.DataFrame,
     features: list[str],
     cat_feature_names: frozenset[str],
-    flavor: _ModelFlavor,
+    flavor: str,
     task: str,
     output_col: str,
     *,
@@ -982,7 +959,7 @@ def _score_row_local_scan(
     from haute._polars_utils import row_local_python_scan
 
     model = scoring_model.raw_model
-    flavor = cast(_ModelFlavor, scoring_model.flavor)
+    flavor = scoring_model.flavor
     offset_column = (
         offset_column if offset_column is not None else _model_offset_column(model, flavor)
     )
@@ -1124,7 +1101,7 @@ def _score_batched_unified(
     lf: pl.LazyFrame,
     features: list[str],
     cat_feature_names: frozenset[str],
-    flavor: _ModelFlavor,
+    flavor: str,
     task: str,
     output_col: str,
     write_projection: ScoreWriteProjection | None = None,
@@ -1270,17 +1247,13 @@ def score_frame(
     ConfigError
         If *flavor* is not one of the supported dispatch targets.
     """
-    if flavor not in _SUPPORTED_MODEL_FLAVORS:
+    if not is_registered_flavor(flavor):
+        registered = sorted(family.flavor for family in model_families())
         raise ConfigError(
-            f"Unsupported scoring flavor: {flavor!r}. "
-            f"Expected one of: {sorted(_SUPPORTED_MODEL_FLAVORS)}.",
+            f"Unsupported scoring flavor: {flavor!r}. Expected one of: {registered}.",
             flavor=flavor,
-            supported=sorted(_SUPPORTED_MODEL_FLAVORS),
+            supported=registered,
         )
-    # Validated above: narrow the untrusted ``str`` boundary to the concrete
-    # ``ModelFlavor`` domain so the internal dispatch helpers are statically
-    # guaranteed a supported flavor (no unsound guess — the guard just raised).
-    flavor = cast(_ModelFlavor, flavor)
 
     if required_output_columns is not None:
         if write_projection is not None:
@@ -1850,7 +1823,7 @@ def _sink_to_temp(
 def _declared_score_dtypes(
     *,
     scoring_model: Any,
-    flavor: _ModelFlavor,
+    flavor: str,
     task: str,
     include_proba: bool,
 ) -> (
@@ -1869,7 +1842,7 @@ def _declared_score_dtypes(
     proba_dtype = pl.Float64 if include_proba else None
     if task != "classification":
         return pl.Float64, proba_dtype
-    if flavor in NATIVE_WRAPPER_FLAVORS:
+    if model_family(flavor).self_describing:
         raw = getattr(scoring_model, "raw_model", scoring_model)
         if raw.class_labels is None:
             raise ValueError(f"{flavor} classification model has no recorded class labels")
@@ -1906,7 +1879,7 @@ def _resolve_score_dtypes(
     """
     from haute._mlflow_io import _positive_class_proba_vector, _prepare_predict_frame
 
-    flavor = cast(_ModelFlavor, scoring_model.flavor)
+    flavor = scoring_model.flavor
     declared = _declared_score_dtypes(
         scoring_model=scoring_model,
         flavor=flavor,

@@ -1102,7 +1102,7 @@ packaged with its feature contract and logged through the shared pyfunc
 after the package has loaded once, so `mlflow.pyfunc.load_model` and a Model Score node
 predict the same values. Any other suffix raises. **Every** flavor also logs the native file at the run root:
 mlflow 3.x stores logged models as LoggedModel entities outside the run's artifact listing, so
-Haute's run-artifact discovery (`_find_cbm_artifact` / `_find_rsglm_artifact`) would otherwise
+Haute's run-artifact discovery (`_find_model_artifact`, which probes the registered suffixes) would otherwise
 never see a freshly logged model. Model-card generation failure does not fail the log: it logs
 `model_card_generation_failed` with the error type and sets the tag `haute.model_card=unavailable`.
 Scripted runs log only when the script passes `mlflow_experiment` to `TrainingJob` (a visible
@@ -2048,11 +2048,11 @@ used for staged input.
   (with the offset column) to the wrapper; `explain_native_prediction` checks that bias plus
   contributions equals the margin (within `FLOAT32_CONTRIBUTION_TOLERANCE` for XGBoost's float32
   sums, `prediction_tolerance` otherwise) and that the inverse link reproduces the response.
-  `NATIVE_WRAPPER_SUFFIXES` / `NATIVE_WRAPPER_FLAVORS` in `src/haute/_model_flavors.py` map
-  `.ubj` → `xgboost` and `.lgbm` → `lightgbm`; artifact discovery, local loading
-  (`_load_wrapper_model`), offset passthrough, class-label dtypes and the identity objective
-  check (the descriptor's native objective against the wrapper's `objective()`) all dispatch on
-  that set.
+  The model family registry in `src/haute/_model_flavors.py` registers `.ubj` → `xgboost` and
+  `.lgbm` → `lightgbm` as self-describing families; artifact discovery, local loading,
+  offset passthrough, class-label dtypes and the identity objective check (the descriptor's
+  native objective against the wrapper's `objective()`) all read those registrations. Each
+  descriptor's `suffix` is the suffix its family loads (`tests/test_model_families.py` pins it).
 - The `xgboost` descriptor's allowlist is `num_boost_round`, `early_stopping_rounds`, `eta`,
   `max_depth`, `max_leaves`, `grow_policy`, `min_child_weight`, `gamma`, `max_delta_step`,
   `subsample`, `colsample_bytree`, `colsample_bylevel`, `colsample_bynode`, `lambda`, `alpha`,

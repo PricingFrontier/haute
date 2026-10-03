@@ -271,8 +271,9 @@ directory, then copy the bundled `utility` package to `utility/` (or the module 
 `utility.py`) without `__pycache__` directories, generate `app.py` from an f-string template, generate `Dockerfile` (base
 image; one `pip install` of the scoring runtime `_SCORING_RUNTIME_DEPENDENCIES`, of `mlflow`
 when the pruned graph has an `optimiserApply` node sourced from an MLflow run or registered
-model, and of the model-runtime packages `_ARTIFACT_EXT_TO_DEPS` maps from artefact file
-suffixes; then a second `pip install --no-deps` of `haute` itself; every package pinned
+model, and of the model-runtime packages each artefact needs — a Model Scoring artefact's
+registered model family's `distributions` (`family_for_suffix`), a Load File artefact's entry
+in `_LOAD_FILE_EXT_TO_DEPS`; then a second `pip install --no-deps` of `haute` itself; every package pinned
 through `importlib.metadata` to the version installed in the deploying environment — the
 container unpickles the model, so a runtime resolved fresh at image-build time could load it
 under a different version than wrote it; a runtime the artefacts need that is not installed

@@ -7,6 +7,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
 from haute._logging import get_logger
+from haute._model_flavors import family_for_artifact
 from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
 from haute.errors import DeployError
 from haute.graph_utils import NodeType, PipelineGraph
@@ -174,9 +175,9 @@ def collect_artifacts(
             # staged into the MLflow download cache (or placed manually);
             # training itself writes per-model ``{name}.feature_contract.json``
             # files since W4b.9 and never populates this directory.
-            if explicit_contract is None and Path(artifact_path).suffix == ".ebm":
-                # An EBM loads only under its contract, which the run logged
-                # beside the model; bundle it so the deployed scorer has it.
+            if explicit_contract is None and family_for_artifact(artifact_path).requires_contract:
+                # A family that loads only under its contract (EBM) finds it
+                # beside the model in the run; bundle it so the deployed scorer has it.
                 import mlflow
 
                 from haute._mlflow_io import _resolve_run_contract

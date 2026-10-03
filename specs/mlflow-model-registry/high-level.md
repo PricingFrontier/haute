@@ -42,12 +42,16 @@ In scope:
   registered model version (including `"latest"`) — to a concrete run ID
   and artifact path via the tracking/registry API.
 - Auto-discovering the model artifact within a run when no artifact path
-  is given (CatBoost `.cbm`, then RustyStats `.rsglm`, then a pyfunc
-  model directory).
+  is given (each registered family's suffixes in registration order —
+  CatBoost `.cbm`, RustyStats `.rsglm`, XGBoost `.ubj`, LightGBM `.lgbm`,
+  EBM `.ebm` — then a pyfunc model directory).
 - Downloading and disk-caching native-flavor artifacts, and
   thread-safe in-memory LRU caching of already-loaded models.
-- Flavor detection and flavor-specific loading; the `ModelFlavor` domain
-  is the single source of truth every dispatch site reads from.
+- Family detection and family-specific loading through the model family
+  registry (`_model_flavors.py`), the one place a scoring family is
+  described and the single source every dispatch site reads from. An
+  artifact whose suffix no family registers is refused by name, never
+  defaulted to a family.
 - A uniform `ScoringModel` carrier (`predict`, `predict_proba`,
   `raw_model`) so downstream code never branches on flavor except inside
   this component's own dispatch helpers.
@@ -262,12 +266,14 @@ Out of scope (owned elsewhere):
   offset presence are all checked before any `predict()` call, and a
   multiclass `predict_proba` output is rejected rather than arbitrarily
   picking one class's column.
-- **The flavor domain lives in its own leaf module.** `_model_flavors.py`
-  has no dependency on the rest of `haute`, specifically so that
-  `_model_scorer.py` and `_mlflow_io.py` — which already have a
-  load-order dependency on each other — can both import the *same*
-  `ModelFlavor` object instead of each hand-maintaining a parallel
-  spelling of `"catboost"` / `"pyfunc"` / `"rustystats"` that could drift.
+- **The model family registry lives in its own leaf module.**
+  `_model_flavors.py` has no dependency on the rest of `haute` (loaders and
+  offset readers are bound lazily by module path), specifically so that
+  `_model_scorer.py`, `_mlflow_io.py`, the explanation, deploy and the MLflow
+  routes — some of which already have a load-order dependency on each other —
+  all read the *same* family adapters instead of each hand-maintaining a
+  parallel chain of flavors and suffixes that could drift. A further family
+  is a single `register_model_family` call.
 - **Array contiguity is benchmark-gated.** Model preparation does not add a
   contiguity conversion unless dedicated performance evidence clears the
   agreed threshold and regression tests prove identical feature order,
@@ -330,16 +336,17 @@ Out of scope (owned elsewhere):
 - Missing required source arguments (`run_id` for `"run"`,
   `registered_model` for `"registered"`), an invalid `source_type`, or no
   versions found for a registered model: `ValueError`.
-- No matching model artifact found in a run after checking `.cbm`,
-  `.rsglm`, and a pyfunc model directory (top level and one level of
-  subdirectories): an internal `_ArtifactNotFoundError`
+- No matching model artifact found in a run after checking every
+  registered suffix and a pyfunc model directory (top level and one level of
+  subdirectories): an internal `_ArtifactNotFoundError` whose message names
+  them
   (a `FileNotFoundError` subclass). A *different* `FileNotFoundError` or
   an MLflow `MlflowException` raised by the tracking client itself (e.g.
   a credential or network failure) is never caught here — it propagates
   as the real infrastructure error instead of being reported as "no
   model artifact found."
-- Loading a local file with an unsupported extension via
-  `load_local_model`: `NotImplementedError`.
+- A model file or run artifact whose suffix no family registers:
+  `ConfigError` naming the supported suffixes, raised before any download.
 - A CatBoost model whose metadata cannot be read: `ConfigError` naming the
   model file or run artifact. Only an absent offset key means the model was
   trained without an offset. An unreadable one is never taken to mean that,

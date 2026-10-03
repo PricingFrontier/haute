@@ -35,6 +35,7 @@ from haute._mlflow_utils import (
     registry_uri_for_tracking,
     search_versions,
 )
+from haute._model_flavors import model_file_suffixes
 from haute._sandbox import _get_project_root
 from haute.errors import MlflowConfigError
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
@@ -117,9 +118,7 @@ def _run_summaries(
     measurement: _RunDiscoveryMeasurement,
 ) -> list[MlflowRunSummary]:
     """Build filtered summaries while updating only aggregate work counters."""
-    from haute.modelling._model_export import MODEL_FILE_SUFFIXES
-
-    model_extensions = tuple(sorted(set(MODEL_FILE_SUFFIXES.values())))
+    model_extensions = model_file_suffixes()
 
     def _match(path: str) -> bool:
         if artifact_filter == "optimiser":
@@ -541,7 +540,7 @@ def list_runs(
         "model",
         description=(
             "Filter runs by artifact type: "
-            "'model' for any native model artifact (.cbm, .rsglm, .ubj, .lgbm, .ebm), "
+            f"'model' for any native model artifact ({', '.join(model_file_suffixes())}), "
             "'optimiser' for optimiser results (optimiser_result.json)"
         ),
     ),

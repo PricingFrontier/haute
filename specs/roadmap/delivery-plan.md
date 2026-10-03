@@ -16,7 +16,7 @@ merges, remove its rounds from the table.
   the phase. A phase starts only after the phases holding its rounds' *Needs*
   have merged. While a phase's CI runs, another phase may start on its own
   branch from `origin/main` if it needs nothing unmerged (phases C and D are
-  independent of each other, and phase G of every earlier phase); never build
+  independent of each other, and phase H of every earlier phase); never build
   on an unmerged branch.
 - **Per package.** Follow the [working protocol](README.md#working-protocol):
   reverify against `HEAD` and retire the package if its outcome already
@@ -53,8 +53,7 @@ merges, remove its rounds from the table.
 | F | 16 | Containment | `SBX-R01` | 9 | M | The remaining path comparisons, after the project context has deleted the resolvers that held many of them. |
 | F | 17 | Dead code | `ENGQ-R01` | 16 | M | After the refactors have deleted what they replace; adds knip to the frontend lint. |
 | F | 18 | Test organisation | `ENGQ-R05` | 17 | L | Last, so the suite is reorganised once, under the risk-based coverage rule. Several PRs, by component. |
-| G | 19 | Model family registry | `MSC-02` | — | M | Behaviour-preserving groundwork that touches no earlier round, so it can start at once. It builds on the parsed Model Scoring source (`src/haute/_model_source.py`), which is shaped as the Model Scoring slice of `PCFG-R07` and absorbed by it in round 13. |
-| H | 20 | Model files in Model Scoring | `MSC-03`, `MSC-04` | 19 | L | The file source reads the one source and the registry; CatBoost leaves Load File once Model Scoring scores files. If round 9 has not merged, the model path resolves through the current pipeline-directory resolver and `PCFG-R04` migrates it with the others. |
+| H | 20 | Model files in Model Scoring | `MSC-03`, `MSC-04` | — | L | The file source reads the parsed Model Scoring source (`src/haute/_model_source.py`, shaped as the Model Scoring slice of `PCFG-R07` and absorbed by it in round 13) and the model family registry (`src/haute/_model_flavors.py`); CatBoost leaves Load File once Model Scoring scores files. If round 9 has not merged, the model path resolves through the current pipeline-directory resolver and `PCFG-R04` migrates it with the others. |
 | I | 21 | Models trained outside Haute | `MSC-06`, then `MSC-05` | 20 | L | External XGBoost and LightGBM files first, as decided; pyfunc files after, on the same file source. |
 
 Sizes are rough: M is a day or so, L several days or more than one PR.
