@@ -261,7 +261,7 @@ it to its contract:
   `resolve_run_artifact` resolves a registered version, alias or `latest` (and
   an absent artifact path) once, the model is reloaded from that run when the
   source was not already one run and artifact, and
-  `run_logged_contract_path(run_id, artifact_path, destination)` reads the
+  `run_logged_contract_path(run_id, artifact_path, backend)` reads the
   contract beside it through the disk cache (`_resolve_run_contract`, raising
   a `ConfigError` naming the run when there is none). The destination resolves
   to one `ResolvedBackend` at the start, and the model load
