@@ -88,7 +88,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // and constant completion in the step editor (SteppedCodePane +1.1 KiB) and
 // the eager core counted below. The complete production bundle is
 // 1,586.9 KiB; 1,588 KiB restores about 1 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1588
+// Model Scoring's Model file source adds its lazy editor option and file
+// inspection panel and the generated ModelFileInspectionResponse validator.
+// The complete production bundle is 1,588.4 KiB; 1,590 KiB restores about
+// 1.6 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1590
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
