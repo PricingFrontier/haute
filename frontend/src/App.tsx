@@ -1374,6 +1374,7 @@ function FlowEditor() {
   const canCreateInstance = !editingReadOnly
     && selectedNodes.length === 1
     && !isSingletonType(nodeData(selectedNodes[0]).nodeType)
+    && nodeData(selectedNodes[0]).nodeType !== NODE_TYPES.LIVE_SWITCH
     && !selectedSubmodelHasSingleton
   // The `can*` flags above drive presentation only. The request paths below
   // enforce policy AND say why they refused, exactly as Ctrl+G does — a

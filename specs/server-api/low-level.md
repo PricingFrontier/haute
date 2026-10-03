@@ -426,7 +426,8 @@ concurrent plain saves, but does not coordinate another worker process):
    graph), that no Quote Input table is labelled like another node's sanitized name, and
    that no node carries a `_load_error` marker. A submodel boundary cannot hide a
    second singleton, and creating another occurrence of a definition that contains one counts
-   as another executable singleton.
+   as another executable singleton. A node whose `instanceOf` names a `liveSwitch` is refused
+   (a switch routes by its own input names, which an instance's inputs do not share).
 2. Resolve and validate `source_file` against the active pipeline root.
    Then require `base_revision` to equal the on-disk document's `source_revision`
    (`null` only when the target file does not exist); a mismatch raises

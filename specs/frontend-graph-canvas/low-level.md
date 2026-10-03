@@ -1182,7 +1182,7 @@ array-only payload or omitted-edge compatibility branch is supported.
   Singleton occupancy is document-wide, not limited to the graph currently
   visible on the canvas: root nodes and every embedded submodel definition are
   considered together. The palette disables an occupied `SINGLETON_TYPES`
-  entry (`apiInput`, `output`, or `liveSwitch`), while the drop handler repeats
+  entry (`apiInput` or `output`), while the drop handler repeats
   the check at commit time so stale or synthetic drag data cannot bypass it.
   Duplicating a singleton remains a silent no-op and paste filters occupied
   singleton types against the same document-wide set. Generic duplication of
@@ -1190,7 +1190,10 @@ array-only payload or omitted-edge compatibility branch is supported.
   handler with direction to use Create Instance; a definition that contains a
   singleton cannot be instantiated because that would create a second
   executable occurrence. These creation paths consume the same singleton
-  metadata and mirror the backend save invariant.
+  metadata and mirror the backend save invariant. Create Instance also refuses
+  a `liveSwitch` (toolbar Instance unavailable, toast directing to another
+  Source Switch), since a switch routes by its own input names; save refuses
+  the same instance.
 - **`onDrop`'s config JSON never falls back to `{}` on a parse failure** — a
   malformed or non-object payload aborts node creation entirely (toast,
   return) rather than creating a node with an empty config that would then
@@ -1503,7 +1506,7 @@ again through the editor and save paths.
     reusable occurrence creation with retained definition id, collision-free
     immutable id, normalized deterministic alias suffix (including past-nine
     numbering), empty bindings, and one undo snapshot; the singleton-type
-    instance refusal for each of the two singleton types; instancing an
+    instance refusal for each of the two singleton types and for a Source Switch; instancing an
     instance resolving to a validated original rather than chaining, including
     explicit refusal of malformed ordinary-instance identity; duplicate and
     auto-layout behavior.
