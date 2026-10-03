@@ -595,7 +595,11 @@ Using a folder-backed node type without a `config=` sidecar raises, naming the c
 config folder and suggesting `haute init`. A JSON sidecar with a repeated key is rejected at
 read time rather than silently keeping the last value. Two node functions sharing a name are
 rejected, both at live decorator-registration time and again at static parse time (the
-function name becomes the graph node id, so a silent collision would drop a node). An
+function name becomes the graph node id, so a silent collision would drop a node). A
+Constant node whose `values` hold two entries with one non-empty name is refused with a
+node-config error naming the name, wherever its frame is built (`constant_frame`, which
+canvas execution and a standalone run share), rather than keeping the second value; an
+entry without a name is skipped, as before. An
 `async def` node body is rejected at parse time. A user-declared `contract=` that disagrees
 with the contract derived from the rest of the node's config raises, naming which side
 (inputs/outputs) mismatched and what was missing or extra on each. Ambiguous or absent

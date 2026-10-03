@@ -1,9 +1,16 @@
 import { Plus, Trash2 } from "lucide-react"
 import type { OnUpdateConfig } from "./_shared"
 import { configField } from "../../utils/configField"
-import { CommittedTextField } from "../../components/form"
+import { CommittedTextField, ValidatedTextField } from "../../components/form"
+import { duplicateConstantNames, nextConstantName } from "./constantNames"
 
 type ConstantValue = { name: string; value: string }
+
+const FIELD_STYLE = {
+  background: "var(--bg-input)",
+  color: "var(--text-primary)",
+  border: "1px solid var(--border)",
+}
 
 export default function ConstantEditor({
   config,
@@ -20,7 +27,14 @@ export default function ConstantEditor({
   }
 
   const addRow = () => {
-    onUpdate("values", [...values, { name: `constant_${values.length + 1}`, value: "0" }])
+    onUpdate("values", [...values, { name: nextConstantName(values.map((v) => v.name)), value: "0" }])
+  }
+
+  // Execution refuses two values of one name, so a row whose name another row
+  // uses is marked, and typing such a name is refused.
+  const nameError = (index: number, candidate: string): string | null => {
+    const names = values.map((v, i) => (i === index ? candidate : v.name))
+    return duplicateConstantNames(names).has(candidate) ? `Another value is named ${candidate}` : null
   }
 
   const removeRow = (index: number) => {
@@ -38,18 +52,16 @@ export default function ConstantEditor({
 
       <div className="space-y-1.5">
         {values.map((v, i) => (
-          <div key={i} className="flex items-center gap-1.5">
-            <CommittedTextField
-              type="text"
+          <div key={i} className="flex items-start gap-1.5">
+            <ValidatedTextField
               value={v.name}
+              validate={(candidate) => nameError(i, candidate)}
               onCommit={(val) => updateRow(i, "name", val)}
               placeholder="name"
-              className="flex-1 min-w-0 px-2 py-1.5 text-xs font-mono rounded-lg"
-              style={{
-                background: "var(--bg-input)",
-                color: "var(--text-primary)",
-                border: "1px solid var(--border)",
-              }}
+              dataTestId={`constant-name-${i}`}
+              containerClassName="flex-1 min-w-0"
+              className="w-full px-2 py-1.5 text-xs font-mono rounded-lg"
+              style={FIELD_STYLE}
             />
             <CommittedTextField
               type="text"
@@ -57,11 +69,7 @@ export default function ConstantEditor({
               onCommit={(val) => updateRow(i, "value", val)}
               placeholder="value"
               className="w-24 px-2 py-1.5 text-xs font-mono rounded-lg text-right"
-              style={{
-                background: "var(--bg-input)",
-                color: "var(--text-primary)",
-                border: "1px solid var(--border)",
-              }}
+              style={FIELD_STYLE}
             />
             <button
               onClick={() => removeRow(i)}

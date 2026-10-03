@@ -90,6 +90,12 @@ Out of scope (owned by neighbouring components):
   rule list is authored, at least one rule must have a usable key/condition and
   assignment; an all-unusable rule set is rejected rather than silently
   omitting the configured output column.
+- Active factors write distinct output columns. Two active factors naming one
+  `outputColumn` are refused, naming the column and both factors (by position
+  and input column), when the config is validated and again when the node
+  runs, in the executor and a standalone run alike, rather than the later band
+  silently replacing the earlier. A draft factor sharing an active factor's
+  output column does not count, since it writes nothing.
 
 **Rating** (`apply_rating_step_from_config` / `_apply_rating_step_outputs`):
 
@@ -259,7 +265,8 @@ Out of scope (owned by neighbouring components):
   that names no exact duration of the column's time unit, more than one open-ended breakpoint, an
   open-ended breakpoint with no bounded anchor, a duplicate breakpoint
   boundary, an unsupported combine operation, a non-finite/missing
-  `combinedOutputs[].baseValue`, or a duplicate table/combined output column):
+  `combinedOutputs[].baseValue`, a duplicate table/combined output column, or
+  two active banding factors with one output column):
   raise `ValueError` eagerly, before the frame is touched.
 - **All-null `min`/`max` participants:** raises
   `RatingExtremaUndefinedError(ExecutionError)` at materialisation, naming the

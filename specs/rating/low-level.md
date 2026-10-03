@@ -31,6 +31,13 @@
   factor with an empty `column`, `outputColumn`, or `rules` is skipped, and the
   contract neither reads its column nor declares its output, so the two cannot
   disagree about a factor that is still being written.
+  Active factors have distinct `outputColumn` values, compared exactly as
+  execution aliases them: `require_distinct_banding_outputs`
+  (`_banding_config.py`) refuses the first repeated one with a
+  `ConfigSettingError` (setting `factors`) naming the column and both factors
+  by 1-based position and input column. `validate_banding_config` (save, the
+  assistant, recovery inspection) and `apply_banding_factors` (executor and
+  standalone) both call it; draft factors are left out.
 - **Rating table** (`dict`): `{"factors": list[str] (1-3 cols), "factorDtypes"?: dict[str, dtype-descriptor], "outputColumn": str, "entries": list[dict], "defaultValue"?: str|number, "onMissing"?: "error"|"neutral"}`. `entries` is an ordered row array with one JSON scalar per factor plus numeric `"value"`. Invariant: `len(factors) <= _MAX_RATING_FACTORS` (3), enforced in `_rating_step_config._validate_factors`.
 - **Combined output** (`dict`): `{"outputColumn": str, "operation": "multiply"|"add"|"min"|"max", "baseValue": float}`.
 - **`RatingTableMissError(HauteValidationError)`** (a `ValueError` subclass) — raised at frame materialisation, not at config-build time, by `_apply_rating_miss_guard`'s row-local Python scan transform.
@@ -267,6 +274,7 @@ and a null claim is exactly a defaulted row:
 | `ratingStep.factors` not a list, too many factors (>3), a factor not a non-empty string, or a duplicate factor | `ValueError` | `_rating_step_config._validate_factors` | Eagerly, at config expand/compact |
 | Rating entry row missing a required factor, has a non-JSON factor scalar, or lacks literal `value` | `ValueError` | `_rating_step_config` normalisation helpers | Eagerly, at config validation |
 | Banding `factors` (or a compact rule map) not structurally valid; duplicate categorical/breakpoint rule key; empty categorical rule key | `ValueError` | `_banding_config.py` various | Eagerly, at config expand/compact |
+| Two active banding factors with one `outputColumn` | `ConfigSettingError` (`ValueError`), setting `factors`, naming the column and both factors | `require_distinct_banding_outputs`, from `validate_banding_config` and `apply_banding_factors` | Eagerly, at config validation and before the frame is touched |
 | Lower rating-table `factors`/`entries` is not a list, or populated entries have no factors | `ValueError` | `_apply_rating_table` | Eagerly, before inspecting the frame |
 | Non-empty banding rule list has no usable mapping/condition and assignment | `ValueError` | `_apply_banding` | Eagerly, before publishing an output expression |
 | Every participating `min`/`max` value is null for any row | `RatingExtremaUndefinedError` (`ExecutionError`) with output/operation fields | `_rating_extrema_expr`, at materialisation | Public adapters map to HTTP 422 or background `contract_error`; the batch publishes no partial output |
@@ -288,7 +296,7 @@ Backend tests live under `tests/` (no dedicated subdirectory for this component)
   multiplicative combine over a base value, with the trace's rating detail naming the matched
   entries and agreeing with the preview premium row by row.
 - **`tests/test_rating.py`** (largest suite) — direct unit coverage of `_rating.py`: banding condition building, `_apply_rating_table` (incl. non-numeric defaults, duplicate entries, extra entry columns, schema-call-count/perf regression, large tables, all-null tables, an entry without `value` counted past the first hundred entries, boundary/negative/extreme float values, special-character factor names), `_combine_rating_columns` (incl. non-numeric columns, edge cases, multiply-with-zero, min/max mixed values), `_apply_banding` edge cases, sequential rating tables, dtype-preservation regressions (B1/B2), empty-string/int-typed factor values, null factor columns, and canonical row-array rating-step application end to end.
-- **`tests/test_banding.py`** — breakpoints/categorical `_apply_banding`, date and date-and-time breakpoints on Date and time-zoned Datetime columns (calendar-day inclusion, wall-clock time, both closures), unreadable and mixed boundaries, and every mismatched kind/column pairing, the rejection of any other or missing type (including the removed `continuous`), `_build_node_fn` integration, banding decorator parsing and codegen, standalone-execution parity with the executor path, multi-factor banding, hardening/adversarial inputs, and the full `breakpoints` mode (ordering, closures, open-ended boundary).
+- **`tests/test_banding.py`** — breakpoints/categorical `_apply_banding`, date and date-and-time breakpoints on Date and time-zoned Datetime columns (calendar-day inclusion, wall-clock time, both closures), unreadable and mixed boundaries, and every mismatched kind/column pairing, the rejection of any other or missing type (including the removed `continuous`), `_build_node_fn` integration, banding decorator parsing and codegen, standalone-execution parity with the executor path, multi-factor banding, two active factors with one output column refused at validation, in the executor and in a standalone run (a draft sharing it accepted), hardening/adversarial inputs, and the full `breakpoints` mode (ordering, closures, open-ended boundary).
 - **`tests/test_banding_stats.py`** — `POST /api/banding/stats` through a cached point: the bin
   edges with the last closed, a constant column, values no bin can hold, a column with no finite
   value, the text each dtype casts to, categorical ordering, cap, `distinct_count` and

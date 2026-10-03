@@ -22,7 +22,10 @@ from haute._mlflow_io import ScoringModel
 from haute._sandbox import _get_project_root, set_project_root
 from haute._standalone_nodes import has_empty_body, run_configured_node
 from haute._types import NodeType
-from haute.errors import ConfigError, ExecutionError
+from haute._validation_error import ConfigSettingError
+from haute.errors import ConfigError, ExecutionError, NodeConfigError
+from haute.executor import _build_node_fn
+from haute.graph_utils import GraphNode, NodeData
 from tests.conftest import write_node_config
 
 
@@ -120,6 +123,62 @@ def test_a_constant_declaration_reads_its_sidecar_on_every_run(tmp_path: Path) -
     _constant(tmp_path, "rates", base="120")
 
     assert _collect(namespace["pipeline"].run()).to_dicts() == [{"base": 120.0}]
+
+
+def test_a_constant_with_two_entries_of_one_name_is_refused_as_the_executor_refuses_it(
+    tmp_path: Path,
+) -> None:
+    """Two ``rate`` entries would otherwise yield one column holding the second value."""
+    values = [{"name": "rate", "value": "1"}, {"name": "rate", "value": "2"}]
+    config = write_node_config(tmp_path, NodeType.CONSTANT, "rates", {"values": values})
+    namespace = _run_file(
+        tmp_path,
+        "import haute\n\n"
+        'pipeline = haute.Pipeline("p")\n\n\n'
+        f'@pipeline.constant(config="{config}")\n'
+        "def rates(): ...\n",
+    )
+    node = GraphNode(
+        id="rates",
+        data=NodeData(label="rates", nodeType=NodeType.CONSTANT, config={"values": values}),
+    )
+    _, executor_fn, _ = _build_node_fn(node)
+    message = "Constant name 'rate' is used by more than one value"
+
+    with pytest.raises(NodeConfigError, match=message):
+        namespace["pipeline"].run()
+    with pytest.raises(NodeConfigError, match=message):
+        executor_fn()
+
+
+def test_a_banding_declaration_refuses_two_active_factors_writing_one_column(
+    tmp_path: Path,
+) -> None:
+    factors = [
+        {
+            "banding": "categorical",
+            "column": column,
+            "outputColumn": "band",
+            "rules": [{"value": "a", "assignment": "A"}],
+        }
+        for column in ("x", "y")
+    ]
+    config = write_node_config(tmp_path, NodeType.BANDING, "band", {"factors": factors})
+    namespace = _run_file(
+        tmp_path,
+        "import haute\n"
+        "import polars as pl\n\n"
+        'pipeline = haute.Pipeline("p")\n\n\n'
+        "@pipeline.polars\n"
+        "def rows() -> pl.LazyFrame:\n"
+        '    return pl.LazyFrame({"x": ["a"], "y": ["a"]})\n\n\n'
+        f'@pipeline.banding(config="{config}")\n'
+        "def band(rows): ...\n",
+    )
+    namespace["pipeline"].connect("rows", "band")
+
+    with pytest.raises(ConfigSettingError, match="Banding output 'band' is written by factor 1"):
+        namespace["pipeline"].run()
 
 
 def test_a_live_switch_declaration_selects_the_active_scenarios_input(tmp_path: Path) -> None:
