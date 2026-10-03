@@ -22,7 +22,6 @@ Current rating behaviour is specified in
 | BUG-02 | Decision | P1 | A rating table built in the editor no longer prices an unmatched level at 1.0 without saying so. |
 | BUG-04 | Planned | P2 | A pickled XGBoost or LightGBM model loads in a Load File node, or is refused by name. |
 | BUG-06 | Planned | P2 | A Delta table folder can be chosen as a Lakehouse Data Input in the editor. |
-| BUG-08 | Planned | P3 | A table added to a Quote Input by hand starts with a valid label. |
 | BUG-10 | Planned | P2 | A CSV Data Input's detected schema is read with the node's reader arguments. |
 | BUG-11 | Planned | P3 | Setting every Source Switch input back to `-` returns the node to passing through its first input. |
 | BUG-12 | Planned | P1 | A save never drops a statement written after the pipeline constructor; such a statement is reported and saving waits for it to move. |
@@ -144,24 +143,6 @@ selection.
 (`manualEntry={direction === "output"}`); `frontend/src/panels/editors/_shared.tsx`
 (the browser's folder click); `src/haute/routes/files.py` (directory items);
 `src/haute/_polars_io_registry.py` (the `delta` and `iceberg` formats).
-
-### BUG-08 — A table added by hand starts with a valid label
-**Why:** A Quote Input table's label becomes its frame name downstream and
-must be an identifier. **Add Table** gives a new table its path as its label
-(`$[:]` for the first), which fails that rule, so every hand-built table
-starts invalid until the analyst renames it.
-
-**Plan:** Derive the new table's label the way inference does (`quote_info`
-for the root, the array's key below it), de-duplicated against existing
-labels.
-
-**Acceptance:** A table added with **Add Table** has a label that passes the
-label rule; a frontend test covers the root and a nested table.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/editors/ApiInputEditor.tsx` (`addTable`);
-`specs/json-shredding/high-level.md` (the label rule).
 
 ### BUG-10 — A CSV's detected schema uses the node's reader arguments
 **Why:** A CSV Data Input detects its columns through `GET /api/schema`, which

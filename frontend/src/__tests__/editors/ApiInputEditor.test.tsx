@@ -181,9 +181,31 @@ describe("ApiInputEditor", () => {
     fireEvent.click(screen.getByTestId("api-input-add-table-btn"))
     expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({
       tables: expect.arrayContaining([
-        expect.objectContaining({ path: "$[:]", emit: true }),
+        expect.objectContaining({ path: "$[:]", label: "quote_info", emit: true }),
       ]),
     }))
+  })
+
+  it("Add Table labels a nested table by its key, unique among the existing labels", () => {
+    const onUpdate = successfulOnUpdateSpy()
+    render(
+      <ApiInputEditor
+        {...DEFAULT_PROPS}
+        onUpdate={onUpdate}
+        config={{
+          path: "data/input.json",
+          tables: [
+            { path: "$[:]", label: "quote_info", emit: true, columns: [] },
+            { path: "$[:].claims[:]", label: "Table_2", emit: false, columns: [] },
+          ],
+        }}
+      />,
+    )
+    fireEvent.click(screen.getByTestId("api-input-add-table-btn"))
+    const tables = onUpdate.mock.calls.at(-1)?.[0].tables as Array<{ path: string; label: string }>
+    expect(tables.at(-1)).toEqual(
+      expect.objectContaining({ path: "$[:].table_2[:]", label: "table_2_2" }),
+    )
   })
 
   it("ticking a table's emit toggle pushes the change back", () => {
