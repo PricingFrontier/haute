@@ -1668,7 +1668,7 @@ def _submodel_pipeline(tmp_path, main_body: str):
 
 
 def _haute_run_frame(path, node_id: str) -> pl.DataFrame:
-    """The frame the graph executor computes for *node_id*: parse, flatten, execute."""
+    """The frame ``haute run`` computes for *node_id*: parse, flatten, execute."""
     from haute.executor import execute_graph
     from haute.parser import parse_pipeline_file
 

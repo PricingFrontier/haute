@@ -49,8 +49,9 @@ Out of scope, owned elsewhere:
   content — and removing it keeps the entry point unambiguous. No `prompts/` directory or
   starter nodes/sidecars are generated.
 - `haute run [pipeline_file]` executes a pipeline end-to-end through the same
-  `parse_pipeline_file` → `execute_graph` path the GUI uses, printing a per-node row/column summary
-  and a preview of the final node's output.
+  parse → flatten → `execute_graph` path the GUI uses (each submodel occurrence runs as its
+  definition's nodes), printing a per-node row/column summary and a preview of the final node's
+  output.
 - `haute lint [pipeline_file]` strictly parses a pipeline and exits non-zero on syntax,
   configuration, topology, or other parse failures. For a valid canonical graph it reports
   structural problems (edges pointing at missing nodes and orphan nodes) without executing
