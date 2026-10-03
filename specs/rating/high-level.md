@@ -133,6 +133,10 @@ Out of scope (owned by neighbouring components):
   later table index and duplicated column named; the runtime combine boundary
   independently rejects duplicate participant columns so a bypassed
   normaliser cannot square or double-count a surviving factor.
+- A table output or combined-output column replaces a same-named column
+  already in the input frame, by design (apart from a combined output's own
+  participants, which are refused above). Banding output columns replace a
+  same-named input column the same way.
 - A rating table or combined-output definition with a structural problem
   (unsupported operation, non-finite base value, duplicate output column,
   NaN/Infinity/null entry values) fails loudly at config-normalisation or
