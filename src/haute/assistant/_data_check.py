@@ -148,7 +148,7 @@ _ROW_BOUND = _MAX_PROFILE_ROWS
 # The aggregate that counts a followed column's nulls in one measured frame.
 _COLUMN_NULLS = "__column_nulls__"
 _SHARE_DIGITS = 4
-_OPAQUE_LOAD_FILE_TYPES = frozenset({"pickle", "joblib", "catboost"})
+_OPAQUE_LOAD_FILE_TYPES = frozenset({"pickle", "joblib"})
 # The node types whose builders bind the preamble, as a preview injects its failure.
 _PREAMBLE_NODE_TYPES = frozenset({NodeType.POLARS, NodeType.LIVE_SWITCH})
 

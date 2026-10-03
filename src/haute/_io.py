@@ -476,37 +476,36 @@ def read_source(
     return _select_columns(lf, projection_columns)
 
 
+#: The file types Load File loads; a model file is scored through Model Scoring.
+EXTERNAL_FILE_TYPES: tuple[str, ...] = ("pickle", "json", "joblib")
+
+
 @functools.lru_cache(maxsize=_OBJECT_CACHE_MAX_SIZE)
 def _load_cached(
     path: str,
     digest: str,  # noqa: ARG001 - part of cache key, not used in body.
     file_type: str,
-    model_class: str,
 ) -> object:
-    """Memoised loader keyed on ``(path, digest, file_type, model_class)``."""
-    return _load_external_object_uncached(path, file_type, model_class)
+    """Memoised loader keyed on ``(path, digest, file_type)``."""
+    return _load_external_object_uncached(path, file_type)
 
 
-def load_external_object(path: str, file_type: str, model_class: str = "classifier") -> object:
-    """Load an external file (model, JSON, pickle, joblib) and return the object.
+def load_external_object(path: str, file_type: str) -> object:
+    """Load an external file (JSON, pickle, joblib) and return the object.
 
-    Results are cached by ``(path, content_hash, file_type, model_class)`` so
-    repeated calls skip disk parse/deserialisation cost. Pickle files are
-    deserialized with a restricted unpickler.
+    Results are cached by ``(path, content_hash, file_type)`` so repeated calls
+    skip disk parse/deserialisation cost. Pickle files are deserialized with a
+    restricted unpickler.
     """
     from haute._sandbox import validate_project_path
 
     validate_project_path(path)
 
     digest = content_hash(Path(path))
-    return _load_cached(path, digest, file_type, model_class)
+    return _load_cached(path, digest, file_type)
 
 
-def _load_external_object_uncached(
-    path: str,
-    file_type: str,
-    model_class: str,
-) -> object:
+def _load_external_object_uncached(path: str, file_type: str) -> object:
     """Deserialize an external file from disk without caching."""
     if file_type == "json":
         import json as _json
@@ -517,14 +516,11 @@ def _load_external_object_uncached(
         from haute._sandbox import safe_joblib_load
 
         return safe_joblib_load(path)
-    if file_type == "catboost":
-        from haute._mlflow_io import _load_catboost_model
-
-        class_to_task = {"regressor": "regression", "classifier": "classification"}
-        task = class_to_task.get(model_class, "regression")
-        return _load_catboost_model(path, task)
     if file_type == "pickle":
         from haute._sandbox import safe_unpickle
 
         return safe_unpickle(path)
-    raise ValueError(f"Unsupported file_type: {file_type!r}")
+    raise ValueError(
+        f"Unsupported file_type: {file_type!r}. Load File loads "
+        f"{', '.join(repr(supported) for supported in EXTERNAL_FILE_TYPES)} files."
+    )

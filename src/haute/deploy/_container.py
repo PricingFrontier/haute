@@ -6,7 +6,6 @@ import json
 import re
 import shutil
 import subprocess
-import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
@@ -15,6 +14,7 @@ from pathlib import Path
 
 from haute._git_core import _run_git_ok, git_binary_available
 from haute._logging import get_logger
+from haute._model_flavors import XGBOOST_DISTRIBUTION, family_for_suffix
 from haute._price_contour import DISTRIBUTION as PRICE_CONTOUR_DISTRIBUTION
 from haute._price_contour import PriceContourCompatibilityError, price_contour_install
 from haute._types import NodeType
@@ -55,9 +55,6 @@ _SCORING_RUNTIME_DEPENDENCIES: tuple[tuple[str, str], ...] = (
     ("packaging", "packaging"),
     (PRICE_CONTOUR_DISTRIBUTION, PRICE_CONTOUR_DISTRIBUTION),
 )
-# The XGBoost distribution haute depends on, by the same platform marker as
-# its package metadata: the CPU-only build except on macOS.
-_XGBOOST_DISTRIBUTION = "xgboost" if sys.platform == "darwin" else "xgboost-cpu"
 
 
 def _validate_base_image(base_image: str) -> None:
@@ -1026,26 +1023,21 @@ _PICKLE_RUNTIME_DEPENDENCIES: tuple[str, ...] = (
     "lightgbm",
     "pandas",
     "scikit-learn",
-    _XGBOOST_DISTRIBUTION,
+    XGBOOST_DISTRIBUTION,
 )
 
-# Artifact extension -> distribution names of the runtime that loads it.  Every
-# entry is also the ``pip install`` name, and every entry is pinned through
-# ``_pinned_dockerfile_dependency``. haute is installed without its own
-# dependencies, so each model family's engine comes from here: XGBoost,
-# LightGBM and EBM models also need pandas, which haute's feature encoding
-# uses for them.
-_ARTIFACT_EXT_TO_DEPS: dict[str, tuple[str, ...]] = {
-    ".cbm": ("catboost",),
-    ".rsglm": ("rustystats",),
-    ".ubj": (_XGBOOST_DISTRIBUTION, "pandas"),
-    ".lgbm": ("lightgbm", "pandas"),
-    ".ebm": ("interpret-core", "pandas"),
+# Load File artifact extension -> distribution names of the runtime that
+# loads it. A Model Scoring artifact's runtime is its registered model
+# family's ``distributions`` instead. Every entry is also the ``pip install``
+# name, and every entry is pinned through ``_pinned_dockerfile_dependency``:
+# haute is installed without its own dependencies, so each engine comes from
+# here or from the family registry.
+_LOAD_FILE_EXT_TO_DEPS: dict[str, tuple[str, ...]] = {
     ".pkl": _PICKLE_RUNTIME_DEPENDENCIES,
     ".pickle": _PICKLE_RUNTIME_DEPENDENCIES,
     ".joblib": _PICKLE_RUNTIME_DEPENDENCIES,
     ".lgb": ("lightgbm",),
-    ".xgb": (_XGBOOST_DISTRIBUTION,),
+    ".xgb": (XGBOOST_DISTRIBUTION,),
     ".onnx": ("onnxruntime",),
 }
 
@@ -1061,7 +1053,11 @@ def _extra_deps_by_artifact(resolved: ResolvedDeploy) -> dict[str, list[str]]:
     needed: dict[str, list[str]] = {}
     for artifact_name in sorted(resolved.artifacts):
         suffix = Path(artifact_name).suffix.lower()
-        for dependency in _ARTIFACT_EXT_TO_DEPS.get(suffix, ()):
+        family = family_for_suffix(suffix)
+        dependencies = (
+            family.distributions if family is not None else _LOAD_FILE_EXT_TO_DEPS.get(suffix, ())
+        )
+        for dependency in dependencies:
             needed.setdefault(dependency, []).append(artifact_name)
     return dict(sorted(needed.items()))
 

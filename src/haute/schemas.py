@@ -2395,6 +2395,20 @@ class SchemaResponse(BaseModel):
     preview: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class ModelFileInspectionResponse(BaseModel):
+    """What a project model file scores as (``GET /api/model-file``)."""
+
+    model_path: str
+    flavor: str
+    label: str
+    task: Literal["regression", "classification"] | None
+    features: list[str]
+    categorical_features: list[str]
+    offset_column: str | None
+    offset_link: Literal["log", "identity"] | None
+    contract_path: str | None
+
+
 class ReadJsonRequest(BaseModel):
     path: str
 

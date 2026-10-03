@@ -30,7 +30,7 @@
 | `frontend/src/panels/editors/polarsSteps/PolarsStepsEditor.tsx`, `frontend/src/panels/editors/polarsSteps/StepCard.tsx`, `frontend/src/panels/editors/polarsSteps/AddStepMenu.tsx`, `frontend/src/panels/editors/polarsSteps/GeneratedCodePanel.tsx` | The step builder: start card (the input selector in `input` mode; none in `frame` mode), numbered accordion step cards (header with chevron, muted number, kind icon and label, the summary parts and column-change note under the label, three fixed action slots, Alt+arrow moves, notes for unknown columns and what a step needs, validation or execution badges), the key boundary that keeps the canvas's graph shortcuts out of the editor, focus moving into a new card's first field, the searchable grouped `Add step` popover (join and concat withheld while no input name is eligible), empty and zero-input states, the locked, highlighted, line-numbered generated-code panel (lines linked to cards both ways, fade after 400 ms of pending, stale code dimmed with a neutral note of what is unfinished, "Go to error" for a render or run failure on a step), and the confirmed one-way switch to code. The editor passes each input's columns (carried on `InputSource.columns` from the node panel) into the column model. |
 | `frontend/src/panels/editors/polarsSteps/fields.tsx`, `frontend/src/panels/editors/polarsSteps/forms.tsx` | Shared step-form controls (column combobox and chip list, whose drafts follow outside changes without remounting so focus survives a commit, marking a name the step does not have with the closest one offered; the completion list with visible active row, typed prefix and type notes; the per-field constrained operand control as one input with a kind marker, offering Constant when the slot takes constants and a fitting one exists (or the value already reads one) and listing only the fitting constants; `ArgumentField`, a typed function argument's plain editor or a constant of its type; membership literal list; condition rows whose fresh value follows the column's type, under a "Keep rows where" or "When" lead; `Field`/`FieldLabel` with sentence-case labels and notes, `Sentence`/`Words`, `MoreOptions`/`DisclosureButton`; `RowList`, `RowGroup`, `AddRow`, `RowRemove`, `DirectionSelect` and `QuantileField`, the one layout for every repeated row) and one form per step kind dispatched by `StepForm`, which provides the step's `StepSchemaContext`: sentence forms, the aggregation row and its self-naming, the join form's key pairs and per-input suggestions, and the formula box with function completion, argument tip, error position and unknown-name offers. |
 | `frontend/e2e/polars-steps.spec.ts` | Transform step builder browser journey: a new Transform asks for an input, connecting one seeds the start step, a Limit step added from the chooser re-renders the generated code, the preview runs it, Save writes the `config/polars/<name>.json` sidecar and the rendered body, and reopening restores the step cards. |
-| `frontend/src/panels/editors/ExternalFileEditor.tsx`, `frontend/src/panels/editors/DataInputEditor.tsx`, `frontend/src/panels/editors/DataOutputEditor.tsx` | External-object, grouped tabular input, and grouped tabular output configuration. |
+| `frontend/src/panels/editors/ExternalFileEditor.tsx`, `frontend/src/panels/editors/DataInputEditor.tsx`, `frontend/src/panels/editors/DataOutputEditor.tsx` | External-object, grouped tabular input, and grouped tabular output configuration. Load File's **FILE TYPE** offers the loaders `src/haute/_io.py` has (Pickle, JSON, Joblib), and its path picker lists exactly their extensions (`.pkl`, `.pickle`, `.json`, `.joblib`); model files are scored through Model Scoring. |
 | `frontend/src/panels/editors/ExploreCodeEditor.tsx` | Explore's "Transform" pane: the shared stepped-code pane in `frame` mode with no eligible input names (codegen binds its single input as `df`). |
 | `frontend/src/stores/useOutputWriteStore.ts` | Per-node output-write request identity, pending/terminal lifecycle, and overwrite-confirmation state retained across editor remounts. |
 | `frontend/src/panels/editors/_ioProvider.ts`, `frontend/src/panels/editors/_IoProviderPicker.tsx` | What the Data Input and Data Output editors share: the provider block (capability-load error, unknown stored provider, provider picker), the branch config a provider or format change starts from (common keys kept, required provider fields added, records starting empty on the input side), and provider-field readiness (a database needs exactly one of a connection or URI, plus its query or table). |
@@ -152,20 +152,19 @@
    fetched for each later editor mount, while consumers mounting during one pending fetch share
    that request. Request state is local to the editor; the editor never assumes an out-of-order response still describes a
    changed node unless its own effect/request guards accept it.
-   `ModelScoreEditor` and `OptimiserApplyEditor` (for its MLflow source
+   `ModelScoreEditor` and `OptimiserApplyEditor` (for their MLflow source
    types) mount the shared `MlflowDestinationSelector`
-   ([frontend-shared](../frontend-shared/low-level.md)) above the source
-   picker, bound to the node's `mlflow_destination` (absent = the local
+   ([frontend-shared](../frontend-shared/low-level.md)), `OptimiserApplyEditor`
+   above its source picker and `ModelScoreEditor` directly below its **MODEL
+   SOURCE** toggle, bound to the node's `mlflow_destination` (absent = the local
    folder; Local folder is stored by removing the key); there is
    no status badge. Choosing a different destination clears the picked run
    or model (`run_id`, `run_name`, `experiment_id`, `experiment_name`,
    `artifact_path`, `registered_model`, `version` reset to `"latest"`, `alias`
    removed, and for optimiser apply `optimiser_mode`) in the same config update and shows
    an inline note that identifiers are not portable across backends until
-   the next pick. `ModelScoreEditor` explains
-   the selected model source in one plain-language line under the toggle
-   ("registered model — a named, versioned model in the registry" versus
-   "pick one specific training run"), and the shared pickers render honest
+   the next pick. `ModelScoreEditor` shows no description under its source
+   toggle; the button labels name the sources. The shared pickers render honest
    empty states instead of bare dropdowns: no registered models → "haute logs
    training runs; your promotion process registers them"; an experiment with
    no matching finished runs → "no finished runs with a model artifact in
@@ -188,6 +187,17 @@
    stored task that differs shows an alert naming both with a "Use <task>"
    button that writes the recorded one; a model without a recorded task (or
    whose run or versions are not loaded) keeps the explicit Task select.
+   **MODEL SOURCE** offers **Experiment Run**, **Registered Model** and **Model
+   file**. **Model file** hides the destination selector (a file source never
+   reads MLflow) and shows a `PathPickerField` whose browser lists only the
+   registered model-file suffixes (`modelFileSuffixes` from the generated
+   `modelFamilies.json`); choosing a file commits `{sourceType: "file",
+   model_path}`. While a path is set, the editor calls `GET /api/model-file`
+   (`inspectModelFile`) and shows the family, features, offset (column and
+   link, or "none") and the contract the file scores under, or the server's
+   refusal verbatim. A response for a path the node no longer holds is
+   discarded. A recorded task from that inspection renders Task read-only
+   ("Task recorded with the model.") with the same mismatch alert as a run.
    MLflow discovery state is scoped to the node's effective destination:
    `useMlflowBrowser({destination})` passes the node's value (`""` = the local folder) to
    every experiments/runs/models/versions request, so the pickers list only

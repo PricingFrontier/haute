@@ -773,6 +773,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
                 "artifact_path",
                 "feature_contract_path",
                 "mlflow_destination",
+                "model_path",
                 "registered_model",
                 "run_id",
                 "sourceType",
@@ -808,7 +809,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
             },
         ),
         NodeType.EXTERNAL_FILE: _classify_config_fields(
-            node_config=("fileType", "modelClass"),
+            node_config=("fileType",),
             user_code=("code", "steps"),
             artifacts=("path",),
         ),

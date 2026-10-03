@@ -2207,7 +2207,6 @@ class TestScoreGraphExternalFileRemap:
                             "config": {
                                 "path": "original/lookup.pkl",
                                 "fileType": "pickle",
-                                "modelClass": "classifier",
                                 "code": "df = df.with_columns(pl.lit(99).alias('ext_val'))",
                             },
                         },
@@ -2770,6 +2769,7 @@ class TestScoreGraphModelScoreRemap:
 
         mock_model = MagicMock()
         mock_model.feature_names_ = ["x"]
+        mock_model.get_metadata.return_value = {"haute_offset_column": ""}
         mock_model.predict.return_value = np.array([42.0])
 
         graph = _g(
@@ -2868,6 +2868,7 @@ class TestScoreGraphModelScoreRemap:
 
         mock_model = MagicMock()
         mock_model.feature_names_ = ["x"]
+        mock_model.get_metadata.return_value = {"haute_offset_column": ""}
         mock_model.predict.return_value = np.array([42.0])
 
         graph = _g(
@@ -2969,6 +2970,7 @@ class TestScoreGraphModelScoreRemap:
         )
         mock_model = MagicMock()
         mock_model.feature_names_ = ["region"]
+        mock_model.get_metadata.return_value = {"haute_offset_column": ""}
         mock_model.get_cat_feature_indices.return_value = [0]
         mock_model.predict.return_value = np.array([42.0])
         graph = _g(
@@ -3723,7 +3725,7 @@ class TestScoreGraphModelScoreRemap:
             ),
             contract_path,
         )
-        scoring_model = MagicMock()
+        scoring_model = MagicMock(offset_column=None, offset_link=None)
         captured: dict[str, object] = {}
 
         def fake_run_score_pipeline(*_args, **kwargs):
@@ -3822,7 +3824,7 @@ class TestScoreGraphModelScoreRemap:
             ),
             contract_path,
         )
-        scoring_model = MagicMock()
+        scoring_model = MagicMock(offset_column=None, offset_link=None)
         captured: dict[str, object] = {}
 
         def fake_run_score_pipeline(*_args, **kwargs):
@@ -3920,7 +3922,7 @@ class TestScoreGraphModelScoreRemap:
         """Configured non-bundled deploy modelScore scores eagerly in memory."""
         from haute.deploy._scorer import score_graph
 
-        scoring_model = MagicMock()
+        scoring_model = MagicMock(offset_column=None, offset_link=None)
         captured: dict[str, object] = {}
 
         def fake_run_score_pipeline(*_args, **kwargs):
@@ -4204,7 +4206,7 @@ class TestBundledModelContractInputs:
 
         with (
             patch(
-                "haute.deploy._scorer._load_local_model_cached",
+                "haute.deploy._scorer.load_local_model_cached",
                 return_value=scoring_model,
             ),
             pytest.raises(DeployError, match=message),
@@ -4225,7 +4227,7 @@ class TestBundledModelContractInputs:
         )
 
         with patch(
-            "haute.deploy._scorer._load_local_model_cached",
+            "haute.deploy._scorer.load_local_model_cached",
             return_value=scoring_model,
         ):
             result = _attach_bundled_model_contract_inputs(
@@ -4935,63 +4937,21 @@ class TestCondaEnvAndPipRequirements:
     def test_pip_requirements_includes_haute_and_polars(self):
         from haute.deploy._mlflow import _pip_requirements
 
-        resolved = _make_resolved()
-        reqs = _pip_requirements(resolved)
+        reqs = _pip_requirements()
 
         assert any("haute==" in r for r in reqs)
         assert "polars>=1.44.2" in reqs
 
-    def test_pip_requirements_includes_catboost_when_used(self):
-        """If a node has fileType=catboost, catboost is added to requirements."""
+    def test_pip_requirements_add_no_model_engine(self):
+        """The pinned Haute brings its own engines; no node adds one."""
         from haute.deploy._mlflow import _pip_requirements
 
-        graph = _g(
-            {
-                "nodes": [
-                    {
-                        "id": "ext",
-                        "data": {
-                            "label": "ext",
-                            "nodeType": "externalFile",
-                            "config": {"fileType": "catboost"},
-                        },
-                    },
-                ],
-            }
-        )
-        resolved = _make_resolved(pruned_graph=graph)
-        reqs = _pip_requirements(resolved)
-
-        assert any("catboost" in r for r in reqs)
-
-    def test_pip_requirements_no_catboost_without_it(self):
-        """Without catboost nodes, catboost is NOT in requirements."""
-        from haute.deploy._mlflow import _pip_requirements
-
-        graph = _g(
-            {
-                "nodes": [
-                    {
-                        "id": "t",
-                        "data": {
-                            "label": "t",
-                            "nodeType": "polars",
-                            "config": {},
-                        },
-                    },
-                ],
-            }
-        )
-        resolved = _make_resolved(pruned_graph=graph)
-        reqs = _pip_requirements(resolved)
-
-        assert not any("catboost" in r for r in reqs)
+        assert not any("catboost" in r for r in _pip_requirements())
 
     def test_conda_env_structure(self):
         from haute.deploy._mlflow import _conda_env
 
-        resolved = _make_resolved()
-        env = _conda_env(resolved)
+        env = _conda_env()
 
         assert env["name"] == "mlflow-env"
         assert "conda-forge" in env["channels"]
@@ -5001,8 +4961,7 @@ class TestCondaEnvAndPipRequirements:
     def test_conda_env_pins_python_version(self):
         from haute.deploy._mlflow import _SERVING_PYTHON_VERSION, _conda_env
 
-        resolved = _make_resolved()
-        env = _conda_env(resolved)
+        env = _conda_env()
 
         python_dep = env["dependencies"][0]
         assert python_dep == f"python={_SERVING_PYTHON_VERSION}"

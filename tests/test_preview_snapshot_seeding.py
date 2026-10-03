@@ -2397,3 +2397,111 @@ def test_a_bounded_post_code_scorer_still_drains_the_scorer_above_it(
     # Each scorer scored all 100 rows, 30 a batch; ``head`` bounds s2's output.
     assert scored_rows == [30, 30, 30, 10] * 2
     assert preview.rows("shown")["a"].to_list() == [9, 8, 7]
+
+
+# ---------------------------------------------------------------------------
+# A file-sourced Model Scoring node above a capture (MSC-03)
+# ---------------------------------------------------------------------------
+
+
+def _write_scoring_model(path: Path, scale: float) -> None:
+    """A CatBoost model over ``a`` that declares no offset, as Haute writes one."""
+    from catboost import CatBoostRegressor
+
+    values = [float(value) for value in range(_ROWS)]
+    model = CatBoostRegressor(iterations=5, depth=2, verbose=0, allow_writing_files=False)
+    model.fit(pl.DataFrame({"a": values}).to_pandas(), [scale * value for value in values])
+    model.get_metadata()["haute_offset_column"] = ""
+    model.save_model(str(path))
+
+
+def _scored_join_graph(project: Path) -> PipelineGraph:
+    """``policies → scored``, ``scored + claims → join → banding``; the model is a project file."""
+    return _graph(
+        project,
+        [
+            ("policies", NodeType.DATA_INPUT, _parquet(project / "policies.parquet")),
+            (
+                "scored",
+                NodeType.MODEL_SCORE,
+                {
+                    "sourceType": "file",
+                    "model_path": "freq.cbm",
+                    "task": "regression",
+                    "output_column": "pred",
+                },
+            ),
+            ("claims", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("join", NodeType.POLARS, _code("df = scored.join(claims, on='id', how='left')")),
+            (
+                "banding",
+                NodeType.POLARS,
+                _code("df = join.with_columns((pl.col('pred') * 2).alias('band'))"),
+            ),
+        ],
+        [("policies", "scored"), ("scored", "join"), ("claims", "join"), ("join", "banding")],
+    )
+
+
+def _bump(path: Path) -> None:
+    import os
+
+    stat = path.stat()
+    os.utime(path, (stat.st_atime + 5, stat.st_mtime + 5))
+
+
+def test_a_replaced_model_file_is_not_seeded_and_is_recaptured(project: Path, api: Any) -> None:
+    model = project / "freq.cbm"
+    _write_scoring_model(model, 1.0)
+    graph = _scored_join_graph(project)
+    first = _post_preview(api, graph, "banding")
+    assert _plan_of(first) == [("join", "captured")]
+
+    _write_scoring_model(model, 10.0)
+    _bump(model)
+    second = _post_preview(api, graph, "banding")
+
+    assert _plan_of(second) == [("join", "captured")]
+    assert second["seed_plan"][0]["identity_digest"] != first["seed_plan"][0]["identity_digest"]
+    before, after = _rows(first)["band"].to_numpy(), _rows(second)["band"].to_numpy()
+    assert after.sum() > 5 * before.sum()
+
+
+def test_a_sibling_contract_change_stops_the_old_capture(project: Path, api: Any) -> None:
+    from haute.modelling._feature_contract import build_contract, save_contract
+
+    model = project / "freq.cbm"
+    _write_scoring_model(model, 1.0)
+    contract = project / "freq.feature_contract.json"
+
+    def write_contract(offset: str | None) -> None:
+        save_contract(
+            build_contract(
+                features=["a"],
+                feature_types={"a": "Int64"},
+                categorical_features=[],
+                target_name="y",
+                target_type="Float64",
+                task="regression",
+                offset_column=offset,
+                offset_link="identity" if offset else None,
+            ),
+            contract,
+        )
+        _bump(contract)
+
+    write_contract(None)
+    graph = _scored_join_graph(project)
+    assert _plan_of(_post_preview(api, graph, "banding")) == [("join", "captured")]
+
+    # The contract now declares an offset the input lacks: the old capture
+    # must not be served in place of that refusal.
+    write_contract("exposure")
+    response = api.post(
+        "/api/pipeline/preview",
+        json={"graph": graph.model_dump(mode="json"), "node_id": "banding", "row_limit": 200},
+    )
+
+    body = response.json()
+    assert body["status"] == "error"
+    assert "exposure" in body["error"]

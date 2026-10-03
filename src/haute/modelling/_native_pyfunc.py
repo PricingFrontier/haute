@@ -36,7 +36,7 @@ class NativePyfuncModel:
     """The object ``mlflow.pyfunc`` wraps for a haute-trained native model."""
 
     def __init__(self, package_dir: str) -> None:
-        from haute._mlflow_io import load_local_model, verify_contract_identity
+        from haute._mlflow_io import bind_feature_contract, load_local_model
 
         package = Path(package_dir)
         contract = load_contract(package / CONTRACT_FILENAME)
@@ -55,8 +55,11 @@ class NativePyfuncModel:
             )
         self._task = contract.task
         self._categorical_levels = dict(contract.categorical_levels)
-        self._scoring = load_local_model(str(model_file), task=contract.task)
-        verify_contract_identity(contract.model, self._scoring)
+        self._scoring = bind_feature_contract(
+            load_local_model(str(model_file), task=contract.task),
+            contract,
+            model_name="in this logged model package",
+        )
 
     def predict(self, model_input: Any, params: dict[str, Any] | None = None) -> Any:
         import polars as pl
@@ -78,6 +81,7 @@ class NativePyfuncModel:
             batch=False,
             categorical_levels=self._categorical_levels or None,
             offset_column=self._scoring.offset_column,
+            offset_link=self._scoring.offset_link,
         ).collect()
         if self._task == "classification":
             return pl.DataFrame(

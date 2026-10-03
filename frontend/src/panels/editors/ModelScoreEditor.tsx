@@ -1,7 +1,12 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { InputSourcesBar, SELECT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import { RegisteredModelPicker, ExperimentRunPicker } from "./MlflowModelPicker"
+import PathPickerField from "./shared/PathPickerField"
+import { inspectModelFile } from "../../api/client"
+import { apiErrorMessage } from "../../api/errors"
+import type { ModelFileInspectionResponse } from "../../api/types"
+import { MODEL_FILE_SUFFIXES } from "../../utils/modelFamilies"
 import { useMlflowBrowser } from "../../hooks/useMlflowBrowser"
 import { configField } from "../../utils/configField"
 import MlflowDestinationSelector from "../../components/MlflowDestinationSelector"
@@ -23,6 +28,32 @@ const TASK_LABELS: Record<ModelTask, string> = {
   classification: "Classification",
 }
 
+type ModelFileState =
+  | { path: string; contractPath: string; inspection: ModelFileInspectionResponse; error?: undefined }
+  | { path: string; contractPath: string; inspection?: undefined; error: string }
+
+function ModelFileSummary({ inspection }: { inspection: ModelFileInspectionResponse }) {
+  const offset = inspection.offset_column
+    ? `${inspection.offset_column} (${inspection.offset_link ?? "applied by the model"})`
+    : "none"
+  return (
+    <dl data-testid="model-file-inspection" className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
+      <dt>Model</dt>
+      <dd style={{ color: "var(--text-primary)" }}>{inspection.label}</dd>
+      <dt>Features</dt>
+      <dd style={{ color: "var(--text-primary)" }} title={inspection.features.join(", ")}>
+        {inspection.features.length} ({inspection.categorical_features.length} categorical)
+      </dd>
+      <dt>Offset</dt>
+      <dd style={{ color: "var(--text-primary)" }}>{offset}</dd>
+      <dt>Contract</dt>
+      <dd className="font-mono truncate" style={{ color: "var(--text-primary)" }}>
+        {inspection.contract_path ?? "none"}
+      </dd>
+    </dl>
+  )
+}
+
 export default function ModelScoreEditor({
   config,
   onUpdate,
@@ -41,6 +72,27 @@ export default function ModelScoreEditor({
   const task = configField(config, "task", "regression")
   const outputColumn = configField(config, "output_column", "prediction")
   const mlflowDestination = configField(config, "mlflow_destination", "")
+  const modelPath = configField(config, "model_path", "")
+  const featureContractPath = configField(config, "feature_contract_path", "")
+
+  // Inspect the chosen file as scoring loads it; a response for a path the
+  // node no longer holds is discarded.
+  const [modelFile, setModelFile] = useState<ModelFileState | null>(null)
+  useEffect(() => {
+    if (sourceType !== "file" || !modelPath) return
+    const controller = new AbortController()
+    inspectModelFile(modelPath, featureContractPath || undefined, { signal: controller.signal })
+      .then((inspection) => setModelFile({ path: modelPath, contractPath: featureContractPath, inspection }))
+      .catch((e: unknown) => {
+        if (controller.signal.aborted) return
+        setModelFile({ path: modelPath, contractPath: featureContractPath, error: apiErrorMessage(e) })
+      })
+    return () => controller.abort()
+  }, [sourceType, modelPath, featureContractPath])
+  const currentModelFile =
+    sourceType === "file" && modelFile?.path === modelPath && modelFile.contractPath === featureContractPath
+      ? modelFile
+      : null
 
   const mlflow = useMlflowBrowser({
     destination: mlflowDestination,
@@ -60,7 +112,8 @@ export default function ModelScoreEditor({
           configField(config, "alias", ""),
         )?.params
       : undefined
-  const recordedTask = recordedModelTask(selectedParams)
+  const fileTask = currentModelFile?.inspection?.task ?? null
+  const recordedTask = sourceType === "file" ? fileTask : recordedModelTask(selectedParams)
   const taskUpdate = (params: Record<string, string> | undefined) => {
     const next = recordedModelTask(params)
     return next ? { task: next } : {}
@@ -98,24 +151,6 @@ export default function ModelScoreEditor({
     <div className="flex-1 flex flex-col min-h-0 px-3 py-2 gap-3">
       <InputSourcesBar inputSources={inputSources} onDeleteInput={onDeleteInput} />
 
-      {/* Where this node browses and loads from */}
-      <div>
-        <MlflowDestinationSelector
-          value={mlflowDestination}
-          onChange={handleDestinationChange}
-          idPrefix="model-score-mlflow-destination"
-        />
-        {selectionCleared && (
-          <p
-            data-testid="mlflow-selection-cleared"
-            className="mt-1 text-[10px]"
-            style={{ color: "var(--warning-strong)" }}
-          >
-            Selection cleared - run and model identifiers are not portable across destinations.
-          </p>
-        )}
-      </div>
-
       {/* Source Type Toggle */}
       <div>
         <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Model Source</label>
@@ -124,18 +159,53 @@ export default function ModelScoreEditor({
             value={sourceType}
             onChange={(v) => onUpdate("sourceType", v)}
             options={[
-              { key: "registered", label: "Registered Model" },
               { key: "run", label: "Experiment Run" },
+              { key: "registered", label: "Registered Model" },
+              { key: "file", label: "Model file" },
             ]}
             accentColor={accentColor}
           />
         </div>
-        <p className="mt-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
-          {sourceType === "registered"
-            ? "Registered model - a named, versioned model in the registry (recommended)."
-            : "Experiment run - pick one specific training run by experiment."}
-        </p>
       </div>
+
+      {/* Where this node browses and loads from (MLflow sources only) */}
+      {sourceType !== "file" && (
+        <div>
+          <MlflowDestinationSelector
+            value={mlflowDestination}
+            onChange={handleDestinationChange}
+            idPrefix="model-score-mlflow-destination"
+          />
+          {selectionCleared && (
+            <p
+              data-testid="mlflow-selection-cleared"
+              className="mt-1 text-[10px]"
+              style={{ color: "var(--warning-strong)" }}
+            >
+              Selection cleared - run and model identifiers are not portable across destinations.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* File-based Selection */}
+      {sourceType === "file" && (
+        <div>
+          <PathPickerField
+            label="Model File"
+            value={modelPath}
+            onSelect={(path) => onUpdate({ sourceType: "file", model_path: path })}
+            extensions={MODEL_FILE_SUFFIXES.join(",")}
+            testIdPrefix="model-score-file"
+          />
+          {currentModelFile?.inspection && <ModelFileSummary inspection={currentModelFile.inspection} />}
+          {currentModelFile?.error && (
+            <p role="alert" data-testid="model-file-error" className="mt-2 text-[11px]" style={{ color: "var(--warning-strong)" }}>
+              {currentModelFile.error}
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Registered Model Selection */}
       {sourceType === "registered" && (
@@ -200,7 +270,7 @@ export default function ModelScoreEditor({
 
       {recordedTask && (
         <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-          Task recorded by the training run.
+          {sourceType === "file" ? "Task recorded with the model." : "Task recorded by the training run."}
         </p>
       )}
       {recordedTask && recordedTask !== task && (

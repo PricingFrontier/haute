@@ -285,7 +285,9 @@ EDGE_JOIN_CONFIG_KEYS: tuple[str, ...] = (
 class ModelScoreConfig(TypedDict, total=False):
     """Config for modelScore nodes."""
 
-    sourceType: str  # "run" | "registered"
+    sourceType: str  # "run" | "registered" | "file"
+    # file-based selection
+    model_path: str  # a model file in the project, e.g. "models/freq.cbm"
     # run-based selection
     experiment_name: str  # UI-only: display name for panel re-open
     experiment_id: str  # UI-only: MLflow experiment ID for API calls
@@ -299,7 +301,7 @@ class ModelScoreConfig(TypedDict, total=False):
     # common
     task: str  # "regression" | "classification"
     output_column: str  # prediction column name, default "prediction"
-    feature_contract_path: str  # local deploy/runtime feature-contract artifact
+    feature_contract_path: str  # the feature contract the model scores under
     categorical_levels: dict[str, list[str | None]]
     code: str  # optional post-processing code
     steps: list[dict[str, Any]]  # low-code post-scoring steps; ``code`` is their rendering
@@ -585,8 +587,7 @@ class ExternalFileConfig(TypedDict, total=False):
     """Config for externalFile nodes."""
 
     path: str
-    fileType: str  # "pickle" | "json" | "joblib" | "catboost"
-    modelClass: str  # "classifier" | "regressor" (catboost only)
+    fileType: str  # "pickle" | "json" | "joblib"
     code: str
     steps: list[
         dict[str, Any]

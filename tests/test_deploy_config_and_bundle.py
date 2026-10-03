@@ -34,7 +34,7 @@ import pytest
 from haute.deploy._bundler import collect_artifacts
 from haute.deploy._config import ContainerConfig, DeployConfig
 from haute.deploy._utils import build_manifest
-from haute.errors import DeployError
+from haute.errors import ConfigError, DeployError
 from tests._deploy_helpers import make_resolved_deploy
 from tests.conftest import make_graph as _g
 
@@ -381,22 +381,23 @@ class TestArtifactContainmentAndModelContracts:
         )
 
     @pytest.mark.parametrize(
-        "artifact_path",
+        ("artifact_path", "error"),
         [
-            "C:/absolute/model.cbm",
-            "/absolute/model.cbm",
-            "../model.cbm",
-            "models/../model.cbm",
-            ["model.cbm"],
+            ("C:/absolute/model.cbm", DeployError),
+            ("/absolute/model.cbm", DeployError),
+            ("../model.cbm", DeployError),
+            ("models/../model.cbm", DeployError),
+            # A malformed field fails the shared source parser, as in every context.
+            (["model.cbm"], ConfigError),
         ],
     )
     def test_model_artifact_identifier_is_rejected_before_download(
-        self, tmp_path: Path, artifact_path: object
+        self, tmp_path: Path, artifact_path: object, error: type[Exception]
     ) -> None:
         graph = self._model_graph(
             {"sourceType": "run", "run_id": "run", "artifact_path": artifact_path}
         )
-        with pytest.raises(DeployError, match="artifact_path"):
+        with pytest.raises(error, match="artifact_path"):
             collect_artifacts(graph, [], tmp_path)
 
     def test_explicit_feature_contract_wins_and_missing_fails(self, tmp_path: Path) -> None:

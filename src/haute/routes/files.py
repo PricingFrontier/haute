@@ -15,7 +15,12 @@ from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
 from haute._sandbox import contained_path
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
-from haute.schemas import BrowseFilesResponse, FileItem, SchemaResponse
+from haute.schemas import (
+    BrowseFilesResponse,
+    FileItem,
+    ModelFileInspectionResponse,
+    SchemaResponse,
+)
 
 if TYPE_CHECKING:
     import polars as pl
@@ -230,6 +235,44 @@ def _read_schema_only_blocking(path: str, target: Path) -> dict[str, object]:
         "row_count_estimated": False,
         "column_count": len(columns),
     }
+
+
+@router.get("/model-file", response_model=ModelFileInspectionResponse)
+async def inspect_model_file(
+    path: str,
+    feature_contract_path: str | None = None,
+) -> ModelFileInspectionResponse:
+    """Report what a project model file scores as, for the Model Scoring editor.
+
+    The file and its contract load and bind exactly as a file-sourced node
+    loads them, so a file the node would refuse answers 400 with the same
+    message.
+    """
+    return await run_in_threadpool(_inspect_model_file_blocking, path, feature_contract_path)
+
+
+def _inspect_model_file_blocking(
+    path: str, feature_contract_path: str | None
+) -> ModelFileInspectionResponse:
+    from dataclasses import asdict
+
+    from haute._builders import _configured_pipeline_dir
+    from haute._model_source import inspect_model_file as inspect
+    from haute._path_resolution import RuntimePathError
+    from haute.errors import ConfigError, FeatureMismatchError
+    from haute.routes._runtime_path_errors import runtime_path_http_exception
+
+    try:
+        inspection = inspect(
+            path,
+            feature_contract_path=feature_contract_path or None,
+            base_dir=_configured_pipeline_dir(),
+        )
+    except RuntimePathError as exc:
+        raise runtime_path_http_exception(exc) from None
+    except (ConfigError, FeatureMismatchError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return ModelFileInspectionResponse(**asdict(inspection))
 
 
 @router.get("/schema", response_model=SchemaResponse)

@@ -4971,7 +4971,7 @@ def test_model_score_steps_round_trip_and_fail_before_any_model_loads(
     model_path = tmp_path / "score.cbm"
     model_path.write_bytes(b"not a real model")
     loaded: list[str] = []
-    monkeypatch.setattr(_scorer, "_load_local_model_cached", lambda path, task: loaded.append(path))
+    monkeypatch.setattr(_scorer, "load_local_model_cached", lambda path, task: loaded.append(path))
     with pytest.raises(ConfigError, match=r"Step 1: Add at least one condition") as failed:
         score_graph(
             graph=deploy_graph,

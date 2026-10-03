@@ -68,6 +68,7 @@ from haute.schemas import (
     MlflowRunList,
     MlflowSettingsResponse,
     MlflowTestConnectionResponse,
+    ModelFileInspectionResponse,
     ModellingGpuStatusResponse,
     ModelSaveDestinationResponse,
     NodeDataProfileResponse,
@@ -190,6 +191,7 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
     "session": (
         SessionStatusResponse,
         BrowseFilesResponse,
+        ModelFileInspectionResponse,
     ),
     "editor": (
         EditorIdentitiesResponse,

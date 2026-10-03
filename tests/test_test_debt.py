@@ -112,6 +112,10 @@ _EXPECTED_DEBT_IDS = {
     # environments run both assertions.
     "6fb8a1d2d768c835",
     "a7c21a9dc1f1aada",
+    # MSC-03 — a Model Scoring sibling contract that escapes the project through
+    # a symlink is refused by scoring and bundling; same platform prerequisite.
+    # See tests/test_model_file_source.py.
+    "90c13b0fe47fe9ec",
     # W2.9 — the trace-cache budget wiring assertion cannot hold when an
     # operator deliberately overrides HAUTE_TRACE_CACHE_MAX_BYTES; the skip
     # documents that the pin targets default wiring only. See

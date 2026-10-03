@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import polars as pl
 
 from haute._logging import get_logger
-from haute.errors import HauteValidationError
+from haute.errors import ConfigError, HauteValidationError
+
+if TYPE_CHECKING:
+    from haute._model_source import ModelSource
 
 logger = get_logger(component="model_explainability")
 
@@ -38,8 +41,13 @@ def _as_float(
     return result
 
 
-def _catboost_pool_for_row(scoring_model: Any, input_row: dict[str, Any]) -> Any:
-    """Build a one-row CatBoost Pool using Haute's scoring feature contract."""
+def _catboost_pool_for_row(scoring_model: Any, input_row: dict[str, Any]) -> tuple[Any, float]:
+    """Build a one-row CatBoost Pool using Haute's scoring feature contract.
+
+    Returns the pool and the row's raw-score baseline (``0.0`` without an
+    offset): the raw prediction includes the baseline, but CatBoost's
+    ShapValues do not.
+    """
     from catboost import Pool
 
     from haute._mlflow_io import _prepare_predict_frame
@@ -96,12 +104,13 @@ def _catboost_pool_for_row(scoring_model: Any, input_row: dict[str, Any]) -> Any
     else:
         baseline = None
     cat_indices = [features.index(column) for column in cat_cols]
-    return Pool(
+    pool = Pool(
         x_data,
         cat_features=cat_indices if cat_indices else None,
         feature_names=features,
         baseline=baseline,
     )
+    return pool, float(baseline[0]) if baseline is not None else 0.0
 
 
 def _normalise_shap_values(shap_values: Any, feature_count: int) -> np.ndarray:
@@ -219,16 +228,18 @@ def explain_catboost_prediction(
         )
 
     features = list(scoring_model.feature_names)
-    pool = _catboost_pool_for_row(scoring_model, input_row)
+    pool, row_baseline = _catboost_pool_for_row(scoring_model, input_row)
     shap_row = _normalise_shap_values(
         raw_model.get_feature_importance(data=pool, type="ShapValues"),
         len(features),
     )
     _assert_finite_shap_row(shap_row)
 
-    base_value = float(shap_row[-1])
+    # The bias carries the row's offset, as it does for the wrapper families:
+    # CatBoost's expected value excludes the Pool baseline its prediction adds.
+    base_value = float(shap_row[-1]) + row_baseline
     contribution_values = shap_row[:-1]
-    prediction_from_shap = float(shap_row.sum())
+    prediction_from_shap = float(contribution_values.sum()) + base_value
     # Additivity is always checked raw-vs-raw: ShapValues sum to the
     # raw-formula prediction for every CatBoost loss.
     model_prediction = _catboost_raw_prediction(raw_model, pool)
@@ -566,14 +577,15 @@ def explain_native_prediction(
     """
     import polars as pl
 
-    from haute._model_flavors import NATIVE_WRAPPER_FLAVORS
+    from haute._model_flavors import is_registered_flavor, model_family
 
     flavor = str(getattr(scoring_model, "flavor", ""))
-    if flavor not in NATIVE_WRAPPER_FLAVORS:
+    family = model_family(flavor) if is_registered_flavor(flavor) else None
+    if family is None or not family.self_describing or family.explanation is None:
         raise ModelExplanationError(
             "Native contribution explanation requires an XGBoost, LightGBM or EBM model."
         )
-    label = {"xgboost": "XGBoost", "lightgbm": "LightGBM", "ebm": "EBM"}[flavor]
+    label = family.label
     model = scoring_model.raw_model
     features = list(model.features)
     columns = [*features, *([model.offset_column] if model.offset_column else [])]
@@ -662,7 +674,7 @@ def explain_native_prediction(
         shown.append(item)
 
     output_space = {"identity": "response", "log": "log", "logit": "log_odds"}[model.link]
-    method = "ebm_terms" if flavor == "ebm" else f"{flavor}_contributions"
+    method = family.explanation
     return {
         "type": method,
         "method": method,
@@ -687,43 +699,44 @@ def explain_native_prediction(
     }
 
 
-def _config_requests_supported_explanation(config: dict[str, Any]) -> bool:
-    source_type = config.get("sourceType")
-    if source_type not in {"run", "registered"}:
-        return False
-    artifact_path = str(config.get("artifact_path", ""))
-    return artifact_path.endswith((".cbm", ".rsglm", ".ubj", ".lgbm", ".ebm"))
+def _source_requests_supported_explanation(source: ModelSource) -> bool:
+    """Whether the family *source*'s artifact loads as registers an explanation.
+
+    Raises:
+        ConfigError: the artifact has a suffix no family registers.
+    """
+    from haute._model_flavors import family_for_artifact
+    from haute._model_source import FileModelSource
+
+    artifact = source.model_path if isinstance(source, FileModelSource) else source.artifact_path
+    return family_for_artifact(artifact).explanation is not None
 
 
 def explanation_error_metadata_for_config(config: dict[str, Any]) -> dict[str, str]:
     """Return stable error metadata for the configured explanation method.
 
     Caller (``enrich_model_score``) only invokes this after
-    :func:`_config_requests_supported_explanation` has returned True, so the
-    artifact path is guaranteed to end in ``.rsglm`` or ``.cbm``.  We still
-    enumerate both branches explicitly so adding a third supported flavour in
-    future means extending this function alongside the loader.
+    :func:`explain_model_score_from_config` raised a
+    :class:`ModelExplanationError`, which happens only for a source whose
+    artifact path names a family that registers an explanation, so the
+    method is that family's registered one.
 
     The function is on the *error-handling* path: it must always return a
-    well-formed dict even when ``_config_requests_supported_explanation`` and
+    well-formed dict even when ``_source_requests_supported_explanation`` and
     this lookup disagree — otherwise an internal mismatch crashes the entire
     trace step through the outer ``except Exception`` in ``enrich_model_score``.
-    Hit the unreachable branch with a ``logger.warning`` so a regression
-    (e.g. a new flavour added to one half of the contract but not the other)
-    is visible without poisoning the user's trace.
+    Hit the unreachable branch with a ``logger.warning`` so a regression is
+    visible without poisoning the user's trace.
     """
-    artifact_path = str(config.get("artifact_path", ""))
-    if artifact_path.endswith(".rsglm"):
-        method = "rustystats_glm_contributions"
-    elif artifact_path.endswith(".cbm"):
-        method = "catboost_shap"
-    elif artifact_path.endswith(".ubj"):
-        method = "xgboost_contributions"
-    elif artifact_path.endswith(".lgbm"):
-        method = "lightgbm_contributions"
-    elif artifact_path.endswith(".ebm"):
-        method = "ebm_terms"
-    else:
+    from haute._model_flavors import family_for_artifact
+
+    artifact_key = "model_path" if config.get("sourceType") == "file" else "artifact_path"
+    artifact_path = str(config.get(artifact_key, ""))
+    try:
+        method = family_for_artifact(artifact_path).explanation
+    except ConfigError:
+        method = None
+    if method is None:
         logger.warning(
             "explanation_error_metadata_unsupported_artifact",
             artifact_path=artifact_path,
@@ -740,43 +753,54 @@ def explain_model_score_from_config(
     prediction_column: str,
     prediction_value: Any,
 ) -> dict[str, Any] | None:
-    """Load the configured model and return trace explanation detail."""
-    if not _config_requests_supported_explanation(config):
+    """Load the configured model and return trace explanation detail.
+
+    ``None`` for a node with no source chosen or a model with no supported
+    explanation. A source config that does not parse raises its ``ConfigError``.
+    """
+    from haute._builders import _configured_pipeline_dir
+    from haute._model_flavors import model_family
+    from haute._model_source import load_scoring_model, parse_model_source, scoring_contract_path
+
+    source = parse_model_source(config)
+    if source is None or not _source_requests_supported_explanation(source):
         return None
 
-    from haute._mlflow_io import load_mlflow_model
-
-    scoring_model = load_mlflow_model(
-        source_type=config.get("sourceType", "run"),
-        run_id=config.get("run_id", ""),
-        artifact_path=config.get("artifact_path", ""),
-        registered_model=config.get("registered_model", ""),
-        version=config.get("version", "latest"),
-        alias=str(config.get("alias", "") or ""),
-        task=config.get("task", "regression"),
-        destination=str(config.get("mlflow_destination", "") or ""),
+    task = config.get("task", "regression")
+    base_dir = _configured_pipeline_dir()
+    scoring_model = load_scoring_model(
+        source,
+        task,
+        feature_contract_path=scoring_contract_path(source, config, base_dir),
+        base_dir=base_dir,
     )
     effective_prediction = (
         prediction_value if prediction_value is not None else output_row.get(prediction_column)
     )
-    if getattr(scoring_model, "flavor", "") == "catboost":
-        return explain_catboost_prediction(
-            scoring_model,
-            input_row,
-            task=config.get("task", "regression"),
-            prediction_value=effective_prediction,
-        )
-    if getattr(scoring_model, "flavor", "") in ("xgboost", "lightgbm", "ebm"):
+    family = model_family(scoring_model.flavor)
+    if family.explanation is None:
+        return None
+    if family.self_describing:
         return explain_native_prediction(
             scoring_model,
             input_row,
-            task=config.get("task", "regression"),
+            task=task,
             prediction_value=effective_prediction,
         )
-    if getattr(scoring_model, "flavor", "") == "rustystats":
+    if family.explanation == "catboost_shap":
+        return explain_catboost_prediction(
+            scoring_model,
+            input_row,
+            task=task,
+            prediction_value=effective_prediction,
+        )
+    if family.explanation == "rustystats_glm_contributions":
         return explain_rustystats_glm_prediction(
             scoring_model,
             input_row,
             prediction_value=effective_prediction,
         )
-    return None
+    raise ValueError(
+        f"Model family {family.flavor!r} registers explanation {family.explanation!r}, "
+        "which no explainer implements."
+    )

@@ -17,7 +17,6 @@ from haute._mlflow_io import (
     _artifact_cache_path,
     _disk_cache_root,
     _find_artifact_by_extension,
-    _find_cbm_artifact,
     _find_model_artifact,
     _load_rustystats_model,
     _local_artifact_fingerprint,
@@ -93,7 +92,6 @@ class TestLoadRunBasedModel:
             resolve_patch,
             patch("haute._mlflow_io._load_catboost_model", return_value=fake_model),
             patch("haute._mlflow_io._resolve_artifact_local", return_value="/tmp/model.cbm"),
-            patch("haute._mlflow_io._find_cbm_artifact", return_value="model.cbm"),
         ):
             result = load_mlflow_model(
                 source_type="run",
@@ -165,7 +163,7 @@ class TestLoadRegisteredModel:
             patch("haute._mlflow_io._load_catboost_model", return_value=fake_model),
             patch("haute._mlflow_io._resolve_artifact_local", return_value="/tmp/model.cbm"),
             patch("haute._mlflow_utils.resolve_version", return_value="2"),
-            patch("haute._mlflow_io._find_cbm_artifact", return_value="model.cbm"),
+            patch("haute._mlflow_io._find_model_artifact", return_value=("model.cbm", "catboost")),
         ):
             result = load_mlflow_model(
                 source_type="registered",
@@ -216,7 +214,6 @@ class TestPyfuncAutoDetect:
         with (
             modules_patch,
             resolve_patch,
-            patch("haute._mlflow_io._find_cbm_artifact", side_effect=FileNotFoundError),
             patch("haute._mlflow_io._find_model_artifact", return_value=("model", "pyfunc")),
             patch("haute._mlflow_io._load_pyfunc_model", return_value=fake_pyfunc),
         ):
@@ -279,7 +276,6 @@ class TestModelCache:
         with (
             modules_patch,
             resolve_patch,
-            patch("haute._mlflow_io._find_cbm_artifact", return_value="model.cbm"),
         ):
             result = load_mlflow_model(
                 source_type="run",
@@ -309,7 +305,6 @@ class TestModelCache:
             resolve_patch,
             patch("haute._mlflow_io._load_catboost_model", return_value=fake_model),
             patch("haute._mlflow_io._resolve_artifact_local", return_value=str(local_file)),
-            patch("haute._mlflow_io._find_cbm_artifact", return_value="model.cbm"),
         ):
             load_mlflow_model(
                 source_type="run",
@@ -686,22 +681,6 @@ class TestFindArtifactByExtension:
         result = _find_artifact_by_extension(client, "run1", ".cbm", "CatBoost")
         assert result == "model.cbm"
         client.list_artifacts.assert_called_once_with("run1")
-
-    def test_delegates_correctly_via_find_cbm(self):
-        """_find_cbm_artifact delegates to _find_artifact_by_extension."""
-        client = MagicMock()
-        art = MagicMock(path="model.cbm", is_dir=False)
-        client.list_artifacts.return_value = [art]
-        assert _find_cbm_artifact(client, "run1") == "model.cbm"
-
-    def test_delegates_correctly_via_find_rsglm(self):
-        """_find_rsglm_artifact delegates to _find_artifact_by_extension."""
-        from haute._mlflow_io import _find_rsglm_artifact
-
-        client = MagicMock()
-        art = MagicMock(path="model.rsglm", is_dir=False)
-        client.list_artifacts.return_value = [art]
-        assert _find_rsglm_artifact(client, "run1") == "model.rsglm"
 
 
 # ---------------------------------------------------------------------------
@@ -1266,15 +1245,26 @@ class TestLoadLocalModel:
         assert sm.cat_feature_names == frozenset()
         assert sm.raw_model is mock_model
 
-    def test_unsupported_extension_raises(self):
-        """Unknown extension raises NotImplementedError."""
-        with pytest.raises(NotImplementedError, match="not yet supported"):
-            load_local_model("/tmp/model.pkl")
+    def test_unsupported_extension_raises_config_error_naming_the_suffixes(self):
+        """An unregistered suffix is refused by name, never guessed as a family."""
+        from haute.errors import ConfigError
 
-    def test_unsupported_extension_lists_formats(self):
-        """Error message lists supported formats."""
-        with pytest.raises(NotImplementedError, match=r"\.cbm.*\.rsglm"):
+        with pytest.raises(ConfigError, match=r"\.cbm, \.rsglm, \.ubj, \.lgbm, \.ebm") as exc:
             load_local_model("/tmp/model.onnx")
+        assert exc.value.context["supported_suffixes"] == [
+            ".cbm",
+            ".rsglm",
+            ".ubj",
+            ".lgbm",
+            ".ebm",
+        ]
+
+    def test_pyfunc_directory_does_not_load_locally(self):
+        """A suffix-less path names a pyfunc directory, which loads only from MLflow."""
+        from haute.errors import ConfigError
+
+        with pytest.raises(ConfigError, match="loads only from MLflow"):
+            load_local_model("/tmp/model")
 
     def test_classification_task_forwarded_for_cbm(self):
         """task='classification' is forwarded to CatBoost loader."""
@@ -1376,8 +1366,11 @@ class TestFindModelArtifact:
         client = MagicMock()
         txt_art = MagicMock(path="readme.txt", is_dir=False)
         client.list_artifacts.return_value = [txt_art]
-        with pytest.raises(FileNotFoundError, match="No model artifact"):
+        with pytest.raises(FileNotFoundError, match="No model artifact") as exc:
             _find_model_artifact(client, "run1")
+        for suffix in (".cbm", ".rsglm", ".ubj", ".lgbm", ".ebm"):
+            assert suffix in str(exc.value)
+        assert "pyfunc model directory" in str(exc.value)
 
     def test_finds_pyfunc_in_subdirectory_via_mlmodel(self):
         """Finds pyfunc model in subdirectory by detecting MLmodel file."""
@@ -2238,70 +2231,39 @@ class TestPreparePredictFrameEdgeCases:
 
 
 class TestFlavorSsot:
-    """``ModelFlavor`` / ``_SUPPORTED_FLAVORS`` are single-sourced.
+    """Predict-frame preparation reads the model family registry.
 
-    Regression guard for F865/F866: the flavor domain used to be spelled twice
-    — once as the scorer's ``ModelFlavor`` Literal and once as a parallel set
-    of hardcoded strings in ``_mlflow_io``.  These tests pin that (a) both
-    modules reference the *same* SSOT object hoisted into
-    :mod:`haute._model_flavors`, and (b) ``_mlflow_io``'s predict-frame prep
-    recognises *exactly* the SSOT flavors — so adding a flavor to the SSOT
-    without teaching ``_prepare_predict_frame`` (or vice-versa) fails CI here
-    instead of drifting silently.
+    Every registered family is prepared through its registered
+    ``predict_frame``; a flavor outside the registry is rejected loudly rather
+    than scored through a guessed input contract.
     """
 
-    def test_mlflow_io_uses_the_canonical_flavor_set(self):
-        """Model loading binds the canonical frozenset object, not a copy."""
-        from haute import _mlflow_io
-        from haute._model_flavors import _SUPPORTED_FLAVORS
-
-        assert _mlflow_io._SUPPORTED_FLAVORS is _SUPPORTED_FLAVORS
-
-    def test_prepare_predict_frame_recognises_exactly_supported_flavors(self):
-        """Every SSOT flavor is prepared; anything outside it is rejected loudly.
-
-        This is the drift trap: iterating ``_SUPPORTED_FLAVORS`` means a flavor
-        newly added to the SSOT is exercised here, and if
-        ``_prepare_predict_frame`` has not been taught to prepare it the call
-        raises and this test fails.
-        """
-        from haute._model_flavors import _SUPPORTED_FLAVORS
+    def test_prepare_predict_frame_recognises_exactly_registered_flavors(self):
+        from haute._model_flavors import model_families
 
         df = pl.DataFrame({"a": [1.0, 2.0], "b": [3.0, 4.0]})
         features = ["a", "b"]
 
-        prepared_flavors = set()
-        for flavor in _SUPPORTED_FLAVORS:
-            prepared = _prepare_predict_frame(df, features, frozenset(), flavor)
-            assert prepared is not None
-            prepared_flavors.add(flavor)
-        # Accepted set is exactly the SSOT — no more, no fewer.
-        assert prepared_flavors == set(_SUPPORTED_FLAVORS)
+        for family in model_families():
+            prepared = _prepare_predict_frame(df, features, frozenset(), family.flavor)
+            expected = {"polars": pl.DataFrame, "tabular": np.ndarray}.get(family.predict_frame)
+            if expected is not None:
+                assert isinstance(prepared, expected)
+            else:
+                assert list(prepared.columns) == features  # named pandas frame
 
-        # A flavor outside the SSOT fails loudly rather than being scored
-        # through the wrong (catboost-shaped) input contract.
         with pytest.raises(ValueError, match="Unknown model flavor"):
-            _prepare_predict_frame(df, features, frozenset(), "unregistered")  # type: ignore[arg-type]
+            _prepare_predict_frame(df, features, frozenset(), "unregistered")
 
-    def test_unknown_flavor_error_enumerates_the_ssot(self):
-        """The rejection message lists the SSOT flavors, not a hardcoded copy."""
-        from haute._model_flavors import _SUPPORTED_FLAVORS
+    def test_unknown_flavor_error_enumerates_the_registry(self):
+        from haute._model_flavors import model_families
 
         df = pl.DataFrame({"a": [1.0]})
         with pytest.raises(ValueError) as exc:
-            _prepare_predict_frame(df, ["a"], frozenset(), "unregistered")  # type: ignore[arg-type]
+            _prepare_predict_frame(df, ["a"], frozenset(), "unregistered")
         message = str(exc.value)
-        for flavor in _SUPPORTED_FLAVORS:
-            assert flavor in message
-
-    def test_flavor_from_artifact_codomain_within_ssot(self):
-        """Every flavor ``_flavor_from_artifact`` can emit is a SSOT member."""
-        from haute._mlflow_io import _flavor_from_artifact
-        from haute._model_flavors import _SUPPORTED_FLAVORS
-
-        assert _flavor_from_artifact("model.cbm") in _SUPPORTED_FLAVORS
-        assert _flavor_from_artifact("model.rsglm") in _SUPPORTED_FLAVORS
-        assert _flavor_from_artifact("model") in _SUPPORTED_FLAVORS
+        for family in model_families():
+            assert repr(family.flavor) in message
 
 
 class TestCatBoostTaskFromTheModelFile:

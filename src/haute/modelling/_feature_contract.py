@@ -13,11 +13,15 @@ The contract round-trips through pretty-printed, sort-keyed JSON so the
 artifact is human-readable in code review and byte-deterministic for
 downstream content hashing.
 
-Version 2 adds an optional :class:`ModelIdentity` section recording which
+Version 2 added an optional :class:`ModelIdentity` section recording which
 model the schema belongs to (algorithm, loss and link, binary class mapping,
 engine and Haute versions). Training always writes it; a contract supplied
 for a generic MLflow model may omit it. Only the schema fields are compared
 against live data; the identity is checked against the loaded model.
+
+Version 3 adds ``offset_link``: how the offset column enters the model's raw
+score (``log`` or ``identity``), so a contract can declare the baseline of a
+model whose file does not record it.
 """
 
 from __future__ import annotations
@@ -43,12 +47,19 @@ _FIELDS: tuple[str, ...] = (
     "target_type",
     "task",
     "offset_column",
+    "offset_link",
 )
 _ALL_KEYS: frozenset[str] = frozenset((*_FIELDS, "contract_hash", "contract_version", "model"))
+#: The fields live data can disagree with; the offset link, like the model
+#: identity, declares how the model applies its offset and is checked against
+#: the loaded model instead.
+_LIVE_FIELDS: tuple[str, ...] = tuple(field for field in _FIELDS if field != "offset_link")
 
 #: The only contract format this release reads or writes.
-CONTRACT_VERSION = 2
+CONTRACT_VERSION = 3
 _LINKS = frozenset({"identity", "log", "logit"})
+#: How an offset column can enter a model's raw score.
+OFFSET_LINKS = frozenset({"identity", "log"})
 ClassLabel = bool | int | str
 
 CONTRACT_FILENAME = "feature_contract.json"
@@ -172,6 +183,9 @@ class FeatureContract:
     # feature: it never enters the design matrix / pool, but every scoring
     # frame MUST carry it — served predictions include the offset effect.
     offset_column: str | None = None
+    #: How the offset enters the raw score (``log`` or ``identity``). ``None``
+    #: without an offset, or beside one for a model that applies its own.
+    offset_link: str | None = None
     #: The trained model this schema belongs to; ``None`` for a contract
     #: supplied with a generic MLflow model or rebuilt from live data.
     model: ModelIdentity | None = None
@@ -187,6 +201,7 @@ def _canonical_payload(
     target_type: str,
     task: str,
     offset_column: str | None = None,
+    offset_link: str | None = None,
     model: ModelIdentity | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
@@ -202,6 +217,7 @@ def _canonical_payload(
         "target_type": target_type,
         "task": task,
         "offset_column": offset_column,
+        "offset_link": offset_link,
     }
     return payload
 
@@ -221,6 +237,7 @@ def build_contract(
     categorical_levels: Mapping[str, Iterable[str | None]] | None = None,
     offset_column: str | None = None,
     model: ModelIdentity | None = None,
+    offset_link: str | None = None,
 ) -> FeatureContract:
     """Construct a contract and compute its content hash.
 
@@ -228,6 +245,7 @@ def build_contract(
     contract's read-only forms.  ``contract_hash`` is the sha256 of the
     canonical-JSON representation of every field except itself.
     """
+    _check_offset_link(offset_column or None, offset_link, "<memory>")
     if offset_column and offset_column in features:
         raise FeatureMismatchError(
             "offset_column shadows a feature name; the offset is a separate "
@@ -249,6 +267,7 @@ def build_contract(
         target_type,
         task,
         offset_column or None,
+        offset_link,
         model,
     )
     return FeatureContract(
@@ -261,8 +280,30 @@ def build_contract(
         task=task,
         contract_hash=_hash_payload(payload),
         offset_column=offset_column or None,
+        offset_link=offset_link,
         model=model,
     )
+
+
+def _check_offset_link(offset_column: str | None, offset_link: Any, path: Path | str) -> None:
+    """Refuse an offset link that is not ``log``/``identity`` or names no column."""
+    if offset_link is None:
+        return
+    if not isinstance(offset_link, str) or offset_link not in OFFSET_LINKS:
+        raise FeatureMismatchError(
+            "contract offset_link must be 'log', 'identity' or null",
+            path=str(path),
+            field="offset_link",
+            offset_link=offset_link,
+        )
+    if offset_column is None:
+        raise FeatureMismatchError(
+            "contract offset_link is set but offset_column is null; an offset link "
+            "describes an offset column",
+            path=str(path),
+            field="offset_link",
+            offset_link=offset_link,
+        )
 
 
 def save_contract(contract: FeatureContract, path: Path | str) -> None:
@@ -280,6 +321,7 @@ def save_contract(contract: FeatureContract, path: Path | str) -> None:
         "task": contract.task,
         "contract_hash": contract.contract_hash,
         "offset_column": contract.offset_column,
+        "offset_link": contract.offset_link,
         "contract_version": contract.contract_version,
         "model": contract.model.to_plain_data() if contract.model is not None else None,
     }
@@ -340,6 +382,7 @@ def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContr
     _check_type(raw, "contract_hash", str, path)
     if raw["offset_column"] is not None:
         _check_type(raw, "offset_column", str, path)
+    _check_offset_link(raw["offset_column"], raw["offset_link"], path)
 
     categorical_levels = normalise_categorical_levels(
         raw["categorical_levels"],
@@ -362,6 +405,7 @@ def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContr
                 raw["target_type"],
                 raw["task"],
                 raw["offset_column"],
+                raw["offset_link"],
                 model,
             )
         )
@@ -384,6 +428,7 @@ def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContr
         task=raw["task"],
         contract_hash=raw["contract_hash"],
         offset_column=raw["offset_column"],
+        offset_link=raw["offset_link"],
         model=model,
     )
 
@@ -639,7 +684,7 @@ def assert_contracts_match(expected: FeatureContract, actual: FeatureContract) -
     ``field`` / ``expected`` / ``actual`` context is also attached so log
     consumers and tests can introspect without parsing the message.
     """
-    for field in _FIELDS:
+    for field in _LIVE_FIELDS:
         exp_val = getattr(expected, field)
         act_val = getattr(actual, field)
         if _normalise(exp_val) != _normalise(act_val):

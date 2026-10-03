@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 import polars as pl
 
@@ -1092,45 +1092,6 @@ def _build_modelling(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     return ctx.func_name, _modelling_passthrough_fn, False
 
 
-def _validated_model_score_source(
-    config: Mapping[str, Any],
-) -> tuple[Literal["", "run", "registered"], str, str]:
-    """Return model-source fields, rejecting half-configured source choices."""
-    from haute.errors import ConfigError
-
-    source_type = config.get("sourceType", "")
-    if not isinstance(source_type, str):
-        raise ConfigError(
-            "modelScore node has a non-string sourceType",
-            sourceType=source_type,
-        )
-    if source_type not in ("", "run", "registered"):
-        raise ConfigError(
-            "modelScore node has an unsupported sourceType",
-            sourceType=source_type,
-            supported_source_types=["run", "registered"],
-        )
-    validated_source_type = cast(Literal["", "run", "registered"], source_type)
-    raw_run_id = config.get("run_id", "")
-    raw_registered_model = config.get("registered_model", "")
-    run_id = raw_run_id if isinstance(raw_run_id, str) else ""
-    registered_model = raw_registered_model if isinstance(raw_registered_model, str) else ""
-    if source_type == "run" and not run_id:
-        raise ConfigError(
-            "modelScore node is misconfigured: sourceType='run' but run_id is empty",
-            sourceType=source_type,
-            missing_field="run_id",
-        )
-    if source_type == "registered" and not registered_model:
-        raise ConfigError(
-            "modelScore node is misconfigured: sourceType='registered' but "
-            "registered_model is empty",
-            sourceType=source_type,
-            missing_field="registered_model",
-        )
-    return validated_source_type, run_id, registered_model
-
-
 def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
     out = config.get("output_column", "prediction") or "prediction"
     produced = {out}
@@ -1143,7 +1104,24 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
     if code or (isinstance(steps, list) and bool(steps)):
         return produced, None
 
+    from haute._model_source import (
+        FileModelSource,
+        load_scoring_model,
+        model_contract_path,
+        parse_model_source,
+    )
+
+    model_source = parse_model_source(config)
     feature_contract_path = config.get("feature_contract_path")
+    if (
+        not (isinstance(feature_contract_path, str) and feature_contract_path)
+        and isinstance(model_source, FileModelSource)
+        and _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY not in config
+    ):
+        # A model file scores under the contract saved beside it, so planning
+        # reads the same contract the scorer binds.
+        discovered = model_contract_path(model_source, None, _configured_pipeline_dir())
+        feature_contract_path = str(discovered) if discovered is not None else None
     if isinstance(feature_contract_path, str) and feature_contract_path:
         # Stat-gated cache: this planner runs during graph construction on
         # every deployed /quote and every preview — re-reading/re-hashing an
@@ -1186,8 +1164,7 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
         return produced, set(deploy_inputs) if deploy_inputs else None
 
     # Feature columns are only known after loading the model.
-    source_type, run_id, registered_model = _validated_model_score_source(config)
-    if not source_type:
+    if model_source is None:
         # Distinguish two sub-cases cleanly:
         #
         # 1. ``output_column`` missing entirely and no source configured
@@ -1206,23 +1183,13 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
             return produced, set()
         return produced, None
 
-    # With required config present, attempt the MLflow load.  Failures here
-    # (run not found, artifact missing, MLflow down) propagate — the old
-    # debug-log swallow hid real config/infra problems from downstream nodes.
-    from haute._mlflow_io import load_mlflow_model
-
-    scoring_model = load_mlflow_model(
-        source_type=source_type,
-        run_id=run_id,
-        artifact_path=config.get("artifact_path", ""),
-        registered_model=registered_model,
-        version=config.get("version", "latest"),
-        alias=str(config.get("alias", "") or ""),
-        task=config.get("task", "regression"),
-        # Planning loads from the node's own destination, exactly like the
-        # scorer built for it: planning must never reach another backend just
-        # to learn its feature columns.
-        destination=str(config.get("mlflow_destination", "") or ""),
+    # With required config present, attempt the load.  Failures here (run not
+    # found, artifact missing, MLflow down) propagate — the old debug-log
+    # swallow hid real config/infra problems from downstream nodes. Planning
+    # loads exactly the model the scorer built for this node loads, from the
+    # node's own destination.
+    scoring_model = load_scoring_model(
+        model_source, config.get("task", "regression"), base_dir=_configured_pipeline_dir()
     )
     if scoring_model.feature_names:
         referenced = set(scoring_model.feature_names)
@@ -1268,20 +1235,19 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         # Incomplete post-scoring steps must not score the frame and pass it on.
         return ctx.func_name, _incomplete_transform(f"{INCOMPLETE_STEPS_MESSAGE} {problem}"), False
     code = str(config.get("code") or "").strip()
-    # Default to "" (not "run") — empty sourceType means the node is
-    # unconfigured and should passthrough.  Codegen and score_from_config
-    # default to "run" because they only execute for configured nodes.
-    source_type, _run_id, _registered_model = _validated_model_score_source(config)
-    _artifact_path = config.get("artifact_path", "")
-    _task = config.get("task", "regression")
+    from haute._model_source import parse_model_source
 
-    # A genuinely untouched node remains a preview passthrough. Once a source
-    # type is selected, the validator above requires its identifying field.
-    if not source_type:
+    # A genuinely untouched node (no source chosen) remains a preview
+    # passthrough. Once a source type is selected, the parser requires its
+    # identifying field.
+    model_source = parse_model_source(config)
+    if model_source is None:
         return ctx.func_name, _passthrough_fn, False
 
     from haute._model_scorer import ModelScorer
+    from haute._model_source import scoring_contract_path
 
+    base_dir = _configured_pipeline_dir()
     required_output_columns = projection.model_score_required_output_columns(
         config,
         ctx.required_output_columns,
@@ -1295,12 +1261,8 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     )
 
     scorer = ModelScorer(
-        source_type=source_type,
-        run_id=_run_id,
-        artifact_path=_artifact_path,
-        registered_model=_registered_model,
-        version=config.get("version", "latest"),
-        task=_task,
+        model_source=model_source,
+        task=config.get("task", "regression"),
         output_col=config.get("output_column", "prediction"),
         code=code,
         source_names=list(ctx.source_names),
@@ -1308,12 +1270,11 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         row_limit=ctx.row_limit,
         schema_only=ctx.schema_only,
         required_output_columns=required_output_columns,
-        feature_contract_path=config.get("feature_contract_path") or None,
+        feature_contract_path=scoring_contract_path(model_source, config, base_dir),
         categorical_levels=declared_categorical_levels,
         reuse_loaded_model=ctx.reuse_loaded_model,
-        mlflow_destination=str(config.get("mlflow_destination", "") or ""),
-        alias=str(config.get("alias", "") or ""),
         input_fanout=_upstream_scenario_fanout(ctx.upstream_ids, ctx.node_map),
+        base_dir=base_dir,
         global_constants=(ctx.preamble_ns or {}).get(GLOBAL_CONSTANTS_NAME),
     )
 

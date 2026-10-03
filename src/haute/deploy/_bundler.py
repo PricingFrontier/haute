@@ -7,7 +7,8 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
 from haute._logging import get_logger
-from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
+from haute._model_flavors import family_for_artifact
+from haute._path_resolution import PathPreference, RuntimePathError, resolve_runtime_file_path
 from haute.errors import DeployError
 from haute.graph_utils import NodeType, PipelineGraph
 
@@ -69,7 +70,8 @@ def collect_artifacts(
 
     - ``externalFile`` nodes: model files (``.cbm``, ``.pkl``, etc.)
     - ``optimiserApply`` nodes: optimiser artifact files
-    - ``modelScore`` nodes: CatBoost ``.cbm`` models (downloaded from MLflow)
+    - ``modelScore`` nodes: model files (downloaded from MLflow, or copied from
+      the project for a file source) and the feature contracts they score under
     - ``dataInput`` nodes that are NOT deploy inputs: static data inputs
 
     Args:
@@ -122,9 +124,13 @@ def collect_artifacts(
             artifacts.add(nid, artifact_name, abs_path)
 
         elif node_type == NodeType.MODEL_SCORE:
-            source_type = config.get("sourceType", "run")
-            run_id = config.get("run_id", "")
-            artifact_path = config.get("artifact_path", "")
+            from haute._model_source import (
+                FileModelSource,
+                IncompleteModelSourceError,
+                RegisteredModelSource,
+                parse_model_source,
+            )
+
             explicit_contract = config.get("feature_contract_path")
             if explicit_contract is not None:
                 if not isinstance(explicit_contract, str) or not explicit_contract:
@@ -136,11 +142,36 @@ def collect_artifacts(
                         field="feature_contract_path",
                         path=explicit_contract,
                     )
+                # The scoring rule: the project before the pipeline directory.
                 contract_path = _resolve_path(
-                    explicit_contract, pipeline_dir, project_root, nid, "feature_contract_path"
+                    explicit_contract,
+                    pipeline_dir,
+                    project_root,
+                    nid,
+                    "feature_contract_path",
+                    prefer="project",
                 )
                 _check_exists(contract_path, nid, "modelScore feature contract")
                 artifacts.add(nid, f"{nid}__feature_contract.json", contract_path)
+
+            try:
+                model_source = parse_model_source(config)
+            except IncompleteModelSourceError as exc:
+                # Nothing to download; the deploy scorer refuses the node as an
+                # identity passthrough unless an artifact is bundled for it.
+                logger.warning(
+                    "model_score_skip_incomplete_source",
+                    node_id=nid,
+                    missing_field=exc.context.get("missing_field"),
+                )
+                continue
+            if model_source is None:
+                continue
+            if isinstance(model_source, FileModelSource):
+                _collect_model_file(
+                    nid, model_source, explicit_contract, pipeline_dir, project_root, artifacts
+                )
+                continue
 
             # The node's stored destination ("" = local) is resolved to exactly
             # one backend, after the skip guards so an unconfigured node stays a
@@ -149,39 +180,28 @@ def collect_artifacts(
             # the two across backends.
             from haute._mlflow_utils import resolve_backend
 
-            destination = str(config.get("mlflow_destination", "") or "")
-
-            if source_type == "registered":
-                registered_model = config.get("registered_model", "")
-                version = config.get("version", "")
-                alias = str(config.get("alias", "") or "")
-                if not registered_model:
-                    logger.warning(
-                        "model_score_skip_no_registered_model",
-                        node_id=nid,
-                    )
-                    continue
-                backend = resolve_backend(destination)
+            if isinstance(model_source, RegisteredModelSource):
+                backend = resolve_backend(model_source.mlflow_destination)
                 run_id, artifact_path, resolved_version = _resolve_registered_model(
-                    registered_model,
-                    version,
+                    model_source.registered_model,
+                    model_source.version,
                     backend=backend,
-                    alias=alias,
+                    alias=model_source.alias,
                 )
                 if model_sources is not None:
                     model_sources[nid] = {
-                        "registered_model": registered_model,
-                        "alias": alias,
+                        "registered_model": model_source.registered_model,
+                        "alias": model_source.alias,
                         "version": resolved_version,
                         "run_id": run_id,
                     }
             else:
-                # source_type == "run" (default)
-                if artifact_path not in (None, ""):
-                    _validate_mlflow_artifact_identifier(nid, artifact_path)
-                if not run_id or artifact_path in (None, ""):
+                artifact_path = model_source.artifact_path
+                if not artifact_path:
+                    # A run without an artifact path is discovered when served.
                     continue
-                backend = resolve_backend(destination)
+                run_id = model_source.run_id
+                backend = resolve_backend(model_source.mlflow_destination)
 
             _validate_mlflow_artifact_identifier(nid, artifact_path)
 
@@ -204,9 +224,14 @@ def collect_artifacts(
             # staged into the MLflow download cache (or placed manually);
             # training itself writes per-model ``{name}.feature_contract.json``
             # files since W4b.9 and never populates this directory.
-            if explicit_contract is None and Path(artifact_path).suffix == ".ebm":
-                # An EBM loads only under its contract, which the run logged
-                # beside the model; bundle it so the deployed scorer has it.
+            if explicit_contract is None and (
+                family_for_artifact(artifact_path).requires_contract
+                or _offset_undeclared(local_path, str(config.get("task") or "regression"))
+            ):
+                # A family that loads only under its contract (EBM), and a
+                # CatBoost model whose file does not declare its offset, score
+                # only with the contract the run logged beside the model; bundle
+                # it so the deployed scorer binds the same declaration.
                 import mlflow
 
                 from haute._mlflow_io import _resolve_run_contract
@@ -231,6 +256,64 @@ def collect_artifacts(
             )
 
     return artifacts
+
+
+def _collect_model_file(
+    node_id: str,
+    model_source: Any,
+    explicit_contract: str | None,
+    pipeline_dir: Path,
+    project_root: Path,
+    artifacts: ArtifactKeys,
+) -> None:
+    """Bundle a file-sourced Model Scoring node's model and the contract it scores under.
+
+    The model and its sibling contract resolve exactly as scoring resolves them
+    (:mod:`haute._model_source`): the project before the pipeline directory, and
+    a sibling that leaves the project through a symlink is refused. The model
+    is bundled under ``<node>__<configured file name>``, the key the deployed
+    scorer looks it up by; without an explicit contract (already bundled by the
+    caller), the contract saved beside the model is bundled under
+    ``<node>__feature_contract.json``.
+    """
+    from haute._model_source import model_contract_path
+    from haute.deploy._utils import artifact_basename
+    from haute.modelling._feature_contract import CONTRACT_FILENAME
+
+    # An unsupported suffix is refused before anything is copied.
+    family_for_artifact(model_source.model_path)
+    model_path = _resolve_path(
+        model_source.model_path,
+        pipeline_dir,
+        project_root,
+        node_id,
+        "model_path",
+        prefer="project",
+    )
+    _check_exists(model_path, node_id, "modelScore")
+    artifacts.add(node_id, f"{node_id}__{artifact_basename(model_source.model_path)}", model_path)
+    if explicit_contract is not None:
+        return
+    try:
+        sibling = model_contract_path(model_source, None, pipeline_dir, project_root=project_root)
+    except RuntimePathError as exc:
+        raise DeployError(
+            f"Node {node_id!r} has a feature contract beside its model file that resolves "
+            "outside the project root. Replace it with a contract file inside the project.",
+            node_id=node_id,
+            field="model_path",
+        ) from exc
+    if sibling is not None:
+        artifacts.add(node_id, f"{node_id}__{CONTRACT_FILENAME}", sibling)
+
+
+def _offset_undeclared(model_path: Path, task: str) -> bool:
+    """Whether a downloaded model's file leaves its offset undeclared (a CatBoost model)."""
+    if family_for_artifact(model_path.name).flavor != "catboost":
+        return False
+    from haute._mlflow_io import load_local_model
+
+    return not load_local_model(str(model_path), task).offset_declared
 
 
 def _bundle_feature_contract(
@@ -372,6 +455,8 @@ def _resolve_path(
     project_root: Path | None = None,
     node_id: str | None = None,
     field_name: str | None = None,
+    *,
+    prefer: PathPreference = "pipeline",
 ) -> Path:
     """Resolve ``raw_path`` to an absolute path at bundle time.
 
@@ -406,7 +491,7 @@ def _resolve_path(
             raw_path,
             pipeline_dir=pipeline_dir,
             project_root=root,
-            prefer="pipeline",
+            prefer=prefer,
             enforce_project_root=True,
         )
     except RuntimePathError as exc:

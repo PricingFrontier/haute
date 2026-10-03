@@ -851,6 +851,8 @@ def _local_runtime_input_path_fields(node: GraphNode) -> tuple[str, ...]:
         and node.data.config.get("sourceType") == "file"
     ):
         fields.append("artifact_path")
+    if node.data.nodeType == NodeType.MODEL_SCORE and node.data.config.get("sourceType") == "file":
+        fields.append("model_path")
     return tuple(fields)
 
 
@@ -1134,9 +1136,12 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
       invalidates execution caches.
     * **everything else** — the per-node config path fields shared with
       :func:`_local_runtime_input_path_fields`: ``externalFile`` paths,
-      ``modelScore`` feature-contract paths, and file-sourced
+      ``modelScore`` feature-contract paths and model files, and file-sourced
       ``optimiserApply`` artifacts. MLflow artifact identifiers are config
-      identity, not local files.
+      identity, not local files. A file-sourced ``modelScore`` without an
+      explicit contract also signs both contract candidates beside its model
+      (``contract_candidate:<n>``), so replacing, adding or deleting the
+      contract it would score under changes the identity.
     """
     node_type = node.data.nodeType
     config = node.data.config
@@ -1173,6 +1178,15 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
         raw = config.get(path_field)
         if isinstance(raw, str) and raw:
             paths[path_field] = _runtime_path_from_graph_config(graph, raw)
+    if "model_path" in paths and not config.get("feature_contract_path"):
+        from haute._mlflow_io import model_contract_candidates
+
+        for index, candidate in enumerate(model_contract_candidates(paths["model_path"])):
+            # Contained before it is hashed: a sibling that resolves outside the
+            # project through a symlink is refused, never read.
+            paths[f"contract_candidate:{index}"] = resolve_runtime_file_path(
+                str(candidate), source_file=graph.source_file, prefer="project"
+            )
     return paths
 
 

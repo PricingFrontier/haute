@@ -91,7 +91,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // Name collisions add the name-violations banner and revalidation, allocated
 // node names, the shared rename validator and the naming context. The complete
 // production bundle is 1,589.8 KiB; 1,591 KiB restores about 1.2 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1591
+// Model Scoring's Model file source adds its lazy editor option and file
+// inspection panel and the generated ModelFileInspectionResponse validator.
+// With both, the complete production bundle is 1,591.3 KiB; 1,593 KiB
+// restores about 1.7 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1593
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

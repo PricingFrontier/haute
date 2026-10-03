@@ -64,8 +64,23 @@ def _write_cached_model(
     digest = backend_digest if backend_digest is not None else resolve_backend("").digest
     cached = _artifact_cache_path(tmp_path / ".cache" / "models", digest, run_id, artifact_path)
     cached.parent.mkdir(parents=True, exist_ok=True)
-    cached.write_bytes(payload)
+    if artifact_path.endswith(".cbm"):
+        # The bundler reads a CatBoost model's offset declaration, so seed a real
+        # model that declares no offset, tagged with the payload.
+        _declared_catboost(cached, payload)
+    else:
+        cached.write_bytes(payload)
     return cached
+
+
+def _declared_catboost(path: Path, tag: bytes) -> None:
+    from catboost import CatBoostRegressor
+
+    model = CatBoostRegressor(iterations=2, depth=1, verbose=0, allow_writing_files=False)
+    model.fit([[1.0], [2.0], [3.0]], [1.0, 2.0, 3.0])
+    model.get_metadata()["haute_offset_column"] = ""
+    model.get_metadata()["test_payload"] = tag.decode()
+    model.save_model(str(path))
 
 
 @pytest.fixture()
@@ -629,7 +644,7 @@ class TestBundler:
         ) as mock_resolve:
             artifacts = collect_artifacts(graph, [], tmp_path)
 
-        mock_resolve.assert_called_once_with("my-model", "", backend=ANY, alias="")
+        mock_resolve.assert_called_once_with("my-model", "latest", backend=ANY, alias="")
         assert len(artifacts) == 1
 
     def test_registered_model_skipped_without_model_name(self):
@@ -767,8 +782,8 @@ class TestBundler:
         assert len(artifacts) == 1
         assert "ms_explicit_run__model.cbm" in artifacts
 
-    def test_model_score_defaults_to_run_source_type(self, tmp_path, monkeypatch):
-        """MODEL_SCORE without sourceType defaults to 'run'."""
+    def test_model_score_without_source_type_is_not_bundled(self, tmp_path, monkeypatch):
+        """MODEL_SCORE without sourceType is untouched, as in the preview: nothing bundles."""
         from haute.deploy._bundler import collect_artifacts
 
         monkeypatch.chdir(tmp_path)
@@ -792,9 +807,7 @@ class TestBundler:
             }
         )
 
-        artifacts = collect_artifacts(graph, [], tmp_path)
-        assert len(artifacts) == 1
-        assert "ms_default__model.cbm" in artifacts
+        assert collect_artifacts(graph, [], tmp_path) == {}
 
     # -- One backend per node (MLF-D03) -------------------------------------
 
@@ -815,7 +828,7 @@ class TestBundler:
 
         # Only A's partition is seeded: a mid-operation re-resolution would
         # look under B's digest and miss.
-        _write_cached_model(
+        seeded = _write_cached_model(
             tmp_path,
             "resolved_run",
             "model.cbm",
@@ -874,7 +887,7 @@ class TestBundler:
         assert seen["download"] is backend_a
 
         bundled = artifacts["ms_one_backend__model.cbm"]
-        assert bundled.read_bytes() == b"model on backend A"
+        assert bundled.read_bytes() == seeded.read_bytes()
         assert backend_a.digest in bundled.parts
         assert backend_b.digest not in bundled.parts
 
@@ -1171,6 +1184,8 @@ class TestScorer:
         mock_model = MagicMock()
         mock_model.feature_names_ = ["x1"]
         mock_model.predict.return_value = np.array([42.0, 43.0])
+        # Trained by Haute without an offset.
+        mock_model.get_metadata.return_value = {"haute_offset_column": ""}
 
         graph = _g(
             {

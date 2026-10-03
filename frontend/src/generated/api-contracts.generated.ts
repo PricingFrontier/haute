@@ -1987,6 +1987,20 @@ export interface FileItem {
   size: number | null;
   type: 'file' | 'directory';
 }
+/**
+ * What a project model file scores as (``GET /api/model-file``).
+ */
+export interface ModelFileInspectionResponse {
+  categorical_features: string[];
+  contract_path: string | null;
+  features: string[];
+  flavor: string;
+  label: string;
+  model_path: string;
+  offset_column: string | null;
+  offset_link: 'log' | 'identity' | null;
+  task: 'regression' | 'classification' | null;
+}
 export interface TrainResponse {
   actual_vs_predicted: {
     [k: string]: number;

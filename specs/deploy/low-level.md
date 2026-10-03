@@ -137,7 +137,28 @@
    boundary. Explicit `modelScore.feature_contract_path` files are copied under the
    canonical `<node>__feature_contract.json` key and override an adjacent downloaded
    contract. MLflow artifact identifiers reject absolute and `..`-containing forms before
-   download. The bundler resolves each model-score node's `mlflow_destination` to one
+   download. Each model-score node's source is read through `parse_model_source`, the
+   parser every other Model Scoring consumer uses: a node with no `sourceType` is untouched
+   and is not bundled (the preview passes it through too), a chosen source with an empty
+   `run_id`/`registered_model` (`IncompleteModelSourceError`) is skipped with a warning, a
+   run source without an `artifact_path` is discovered when served, and any other invalid
+   source raises its `ConfigError`. A file source (`sourceType: "file"`) is copied from the
+   project: its `model_path` resolves with scoring's rule (the project before the
+   pipeline directory, unlike other local artefacts, so the bundle holds the file the
+   preview scored) and must exist, and the model is bundled under
+   `<node>__<configured file name>` (`artifact_basename`, splitting on either separator).
+   Its contract, the explicit `feature_contract_path` (also project-first for every
+   Model Scoring source) or else the first existing sibling (`model_contract_path`, which
+   refuses a sibling that leaves the project through a symlink as a `DeployError`), is
+   bundled under `<node>__feature_contract.json`; a file source never contacts MLflow. For a run or registered source without an explicit
+   contract, the contract logged beside the model in the run is bundled
+   (`_resolve_run_contract`, which fails naming the run when there is none) for a
+   contract-bound family and for a CatBoost model whose file does not declare its offset
+   (`_offset_undeclared` loads the downloaded model to check), so that model is served bound
+   to the same declaration as in the preview; otherwise the bare `feature_contract.json`
+   beside the download is bundled when present. A node left unbundled is then refused by the deploy
+   scorer's passthrough guard below. The bundler resolves each model-score node's
+   `mlflow_destination` to one
    backend exactly once and passes that object to both registered-model resolution
    (`_resolve_registered_model`, which resolves a stored `alias` once to its current
    version and returns `(run_id, artifact_path, resolved_version)`) and the download itself
@@ -272,8 +293,9 @@ directory, then copy the bundled `utility` package to `utility/` (or the module 
 `utility.py`) without `__pycache__` directories, generate `app.py` from an f-string template, generate `Dockerfile` (base
 image; one `pip install` of the scoring runtime `_SCORING_RUNTIME_DEPENDENCIES`, of `mlflow`
 when the pruned graph has an `optimiserApply` node sourced from an MLflow run or registered
-model, and of the model-runtime packages `_ARTIFACT_EXT_TO_DEPS` maps from artefact file
-suffixes; then a second `pip install --no-deps` of `haute` itself; every package pinned
+model, and of the model-runtime packages each artefact needs — a Model Scoring artefact's
+registered model family's `distributions` (`family_for_suffix`), a Load File artefact's entry
+in `_LOAD_FILE_EXT_TO_DEPS`; then a second `pip install --no-deps` of `haute` itself; every package pinned
 through `importlib.metadata` to the version installed in the deploying environment — the
 container unpickles the model, so a runtime resolved fresh at image-build time could load it
 under a different version than wrote it; a runtime the artefacts need that is not installed
@@ -392,7 +414,8 @@ first (see [modelling](../modelling/low-level.md)). The client creates the
 model-from-code with the manifest + every bundled artefact attached, the bundled `utility` package as its only MLflow
 `code_paths` entry (MLflow copies it under the model's `code/` directory and puts that on
 `sys.path` when the model loads), a `conda_env` with Python 3.11.11 and Haute exactly
-pinned but `polars>=1.44.2` (Haute's own Polars floor) and optional `catboost>=1.2.8` as lower bounds, and
+pinned but `polars>=1.44.2` (Haute's own Polars floor) as a lower bound (the pinned Haute
+brings its own model engines, CatBoost among them), and
 `registered_model_name` set to the UC
 three-level name. The client marks the run `FINISHED`, or `FAILED` when logging
 raised. Fetches the newly registered version through the client, then creates or updates the
@@ -418,7 +441,8 @@ pair. Deploy never uses the general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair.
    (`_resolve_runtime_graph_paths`) and attach bundled feature-contract paths to
    `modelScore` node configs (`_attach_bundled_feature_contracts`). When a remapped
    native model has no bundled feature-contract sidecar, load that local model through
-   the stat-gated deploy cache and attach its feature names plus any offset column as
+   the shared stat-gated local-model cache (`load_local_model_cached`) and attach its
+   feature names plus any offset column as
    the node's internal deploy-contract inputs before strategy planning. Projection and
    boundary checks therefore describe the artifact actually served and never contact
    the original MLflow run or registry merely to resolve a remapped model's columns.
@@ -446,7 +470,10 @@ pair. Deploy never uses the general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair.
    `load_mlflow_optimiser_artifact(destination=...)`, so a Local artifact is served from Local
    even when the deployed environment configures a remote, and an explicit destination
    that is not configured there fails without consulting another backend); `modelScore` in three sub-cases (remapped
-   model artefact present → score; contract bundled but no model artefact → validate
+   model artefact present, found by the basename of `model_path` for a file source and of
+   `artifact_path` otherwise (`_remap_artifact` takes the basename with `artifact_basename`,
+   so a path saved with backslashes on Windows is found on Linux) → score, loaded and bound to its bundled contract through
+   `load_local_model_cached`; contract bundled but no model artefact → validate
    contract then raise `RuntimeError`; neither present and no usable model source
    configured → raise `DeployError` immediately, never a silent passthrough).
 3. Compile the graph's preamble once so transform-node user code has access to the same

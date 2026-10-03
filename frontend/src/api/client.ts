@@ -26,6 +26,7 @@ import type {
   ExplorePivotRunResponse,
   ExplorePivotStatusResponse,
   BrowseFilesResponse,
+  ModelFileInspectionResponse,
   FrontierAutoRangeStartResponse,
   FrontierAutoRangeStatusResponse,
   FrontierSelectResponse,
@@ -1983,6 +1984,17 @@ export function listFiles(
   const params = new URLSearchParams({ dir })
   if (extensions) params.set("extensions", extensions)
   return request<unknown>(`/api/files?${params.toString()}`, options).then(async (data) => expectGeneratedContract("BrowseFilesResponse", (await sessionValidators()).validateBrowseFilesResponse, data))
+}
+
+/** What a project model file scores as, loaded and bound as Model Scoring loads it. */
+export function inspectModelFile(
+  path: string,
+  featureContractPath?: string,
+  options?: { signal?: AbortSignal },
+): Promise<ModelFileInspectionResponse> {
+  const params = new URLSearchParams({ path })
+  if (featureContractPath) params.set("feature_contract_path", featureContractPath)
+  return request<unknown>(`/api/model-file?${params.toString()}`, options).then(async (data) => expectGeneratedContract("ModelFileInspectionResponse", (await sessionValidators()).validateModelFileInspectionResponse, data))
 }
 
 export function readJson<T = unknown>(

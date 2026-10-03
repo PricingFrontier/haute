@@ -37,6 +37,8 @@ def registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
         run = client.create_run(experiment)
         model = CatBoostRegressor(iterations=5, depth=1, verbose=0, allow_writing_files=False)
         model.fit(frame, [scale, 2 * scale, 3 * scale, 4 * scale])
+        # Declared as Haute declares a fit without an offset.
+        model.get_metadata()["haute_offset_column"] = ""
         model_file = tmp_path / f"model_{int(scale)}.cbm"
         model.save_model(str(model_file))
         client.log_artifact(run.info.run_id, str(model_file))
@@ -293,7 +295,9 @@ class TestDeployRecordsTheResolvedAlias:
         cache_root = tmp_path / ".cache" / "models"
         cached = _artifact_cache_path(cache_root, resolve_backend("").digest, "run_7", "model.cbm")
         cached.parent.mkdir(parents=True)
-        (cache_root / cached.relative_to(cache_root)).write_bytes(b"model")
+        from tests.test_deploy import _declared_catboost
+
+        _declared_catboost(cache_root / cached.relative_to(cache_root), b"model")
         graph = make_graph(
             {
                 "nodes": [

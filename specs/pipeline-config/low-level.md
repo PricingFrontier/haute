@@ -241,7 +241,7 @@ nothing written.
 | Data Input / Data Output | provider locator (`path`, table, ...) | yes: empty locator, reported as completeness | saved |
 | Banding | factor/rule structure | no | refused when malformed |
 | Scenario Expander | `stepCount` | no: a new node carries an explicit count | refused when missing or invalid |
-| Model Score | `run_id` / `registered_model` for the chosen `sourceType` | yes: a source mode picked before its model | saved; the builder reports it when run |
+| Model Score | `run_id` / `registered_model` / `model_path` for the chosen `sourceType` | yes: a source mode picked before its model | saved; the builder reports it when run |
 | Optimiser Apply | `sourceType` when `artifact_path` is set | no | reported when the node runs; save-time refusal waits for the typed config models (`PCFG-R07`) |
 | Modelling | a trainable value for each configured `algorithm`, GLM `family`/`link`/solver setting, and `loss_function` | yes: a new node is `{}`, and an unset target, objective or feature set is completeness, reported when training starts | saved when incomplete; refused when a configured value is malformed |
 
@@ -438,7 +438,7 @@ also accept the executor's already-resolved inline mapping. Path inputs go
 through `load_node_config` and shared project/pipeline resolution. API input
 validates non-empty paths and JSON `tables[]` before reading/shredding and
 forwards projection/profile fields; external-file resolution validates
-`path`/`fileType` and forwards `modelClass`. Invalid tables raise
+`path`/`fileType`. Invalid tables raise
 `ApiInputSchemaError`, which the HTTP contract adapter maps to 422.
 
 **Global constants.** `src/haute/parser.py::load_declared_global_constants` loads the file a
@@ -608,7 +608,7 @@ it on the reading node instead of aborting the walk, and every other run propaga
   folder-backed node type used without `config=`;
   `optimiserApply` misconfiguration (`artifact_path` set without `sourceType`); `modelScore`
   misconfiguration (a non-string or unsupported `sourceType`, or a blank
-  `run_id`/`registered_model` for the declared source); project
+  `run_id`/`registered_model`/`model_path` for the declared source); project
   root not found, or found without a surrounding git repository.
 - **`ParseError`** (`haute.errors`) — `async def` node body; duplicate node function name;
   Explore-node topology violations (`_graph_shape.py`).

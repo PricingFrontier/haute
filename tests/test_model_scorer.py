@@ -21,7 +21,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import numpy as np
 import polars as pl
@@ -47,6 +47,7 @@ from haute._model_scorer import (
     score_frame,
     score_from_config,
 )
+from haute._model_source import RegisteredModelSource, RunModelSource
 from haute._polars_utils import streaming_collect
 
 # ---------------------------------------------------------------------------
@@ -92,6 +93,14 @@ def _make_scoring_model(
         feature_names=feature_names or ["a", "b"],
         cat_feature_names=cat_feature_names or frozenset(),
         flavor=flavor,
+    )
+
+
+def _run_source(
+    run_id: str, *, artifact_path: str = "", mlflow_destination: str = ""
+) -> RunModelSource:
+    return RunModelSource(
+        run_id=run_id, artifact_path=artifact_path, mlflow_destination=mlflow_destination
     )
 
 
@@ -180,12 +189,10 @@ def test_registered_temp_cleanup_callback_unlinks_all_registered_paths(
 
 class TestModelScorerInit:
     def test_defaults(self):
-        scorer = ModelScorer(source_type="run")
-        assert scorer.source_type == "run"
-        assert scorer.run_id == ""
-        assert scorer.artifact_path == ""
-        assert scorer.registered_model == ""
-        assert scorer.version == "latest"
+        scorer = ModelScorer(model_source=_run_source("abc"))
+        assert scorer.model_source == RunModelSource(
+            run_id="abc", artifact_path="", mlflow_destination=""
+        )
         assert scorer.task == "regression"
         assert scorer.output_col == "prediction"
         assert scorer.code == ""
@@ -193,13 +200,17 @@ class TestModelScorerInit:
         assert scorer.source == "live"
         assert scorer.row_limit is None
         assert scorer.reuse_loaded_model is False
-        assert scorer.mlflow_destination == ""
 
     def test_custom_values(self):
-        scorer = ModelScorer(
-            source_type="registered",
+        source = RegisteredModelSource(
             registered_model="my_model",
             version="3",
+            alias="",
+            artifact_path="",
+            mlflow_destination="",
+        )
+        scorer = ModelScorer(
+            model_source=source,
             task="classification",
             output_col="pred",
             code="x = 1",
@@ -207,24 +218,18 @@ class TestModelScorerInit:
             source="test_batch",
             row_limit=100,
         )
-        assert scorer.source_type == "registered"
-        assert scorer.registered_model == "my_model"
-        assert scorer.version == "3"
+        assert scorer.model_source is source
         assert scorer.task == "classification"
         assert scorer.source_names == ["df1", "df2"]
         assert scorer.row_limit == 100
 
     def test_source_names_none_becomes_empty_list(self):
-        scorer = ModelScorer(source_type="run", source_names=None)
+        scorer = ModelScorer(model_source=_run_source("abc"), source_names=None)
         assert scorer.source_names == []
 
     def test_feature_contract_path_defaults_to_none(self):
-        scorer = ModelScorer(source_type="run")
+        scorer = ModelScorer(model_source=_run_source("abc"))
         assert scorer.feature_contract_path is None
-
-    def test_mlflow_destination_is_stored(self):
-        scorer = ModelScorer(source_type="run", mlflow_destination="local")
-        assert scorer.mlflow_destination == "local"
 
 
 class TestModelScorerDestination:
@@ -237,10 +242,8 @@ class TestModelScorerDestination:
         mock_score_eager.return_value = pl.DataFrame({"x": [1], "prediction": [0.5]}).lazy()
 
         scorer = ModelScorer(
-            source_type="run",
-            run_id="abc",
+            model_source=_run_source("abc", mlflow_destination="local"),
             source="live",
-            mlflow_destination="local",
         )
         scorer.score(pl.DataFrame({"a": [1], "b": [2]}).lazy()).collect()
 
@@ -252,7 +255,7 @@ class TestModelScorerDestination:
         mock_load.return_value = _make_scoring_model()
         mock_score_eager.return_value = pl.DataFrame({"x": [1], "prediction": [0.5]}).lazy()
 
-        scorer = ModelScorer(source_type="run", run_id="abc", source="live")
+        scorer = ModelScorer(model_source=_run_source("abc"), source="live")
         scorer.score(pl.DataFrame({"a": [1], "b": [2]}).lazy()).collect()
 
         assert mock_load.call_args.kwargs["destination"] == ""
@@ -271,7 +274,7 @@ class TestModelScorerScore:
         mock_load.return_value = sm
         mock_score_eager.return_value = pl.DataFrame({"x": [1], "prediction": [0.5]}).lazy()
 
-        scorer = ModelScorer(source_type="run", run_id="abc", source="live")
+        scorer = ModelScorer(model_source=_run_source("abc"), source="live")
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
         result = scorer.score(lf)
 
@@ -288,7 +291,7 @@ class TestModelScorerScore:
             prediction=pl.lit(0.5)
         )
         scorer = ModelScorer(
-            source_type="run", run_id="abc", source="live", source_names=["quotes", "rates"]
+            model_source=_run_source("abc"), source="live", source_names=["quotes", "rates"]
         )
         quotes = pl.DataFrame({"a": [1], "b": [2]}).lazy()
         rates = pl.DataFrame({"a": [9], "b": [9]}).lazy()
@@ -305,7 +308,7 @@ class TestModelScorerScore:
         mock_load.return_value = sm
         mock_batched.return_value = pl.DataFrame({"x": [1]}).lazy()
 
-        scorer = ModelScorer(source_type="run", run_id="abc", source="batch")
+        scorer = ModelScorer(model_source=_run_source("abc"), source="batch")
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
         result = scorer.score(lf)
 
@@ -322,7 +325,7 @@ class TestModelScorerScore:
         sm.raw_model.predict.side_effect = lambda x_data: np.full(len(x_data), 0.5)
         mock_load.return_value = sm
 
-        scorer = ModelScorer(source_type="run", run_id="abc", source="batch", row_limit=10)
+        scorer = ModelScorer(model_source=_run_source("abc"), source="batch", row_limit=10)
         lf = pl.DataFrame({"a": list(range(20)), "b": list(range(20))}).lazy()
         result = scorer.score(lf)
 
@@ -339,7 +342,7 @@ class TestModelScorerScore:
         sm = _make_scoring_model(feature_names=["a", "b", "missing_col"])
         mock_load.return_value = sm
 
-        scorer = ModelScorer(source_type="run", run_id="abc", source="live")
+        scorer = ModelScorer(model_source=_run_source("abc"), source="live")
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
         with pytest.raises(FeatureMismatchError, match="missing_col") as exc_info:
             scorer.score(lf)
@@ -357,7 +360,7 @@ class TestModelScorerScore:
         mock_load.return_value = sm
         mock_score_eager.return_value = pl.DataFrame({"a": [1], "prediction": [0.5]}).lazy()
 
-        scorer = ModelScorer(source_type="run", run_id="abc", source="live")
+        scorer = ModelScorer(model_source=_run_source("abc"), source="live")
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
         scorer.score(lf)
 
@@ -381,8 +384,7 @@ class TestModelScorerScore:
             categorical_levels={"region": ["north", "south"]},
         )
         scorer = ModelScorer(
-            source_type="run",
-            run_id="abc",
+            model_source=_run_source("abc"),
             source="live",
             feature_contract_path=str(contract_path),
             categorical_levels={"region": ["north", "east"]},
@@ -413,8 +415,7 @@ class TestModelScorerScore:
             cat_feature_names=frozenset({"region"}),
         )
         scorer = ModelScorer(
-            source_type="run",
-            run_id="abc",
+            model_source=_run_source("abc"),
             source="live",
             feature_contract_path=str(contract_path),
             categorical_levels={"region": ["north", "south"]},
@@ -443,8 +444,7 @@ class TestModelScorerScore:
             cat_feature_names=frozenset({"region"}),
         )
         scorer = ModelScorer(
-            source_type="run",
-            run_id="abc",
+            model_source=_run_source("abc"),
             source="live",
             feature_contract_path=str(contract_path),
         )
@@ -462,7 +462,7 @@ class TestModelScorerScore:
         mock_load.return_value = sm
         mock_score_eager.return_value = pl.DataFrame({"a": [1], "prediction": [0.5]}).lazy()
 
-        scorer = ModelScorer(source_type="run", run_id="abc", source="live")
+        scorer = ModelScorer(model_source=_run_source("abc"), source="live")
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
         scorer.score(lf)
         scorer.score(lf)
@@ -479,8 +479,7 @@ class TestModelScorerScore:
         mock_score_eager.return_value = pl.DataFrame({"a": [1], "prediction": [0.5]}).lazy()
 
         scorer = ModelScorer(
-            source_type="run",
-            run_id="abc",
+            model_source=_run_source("abc"),
             source="live",
             reuse_loaded_model=True,
         )
@@ -504,8 +503,7 @@ class TestModelScorerScore:
         mock_score_eager.return_value = pl.DataFrame({"a": [1], "prediction": [0.5]}).lazy()
 
         scorer = ModelScorer(
-            source_type="run",
-            run_id="abc",
+            model_source=_run_source("abc"),
             source="live",
             reuse_loaded_model=True,
         )
@@ -531,8 +529,7 @@ class TestModelScorerScore:
         mock_load.side_effect = slow_load
         mock_score_eager.return_value = pl.DataFrame({"a": [1], "prediction": [0.5]}).lazy()
         scorer = ModelScorer(
-            source_type="run",
-            run_id="abc",
+            model_source=_run_source("abc"),
             source="live",
             reuse_loaded_model=True,
         )
@@ -564,7 +561,7 @@ class TestModelScorerScore:
         sm = _make_scoring_model()
         mock_load.return_value = sm
 
-        scorer = ModelScorer(source_type="run", run_id="abc", source="live")
+        scorer = ModelScorer(model_source=_run_source("abc"), source="live")
         with pytest.raises(FeatureMismatchError, match="Missing feature"):
             scorer.score()  # no dfs passed -- empty LazyFrame has no feature columns
 
@@ -579,8 +576,7 @@ class TestModelScorerScore:
         mock_exec.return_value = pl.DataFrame({"result": [1]}).lazy()
 
         scorer = ModelScorer(
-            source_type="run",
-            run_id="abc",
+            model_source=_run_source("abc"),
             source="live",
             code="result = result * 2",
             source_names=["df"],
@@ -940,11 +936,9 @@ class TestScoreFromConfig:
             source_type="run",
             run_id="abc123",
             artifact_path="model.cbm",
-            registered_model="",
-            version="latest",
             task="regression",
             destination="",
-            alias="",
+            backend=ANY,
         )
 
     # ---------------------------------------------------------------
@@ -1888,7 +1882,14 @@ class TestRowLocalScanScoring:
         )
 
     def test_limited_scoring_requires_the_contract_offset_column(self) -> None:
-        scoring_model = ScoringModel(_make_mock_model(["a", "b"]), ["a", "b"], flavor="catboost")
+        # The offset a contract declares is bound onto the carrier.
+        scoring_model = ScoringModel(
+            _make_mock_model(["a", "b"]),
+            ["a", "b"],
+            flavor="catboost",
+            offset_column="exposure",
+            offset_link="log",
+        )
 
         with pytest.raises(FeatureMismatchError, match="exposure"):
             _run_score_pipeline(
@@ -1898,7 +1899,6 @@ class TestRowLocalScanScoring:
                 output_col="pred",
                 source="batch",
                 row_limit=10,
-                offset_column="exposure",
             )
 
     def test_limit_reaching_the_scorer_predicts_only_limited_rows(
@@ -2171,3 +2171,15 @@ def test_a_failed_score_into_a_callers_directory_removes_its_parts_but_not_the_d
 
     assert generation.is_dir()
     assert sorted(path.name for path in generation.iterdir()) == ["keep.txt"]
+
+
+def test_a_self_describing_classifier_without_recorded_labels_is_refused() -> None:
+    from types import SimpleNamespace
+
+    from haute._model_scorer import _declared_score_dtypes
+
+    carrier = SimpleNamespace(raw_model=SimpleNamespace(class_labels=None))
+    with pytest.raises(ValueError, match="no recorded class labels"):
+        _declared_score_dtypes(
+            scoring_model=carrier, flavor="xgboost", task="classification", include_proba=True
+        )

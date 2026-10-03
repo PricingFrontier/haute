@@ -281,9 +281,11 @@ approving it.
   (`haute._execution_admission`, `haute._execution_context`).
 - **[mlflow-model-registry](../mlflow-model-registry/high-level.md)** — `_bundler.py`
   downloads `modelScore` model artefacts and feature contracts from MLflow at bundle
-  time (`_mlflow_io._resolve_artifact_local`, `_find_model_artifact`); `_mlflow.py`
+  time (`_mlflow_io._resolve_artifact_local`, `_find_model_artifact`) and copies a
+  file-sourced node's model file and contract from the project; `_mlflow.py`
   registers the deployed pipeline itself as a new MLflow model version. `_scorer.py`
-  loads bundled models via `haute._mlflow_io.load_local_model`.
+  loads bundled models via `haute._mlflow_io.load_local_model_cached`, which binds each
+  to its bundled contract exactly as the preview does.
 - **[modelling](../modelling/high-level.md)** — `_scorer.py` and `_bundler.py` both
   depend on `haute.modelling._feature_contract` (contract loading, matching, and
   categorical-level declarations) to detect train-vs-score drift.
@@ -368,9 +370,10 @@ most: a silent wrong answer here mis-prices real policies.
   image tag so the operator can update the service. A failed build or push fails the deploy.
 - **Known unsupported deploy inputs** fail rather than being made self-contained: plain
   JSON static sources are not batch-deployable; a project-local import other than the
-  `utility` package is refused at validation; bundled local `modelScore` serving supports CatBoost `.cbm` and RustyStats
-  `.rsglm`, while a discovered MLflow pyfunc directory cannot currently be bundled and
-  served by this path.
+  `utility` package is refused at validation; bundled local `modelScore` serving supports
+  every family the model family registry loads from a file (CatBoost `.cbm`, RustyStats
+  `.rsglm`, XGBoost `.ubj`, LightGBM `.lgbm`, EBM `.ebm`), while a discovered MLflow pyfunc
+  directory cannot currently be bundled and served by this path.
 - **Impact-analysis arithmetic** raises `ValueError` rather than producing a misleading
   percentage when predictions contain non-finite values, or when a percent-change or
   total-percent-change calculation would divide by a zero production baseline against a

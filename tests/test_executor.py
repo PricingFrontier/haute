@@ -2940,6 +2940,7 @@ df = src.with_columns(
         class FakeScoringModel:
             feature_names = ["feature"]
             cat_feature_names: list[str] = []
+            offset_declared = True
 
         def fake_score_eager(
             scoring_model,
@@ -2947,7 +2948,6 @@ df = src.with_columns(
             features,
             output_col,
             task,
-            offset_column=None,
         ):
             return lf.with_columns(pl.lit(0.75).alias(output_col))
 

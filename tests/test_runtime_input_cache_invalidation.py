@@ -778,3 +778,166 @@ class TestStatGatedFingerprintMemo:
 
         with pytest.raises(RuntimeError, match="changed on disk while loading"):
             execution_mod._stat_gated_runtime_path_fingerprint(p)
+
+
+# ---------------------------------------------------------------------------
+# File-sourced Model Scoring: the model file and its contract are runtime inputs
+# ---------------------------------------------------------------------------
+
+
+def _catboost_file(path: Path, scale: float) -> None:
+    """A CatBoost model trained outside Haute: its file declares no offset."""
+    from catboost import CatBoostRegressor
+
+    model = CatBoostRegressor(iterations=5, depth=1, verbose=0, allow_writing_files=False)
+    ages = [20.0, 30.0, 40.0, 50.0]
+    model.fit([[age] for age in ages], [scale * age for age in ages])
+    model.set_feature_names(["age"])
+    model.save_model(str(path))
+
+
+def _contract_file(path: Path, *, offset: str | None) -> None:
+    from haute.modelling._feature_contract import build_contract, save_contract
+
+    save_contract(
+        build_contract(
+            features=["age"],
+            feature_types={"age": "Float64"},
+            categorical_features=[],
+            target_name="y",
+            target_type="Float64",
+            task="regression",
+            offset_column=offset,
+            offset_link="identity" if offset else None,
+        ),
+        path,
+    )
+    _bump_mtime(path)
+
+
+class TestModelFileSourceInvalidation:
+    """Warm the model, preview and trace caches, then change a file underneath."""
+
+    @pytest.fixture()
+    def scoring(self, tmp_path: Path):
+        from haute._mlflow_io import clear_local_model_cache
+
+        clear_local_model_cache()
+        data = tmp_path / "data.parquet"
+        pl.DataFrame({"age": [30.0], "exposure": [100.0]}).write_parquet(data)
+        model = tmp_path / "freq.cbm"
+        _catboost_file(model, 1.0)
+
+        def graph(**extra: str):
+            return _g(
+                {
+                    "nodes": [
+                        _source_node("src", str(data)),
+                        _n(
+                            {
+                                "id": "ms",
+                                "data": {
+                                    "label": "ms",
+                                    "nodeType": "modelScore",
+                                    "config": {
+                                        "sourceType": "file",
+                                        "model_path": str(model),
+                                        "task": "regression",
+                                        "output_column": "pred",
+                                        **extra,
+                                    },
+                                },
+                            }
+                        ),
+                    ],
+                    "edges": [_edge("src", "ms")],
+                }
+            )
+
+        return tmp_path, model, graph
+
+    @staticmethod
+    def _observe(graph) -> tuple[float, float, str]:
+        """Preview and trace predictions, and the identity a node-output snapshot is keyed by."""
+        from haute.execution import dataframe_graph_input_fingerprint
+
+        preview = execute_graph(graph, target_node_id="ms")["ms"]
+        assert preview.status == "ok", preview.error
+        trace = execute_trace(graph, row_index=0, target_node_id="ms", column="pred")
+        identity = dataframe_graph_input_fingerprint(graph, target_node_id="ms", source="live")
+        return preview.preview[0]["pred"], trace.output_value, identity
+
+    def test_replacing_the_model_at_the_same_path_scores_the_new_model(self, scoring):
+        root, model, graph = scoring
+        _contract_file(model.with_name("freq.feature_contract.json"), offset=None)
+        before = self._observe(graph())
+
+        _catboost_file(model, 10.0)
+        _bump_mtime(model)
+        after = self._observe(graph())
+
+        assert after[0] == pytest.approx(before[0] * 10, rel=0.2)
+        assert after[1] == after[0]
+        assert after[2] != before[2]
+
+    def test_changing_only_the_sibling_contract_rescores(self, scoring):
+        root, model, graph = scoring
+        sibling = model.with_name("freq.feature_contract.json")
+        _contract_file(sibling, offset=None)
+        before = self._observe(graph())
+
+        # The contract now declares an additive offset the file cannot record.
+        _contract_file(sibling, offset="exposure")
+        after = self._observe(graph())
+
+        assert after[0] == pytest.approx(before[0] + 100.0)
+        assert after[1] == after[0]
+        assert after[2] != before[2]
+
+    def test_adding_a_higher_priority_sibling_contract_selects_it(self, scoring):
+        root, model, graph = scoring
+        _contract_file(root / "feature_contract.json", offset=None)
+        before = self._observe(graph())
+
+        _contract_file(model.with_name("freq.feature_contract.json"), offset="exposure")
+        after = self._observe(graph())
+
+        assert after[0] == pytest.approx(before[0] + 100.0)
+        assert after[2] != before[2]
+
+    def test_changing_an_explicit_contract_rescores(self, scoring):
+        root, model, graph = scoring
+        explicit = root / "explicit.json"
+        _contract_file(explicit, offset=None)
+        before = self._observe(graph(feature_contract_path=str(explicit)))
+
+        _contract_file(explicit, offset="exposure")
+        after = self._observe(graph(feature_contract_path=str(explicit)))
+
+        assert after[0] == pytest.approx(before[0] + 100.0)
+        assert after[2] != before[2]
+
+    def test_removing_the_model_or_its_required_contract_fails_by_name(self, scoring):
+        root, model, graph = scoring
+        sibling = model.with_name("freq.feature_contract.json")
+        _contract_file(sibling, offset=None)
+        self._observe(graph())
+
+        sibling.unlink()
+        assert "does not record whether it was trained with an offset" in self._error(graph())
+
+        _contract_file(sibling, offset=None)
+        model.unlink()
+        assert "freq.cbm" in self._error(graph())
+
+    @staticmethod
+    def _error(graph) -> str:
+        """The refusal, raised by column planning or reported on the node."""
+        from haute.errors import ConfigError
+
+        try:
+            result = execute_graph(graph, target_node_id="ms")["ms"]
+        except ConfigError as exc:
+            return str(exc)
+        assert result.status == "error"
+        return str(result.error)

@@ -3618,10 +3618,6 @@ class TestEnrichModelScoreRealConfig:
             "haute._model_explainability.explain_model_score_from_config",
             fake_explain,
         )
-        monkeypatch.setattr(
-            "haute._model_explainability._config_requests_supported_explanation",
-            lambda config: True,
-        )
 
         config = {
             "output_column": "pred",

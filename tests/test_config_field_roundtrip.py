@@ -44,12 +44,11 @@ def _examples():
             "experiment_name": "Pricing experiments",
             "registered_model": "catalog.models.pricing",
             "version": "3",
+            "model_path": "models/frequency.cbm",
             "feature_contract_path": "models/features.json",
         }
     )
-    by_type[NodeType.EXTERNAL_FILE].data.config.update(
-        {"fileType": "catboost", "modelClass": "regressor"}
-    )
+    by_type[NodeType.EXTERNAL_FILE].data.config.update({"fileType": "joblib"})
     by_type[NodeType.MODELLING].data.config.update(
         {
             "mlflow_destination": "server",

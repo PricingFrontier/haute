@@ -16,7 +16,8 @@ merges, remove its rounds from the table.
   the phase. A phase starts only after the phases holding its rounds' *Needs*
   have merged. While a phase's CI runs, another phase may start on its own
   branch from `origin/main` if it needs nothing unmerged (phases C and D are
-  independent of each other); never build on an unmerged branch.
+  independent of each other, and phase H of every earlier phase); never build
+  on an unmerged branch.
 - **Per package.** Follow the [working protocol](README.md#working-protocol):
   reverify against `HEAD` and retire the package if its outcome already
   holds; update the owning specification first; add the smallest failing
@@ -46,26 +47,39 @@ merges, remove its rounds from the table.
 | D | 10 | Generated contracts | `API-R03`: node data, cache, JSON-cache status and input cache; output write, destination and assemble dry run; one shared execution-metrics validator | 8 | L | The groups that carry no node config or editor document, generated once the job failure records have settled. |
 | D | 11 | Reuse | `SUB-R01` | — | L | Node-level instances go before the editor-state move and the typed configs would have to model them. Its first step proves the one-node submodel form and stops if an instance use is not covered. |
 | E | 12 | Editor state | `PCFG-R08`, `CACHE-S25` | 11 | M | `CACHE-S25` keys caches on the whole config once editor state has left it. |
-| E | 13 | Typed node configs | `PCFG-R07`, then `API-R03`: pipeline load and save, preview, trace, submodel, recovery and repair, and JSON-cache inference | 10, 12 | L | These `API-R03` groups carry node configs or the editor document, so they follow the typed models. Completes `API-R03`. |
+| E | 13 | Typed node configs | `PCFG-R07`, then `API-R03`: pipeline load and save, preview, trace, submodel, recovery and repair, and JSON-cache inference | 10, 12, 20 | L | These `API-R03` groups carry node configs or the editor document, so they follow the typed models. Round 20 establishes the Model Scoring file source and the remaining Load File config; round 21 extends the same models with external-family selection and pyfunc trust. Completes `API-R03`. |
 | E | 14 | Node specification and results store | `PCFG-R09`, `FSH-R03` | 13 | M | Both build on the typed models and the complete generated contract. |
 | F | 15 | Cache measurements | `CACHE-S17`, `CACHE-S22`, `CACHE-S18`, `CACHE-S13` | 12 | M | Each runs its measurement and builds only past its gate, once the planner and config changes above have landed. |
 | F | 16 | Containment | `SBX-R01` | 9 | M | The remaining path comparisons, after the project context has deleted the resolvers that held many of them. |
 | F | 17 | Dead code | `ENGQ-R01` | 16 | M | After the refactors have deleted what they replace; adds knip to the frontend lint. |
 | F | 18 | Test organisation | `ENGQ-R05` | 17 | L | Last, so the suite is reorganised once, under the risk-based coverage rule. Several PRs, by component. |
+| H | 20 | Model files in Model Scoring | `MSC-03`, `MSC-04` | — | L | The file source reads the parsed Model Scoring source (`src/haute/_model_source.py`, shaped as the Model Scoring slice of `PCFG-R07` and absorbed by it in round 13) and the model family registry (`src/haute/_model_flavors.py`); CatBoost leaves Load File once Model Scoring scores files. If round 9 has not merged, the model path resolves through the current pipeline-directory resolver and `PCFG-R04` migrates it with the others. |
+| I | 21 | Models trained outside Haute | `MSC-06`, then `MSC-05` | 20 | L | External XGBoost and LightGBM files first, as decided; pyfunc files after, on the same file source. |
 
 Sizes are rough: M is a day or so, L several days or more than one PR.
 
 ## User-visible changes in this plan
 
-These packages change what a user sees or relies on. Each was decided on
-24 September 2026 and is recorded in its entry; raise an objection before its
-round starts.
+These packages change what a user sees or relies on. Each was decided on the
+date its entry records; raise an objection before its round starts.
 
 - `SUB-R01`: `@pipeline.instance` and `instanceOf` are rejected; **Create
   Instance** makes a one-node submodel with a second occurrence.
+- `MSC-03`: Model Scoring's **MODEL SOURCE** gains **Model file**. CatBoost
+  artifacts with unknown baseline semantics require an explicit offset or
+  no-offset contract across file, run and registered sources.
+- `MSC-04`: Load File no longer offers **CATBOOST**, and a config naming it is
+  refused as an unsupported file type.
+- `MSC-06`: Model Scoring scores XGBoost and LightGBM files trained outside
+  Haute, under a contract drafted in the editor that declares missing-value
+  and offset semantics; unsupported objectives and response transforms fail.
+- `MSC-05`: Local pyfunc packages are executable imports requiring explicit
+  trust of their content digest. Inspection does not execute package code;
+  changed contents require a new trust decision.
 
 ## Not scheduled
 
-Deferred packages start only when their trigger is met: `CACHE-S19` ([caching](caching.md)) and `EDA-E18`, `EDA-E23` and
-`EDA-E24` ([Explore and EDA](explore-eda.md)) wait for the evidence their
+Deferred packages start only when their trigger is met: `CACHE-S19` ([caching](caching.md)), `EDA-E18`, `EDA-E23` and
+`EDA-E24` ([Explore and EDA](explore-eda.md)) and `MSC-07`
+([model scoring](model-scoring.md)) wait for the evidence or demand their
 entries name.

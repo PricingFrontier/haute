@@ -209,7 +209,7 @@ def load_external_object_from_config(
 
     from haute._io import load_external_object
 
-    return load_external_object(path, file_type, config.get("modelClass", "classifier"))
+    return load_external_object(path, file_type)
 
 
 # ---------------------------------------------------------------------------

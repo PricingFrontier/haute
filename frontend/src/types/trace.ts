@@ -167,6 +167,7 @@ export interface BandingNodeDetail {
 
 export interface ModelScoreIdentityDetail {
   source_type?: string
+  model_path?: string
   run_id?: string
   registered_model?: string
   version?: string

@@ -1540,8 +1540,9 @@ present a structural or schema result as execution evidence.
   Scenario Expander's code-free contract derived from config (a declared contract describes
   the whole node, post-code included, so it never fills these sides), or a Model Score's
   code-free scorer contract, which resolves the model's features (and offset) exactly as
-  for a Model Score without code: from `feature_contract_path`, the deploy scorer's
-  annotation, or the loaded model, together with any declared inputs, which the executor
+  for a Model Score without code: from `feature_contract_path` (for a file source, the
+  contract it scores under, explicit or discovered), the deploy scorer's annotation, or
+  the loaded model, together with any declared inputs, which the executor
   still checks at the node's boundary after edge projection. Only when that names no
   features (an unconfigured scorer, or a model without feature names) does the registered
   scorer output stand with its inputs filled from the declared inputs. A classifier adds
@@ -1796,6 +1797,18 @@ present a structural or schema result as execution evidence.
   naming only the exception type plus a random attempt id, so every failed
   lookup is a distinct identity and an entry cached after one failure is never
   served during another, and execution reports the failure.
+- **File-sourced Model Score nodes sign their model and contract.** A
+  `MODEL_SCORE` node with `sourceType: "file"` lists `model_path` among its
+  local runtime input path fields (beside `feature_contract_path`), so
+  `canonical_dataframe_execution_graph` contains and resolves it like any
+  other local input and `_runtime_file_signature_paths` signs it. Without an
+  explicit `feature_contract_path`, it also signs both
+  `model_contract_candidates` of the resolved model (`contract_candidate:0`,
+  `contract_candidate:1`), each first passed through `resolve_runtime_file_path`
+  so one that leaves the project through a symlink is refused before it is
+  hashed, a missing one by its stat, so replacing either
+  sibling, adding the higher-priority one, or deleting the selected one
+  changes the identity. A file source records no MLflow backend.
 - **`_compile_preamble` single-flight cache.** Keyed on `(preamble text, cwd,
   pipeline_dir, execution_fingerprint)`; a `_PreambleCell` per key is created under a
   tiny `_preamble_cells_guard` lock (never held during exec, so a hot cache hit never
