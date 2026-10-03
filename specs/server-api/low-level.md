@@ -56,8 +56,8 @@
   `_edge_join.py` validators as well as the other save invariants, rejects an
   edge whose source type is in `SINK_ONLY_NODE_TYPES` (HTTP 400 naming the node,
   its type and the edge's target), and runs
-  `haute.codegen.check_function_name_collisions` (its `ParseError` becomes HTTP
-  400) after the scoped sanitized-name check. It also refuses (HTTP 400 naming the
+  `haute.codegen.check_executable_names` (its `ParseError` becomes HTTP
+  400 with the same message). It also refuses (HTTP 400 naming the
   table, the Quote Input and the node) a Quote Input table whose label equals the
   sanitised name of another node anywhere in the pipeline or its submodels: the
   table's frame handle is the input name its consumers' parameters carry, so the
@@ -167,7 +167,9 @@ field-level required-value gaps for loadable Data Input/Output nodes, recomputed
 document loader from the strict validators' completeness mode; entries never affect
 availability, capabilities, or `diagnostics`. `PipelineDocumentCapabilities` is the server-derived mutation/persistence/
 execution/preview/submodel/repair fence and carries a sorted unique
-`reserved_api_input_frame_labels` list. The response types do not subclass or relax
+`reserved_api_input_frame_labels` list: Python's hard keywords and the reserved names of
+`_executable_names.RESERVED_NAMES` (`haute`, `pl`, `pipeline`, `submodel`,
+`global_constants`). The response types do not subclass or relax
 `PipelineGraph`.
 
 **Prospective editor identity models** (`schemas.py`) use `extra="forbid"`.

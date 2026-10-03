@@ -434,9 +434,10 @@ files. A Quote Input table labelled like another node is refused there, naming t
 Quote Input and the node, because a parameter of that name would read both and the saved
 file would not reload. It rejects any edge out of a node type that has no output
 (`haute._types.SINK_ONLY_NODE_TYPES`: Quote Response, Data Output, Explore, Model
-Training and Optimisation), and it runs codegen's own function-name collision
-check (`haute.codegen.check_function_name_collisions`), so a submodel occurrence
-named like a node inside its definition fails here rather than at codegen. Edge Join validation uses the canonical backend join validators, not a
+Training and Optimisation), and it runs codegen's executable-name check
+(`haute.codegen.check_executable_names`, the codegen specification's naming rule), so
+two names equal ignoring case, a reserved or built-in node name, or a reserved node input
+fails here, every violation listed, rather than at codegen. Edge Join validation uses the canonical backend join validators, not a
 save- or assistant-specific approximation. Save invokes it before any write,
 so the validation paths cannot drift.
 

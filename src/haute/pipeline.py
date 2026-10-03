@@ -14,6 +14,12 @@ from haute._edge_join import (
     normalise_edge_join_decorator_kwargs,
     resolve_edge_join_role_indices,
 )
+from haute._executable_names import (
+    ROOT_MODULE,
+    NameParty,
+    NameViolation,
+    reserved_or_builtin,
+)
 from haute._global_constants import (
     STANDALONE_GLOBAL_CONSTANTS,
     GlobalConstantsNamespace,
@@ -298,6 +304,49 @@ class NodeRegistry:
         """
         return STANDALONE_GLOBAL_CONSTANTS
 
+    def _refuse_unavailable_node_name(self, f: Callable) -> None:
+        """Refuse a node name the executable-name rule refuses, naming the node.
+
+        A reserved or built-in name, one another node or submodel occurrence
+        takes ignoring case, or one the module already binds to something
+        other than *f* (a preamble helper, say): the runner would rebind it
+        for every later node body. A function defined inside another one is
+        not a module binding, and ``pipeline.polars(f)`` on an existing *f*
+        finds *f* itself.
+        """
+        name = f.__name__
+        kind = reserved_or_builtin(name)
+        if kind is not None:
+            party = NameParty(node_id=name, label=name, module=ROOT_MODULE)
+            raise ValueError(NameViolation(kind=kind, name=name, parties=(party,)).message())
+        folded = name.casefold()
+        clashing_node = next(
+            (other for other in self._node_map if other.casefold() == folded), None
+        )
+        if clashing_node == name:
+            raise ValueError(
+                f"Duplicate node name '{name}'. Each node must have a "
+                "unique function name; rename one of the two functions."
+            )
+        if clashing_node is not None:
+            raise ValueError(
+                f"Node name {name!r} differs from the node {clashing_node!r} only in case; "
+                "node names must differ by more than case. Rename one of them."
+            )
+        registrations = getattr(self, "_submodel_registrations", ())
+        if any(registered.name.casefold() == folded for registered in registrations):
+            raise ValueError(
+                f"Pipeline node name {name!r} conflicts with a registered submodel identity."
+            )
+        if "<locals>" not in f.__qualname__:
+            bound = getattr(f, "__globals__", {}).get(name, f)
+            if bound is not f:
+                raise ValueError(
+                    f"Node name {name!r} is already bound in this module to a "
+                    f"{type(bound).__name__}, which the node would replace for every "
+                    "other node. Rename the node or the existing binding."
+                )
+
     def _register_node(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Internal decorator to register a function as a node.
 
@@ -315,24 +364,7 @@ class NodeRegistry:
                 params = [p for p in sig.parameters.values() if p.name != "self"]
                 is_source = len(params) == 0
 
-            conflicting_registration = next(
-                (
-                    registered
-                    for registered in getattr(self, "_submodel_registrations", ())
-                    if f.__name__ == registered.name
-                ),
-                None,
-            )
-            if conflicting_registration is not None:
-                raise ValueError(
-                    f"Pipeline node name {f.__name__!r} conflicts with a "
-                    "registered submodel identity."
-                )
-            if f.__name__ in self._node_map:
-                raise ValueError(
-                    f"Duplicate node name '{f.__name__}'. Each node must have a "
-                    "unique function name; rename one of the two functions."
-                )
+            self._refuse_unavailable_node_name(f)
 
             n = Node(
                 name=f.__name__,
@@ -879,10 +911,15 @@ class Pipeline(NodeRegistry):
             if not instance_of or instance_of != instance_of.strip():
                 raise ValueError("Submodel instance_of must be a non-empty unpadded string.")
 
-        if name in self._node_map:
+        kind = reserved_or_builtin(name)
+        if kind is not None:
+            party = NameParty(node_id=name, label=name, module=ROOT_MODULE)
+            raise ValueError(NameViolation(kind=kind, name=name, parties=(party,)).message())
+        folded = name.casefold()
+        if any(node_name.casefold() == folded for node_name in self._node_map):
             raise ValueError(f"Submodel name {name!r} conflicts with a registered node name.")
 
-        if any(registered.name == name for registered in self._submodel_registrations):
+        if any(registered.name.casefold() == folded for registered in self._submodel_registrations):
             raise ValueError(f"Duplicate submodel name {name!r}.")
 
         self._submodel_files.append(file)

@@ -608,9 +608,8 @@ class SavePipelineService:
         self._validate_optimiser_input_selectors(flattened)
         self._validate_declared_config_keys(graph)
         self._validate_strict_node_configs(graph)
-        self._validate_unique_sanitized_names(graph)
+        self._validate_executable_names(graph)
         self._validate_quote_input_tables_do_not_shadow_nodes(graph)
-        self._validate_codegen_function_names(graph)
         self._validate_no_load_errors(graph)
         self._validate_global_constants(graph)
         py_path = self._resolve_source_file(source_file)
@@ -927,14 +926,6 @@ class SavePipelineService:
         check_reads = graph.global_constants_error is None
         for node in SavePipelineService._iter_nodes_recursive(graph):
             label = node.data.label
-            if _sanitize_func_name(label) == GLOBAL_CONSTANTS_NAME:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Node {label!r} would be named {GLOBAL_CONSTANTS_NAME!r}, which is "
-                        "reserved for the pipeline's global constants. Rename the node."
-                    ),
-                )
             config = node.data.config
             if any(code_binds_global_constants(code) for code in node_code_sources(config)):
                 raise HTTPException(
@@ -980,16 +971,19 @@ class SavePipelineService:
         ]
 
     @staticmethod
-    def _validate_codegen_function_names(graph: PipelineGraph) -> None:
-        """Run codegen's own function-name collision check before generating.
+    def _validate_executable_names(graph: PipelineGraph) -> None:
+        """Refuse what codegen's executable-name check refuses, before generating.
 
-        This covers what the scoped check above cannot: a submodel occurrence
-        alias that matches a node inside its definition.
+        Node and occurrence names are unique ignoring case across the pipeline
+        and its submodels. That is a policy, not an execution need (submodel
+        children run under qualified ids): one name means one node in labels,
+        traces, messages and generated files. Reserved and built-in names, and
+        reserved inputs, would rebind what the generated module binds itself.
         """
-        from haute.codegen import check_function_name_collisions
+        from haute.codegen import check_executable_names
 
         try:
-            check_function_name_collisions(graph)
+            check_executable_names(graph)
         except ParseError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
 
@@ -1044,89 +1038,6 @@ class SavePipelineService:
                     ) from None
 
     @staticmethod
-    def _validate_unique_sanitized_names(graph: PipelineGraph) -> None:
-        """Reject graphs where node labels sanitize to the same function name.
-
-        Scope is GLOBAL across the root graph and every embedded submodel
-        graph, matching codegen's ``_error_on_name_collisions``.  The
-        load-bearing reason is runtime flattening: preview/trace/run call
-        ``flatten_graph`` which inlines every submodel child into ONE
-        graph keyed by ``node.id`` — and ``node.id`` round-trips to the
-        sanitised function name for root and submodel nodes alike
-        (``_graph_builders._build_rf_nodes``).  ``PipelineGraph.node_map``
-        is a plain ``{n.id: n}`` dict, so a cross-module duplicate would
-        silently shadow its twin at execution time.
-
-        Two passes:
-
-        * per-graph — any two nodes in the SAME graph (root, or one
-          submodel) whose labels sanitise identically. Identical labels
-          collide too. The same rule applies to each submodel graph so
-          collisions cannot escape this guard and surface as an unhandled
-          codegen ``ParseError``.
-        * cross-module: a sanitised name used in more than one module.
-          Structural `SUBMODEL` / `SUBMODEL_PORT` nodes are excluded
-          because they never emit Python function definitions.
-        """
-        scoped_graphs: list[tuple[str, PipelineGraph]] = [("the pipeline", graph)]
-        scoped_graphs.extend(
-            (f"submodel {name!r}", nested)
-            for name, nested in SavePipelineService._iter_named_embedded_submodel_graphs(graph)
-        )
-
-        # Pass 1 — collisions within a single graph (root or one submodel).
-        for scope, scoped_graph in scoped_graphs:
-            sanitized_to_labels: dict[str, list[str]] = defaultdict(list)
-            for node in scoped_graph.nodes:
-                sanitized = _sanitize_func_name(node.data.label)
-                sanitized_to_labels[sanitized].append(node.data.label)
-
-            collisions = {
-                name: labels for name, labels in sanitized_to_labels.items() if len(labels) > 1
-            }
-            if collisions:
-                parts = [f"  {name!r} <- {labels!r}" for name, labels in sorted(collisions.items())]
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Duplicate sanitized node names detected in {scope}. "
-                        "The following node labels produce the same Python "
-                        "function name:\n" + "\n".join(parts)
-                    ),
-                )
-
-        # Pass 2: collisions across modules. Submodels execute in one
-        # flattened namespace with the root graph, so a sanitised name may
-        # only be used in a single module. Canonical definitions own their
-        # child graphs; root nodes never duplicate definition-owned children.
-        structural_types = (NodeType.SUBMODEL, NodeType.SUBMODEL_PORT)
-        sanitized_to_scoped: dict[str, dict[str, list[str]]] = defaultdict(dict)
-        for scope, scoped_graph in scoped_graphs:
-            for node in scoped_graph.nodes:
-                if node.data.nodeType in structural_types:
-                    continue
-                sanitized = _sanitize_func_name(node.data.label)
-                sanitized_to_scoped[sanitized].setdefault(scope, []).append(node.data.label)
-        cross_module = {
-            name: scopes for name, scopes in sanitized_to_scoped.items() if len(scopes) > 1
-        }
-        if cross_module:
-            parts = [
-                f"  {name!r} <- "
-                + "; ".join(f"{labels!r} in {scope}" for scope, labels in scopes.items())
-                for name, scopes in sorted(cross_module.items())
-            ]
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Duplicate sanitized node names detected across the "
-                    "pipeline and its submodels. Submodels run in one "
-                    "flattened namespace with the main pipeline, so each "
-                    "node name may be used in only one module:\n" + "\n".join(parts)
-                ),
-            )
-
-    @staticmethod
     def _validate_quote_input_tables_do_not_shadow_nodes(graph: PipelineGraph) -> None:
         """Refuse a Quote Input table labelled like another node's function name.
 
@@ -1135,7 +1046,7 @@ class SavePipelineService:
         named like a node, so a consumer of frame ``quotes`` beside a node
         ``quotes`` would be bound to both and the saved file would not reload.
         Names are global across the pipeline and its submodels (see
-        :meth:`_validate_unique_sanitized_names`); the Quote Input's own name
+        :meth:`_validate_executable_names`); the Quote Input's own name
         is exempt, since its explicit connection already covers that edge.
         """
         scoped = [

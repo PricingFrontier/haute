@@ -43,6 +43,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/codegen.py` | Public orchestration API (`graph_to_code`, `graph_to_code_multi`); single-node dispatch (`_node_to_code`, `_generate_node_code`, `_render`); instance-node handling (`_instance_to_code`); the contract decision and value (`_contract_keyword`, `_contract_value`); node emission order (`_emission_order`); module assembly (`_render_module`); the final parse gate (`_assert_emitted_files_parse`). `declares_global_constants` says whether a graph's files name the global constants file (it has constants, or its file failed to load), and `_render_module` then adds the constructor keyword (pipeline files) and the binding of the reserved name after each constructor. |
+| `src/haute/_executable_names.py` | The executable-name rule (codegen high-level "One function per node"): `RESERVED_NAMES` with what the generated module binds each to, `BUILTIN_NAMES`, `function_name_violations` (case-folded buckets over every node function name and occurrence alias in the root and each definition graph, submodel ports excepted; reserved and built-in hits), `input_binding_violations` (edge-derived names, `inputMapping` aliases and submodel input ports a body receives), `executable_name_violations`, the `NameViolation`/`NameParty` result with one `message()` per violation and `format_name_violations` for the whole list; `function_name_problem` (one candidate label, for the assistant), `reserved_or_builtin` (for the standalone pipeline's registration) and `reserved_input_problem` (for user-code execution). Codegen's check raises the parse error. |
 | `src/haute/_codegen_builders.py` | One `_gen_*` builder per `NodeType`, registered into `haute._registry.NODE_REGISTRY` via `@_register_codegen`; each returns a `NodeSource` rather than text. Shared helpers build a configured node's declaration or hook (`_configured_node`), the config-backed decorator keywords (`_config_keywords`), parameters (`_params` — the per-edge input names supplied by the orchestrator; duplicates are rejected by `src/haute/codegen.py::_validate_duplicate_node_inputs`) and the transform body (`_transform_body`, which adds the output declaration only when the code binds `df` nowhere). `render_node_source` prints a `NodeSource` through the shared document printer; `_sanitize_description` and `_docstring_lines` prepare docstring text. |
 | `src/haute/_source_layout.py` | The document printer both codegen and the Polars step layout use: the Wadler/Prettier document (`Group`, `Indent`, `Line`, `IfBreak`), `print_doc`, string quoting as ruff writes it (`quote_string`), collections laid out one entry per line when broken (`bracketed`), call and signature arguments laid out as ruff lays them out (`arguments`: flat, then on one indented line, then one per line with a trailing comma; a broken signature's lone parameter also takes the comma, a lone call argument never), and the literal printer (`literal`) for decorator values. |
 | `src/haute/_python_syntax.py` | Formatting-preserving valid-Python boundary: exact method-call discovery, exact expression/function replacement, and one import inserted below another (`insert_import_after`, used by the node-scoped save), with stable structured syntax failures. It never repairs invalid Python syntax or evaluates source. Codegen no longer edits generated source, so it does not use this module. |
@@ -81,10 +82,11 @@
    `haute._graph_shape`), run before any source is generated.
 3. Resolve and validate canonical definitions and occurrences, reject
    unreferenced definitions and shared-file collisions, then run
-   `check_function_name_collisions`: `_error_on_name_collisions` over every
-   label codegen emits as a function name (plain node labels without
-   submodels; otherwise root nodes that are not occurrences, submodel
-   occurrence aliases, plus each referenced definition graph exactly once).
+   `check_executable_names`: it resolves the occurrences
+   (`resolve_submodel_instances`) and raises `ParseError` with
+   `format_name_violations` over `_executable_names.executable_name_violations`
+   (every node function name in the root graph and each definition graph, submodel ports
+   excepted, with occurrences named by their alias; and every effective input binding).
    The function is public because `SavePipelineService.validate_graph` runs the
    same check at dry-run, before anything is generated.
 4. **No-submodel path:** order edges (`_order_edge_join_incoming_edges` puts
@@ -433,7 +435,7 @@ empty code.
 | Contract computation hits `ConfigError` | `ConfigError` (propagated) — except the `MlflowDestinationUnconfigured` marker: a MODEL_SCORE node whose explicit `mlflow_destination` is merely not configured on the authoring machine is environmental, so the annotation degrades to the offline parse-time contract with a warning (the executor resolves the same destination at run time and fails loudly there); every other `MlflowConfigError` (unknown key, rejected SDK mode) still propagates | `codegen._derive_contract_for_codegen` |
 | Contract computation hits a non-infra exception (`TypeError`, `KeyError`, `HauteError` incl. `ContractMismatchError`) | propagated unchanged | `codegen._derive_contract_for_codegen` |
 | `inputs_by_parent` ambiguous key collision | `ParseError` | `codegen._format_contract_source` |
-| Duplicate sanitized function names or occurrence aliases across root graph + submodels, including exact duplicate labels | `ParseError` (all colliding buckets listed) | `codegen.check_function_name_collisions` → `codegen._error_on_name_collisions` |
+| Function names or occurrence aliases equal ignoring case across root graph + submodels (exact duplicates included); a reserved or built-in function name; a reserved input binding | `ParseError` (every violation listed, each naming its nodes and module) | `codegen.check_executable_names` → `_executable_names.executable_name_violations` |
 | Duplicate derived input names among one node's incoming edges | `ParseError` (target node + colliding input name) | `codegen.graph_to_code_multi` (per-edge input-name assembly) |
 | An `apiInput` edge carrying no `source_port`/`sourceHandle` (only reachable via a hand-edited file — the editor cannot create one) | `ParseError` naming the edge and source node | `codegen.graph_to_code_multi` (per-edge input-name assembly) |
 | `edgeJoin` incoming edges do not carry exactly one `base` and one `join` target handle | `ConfigError` | `codegen._order_edge_join_incoming_edges` |
@@ -462,6 +464,14 @@ file tree on disk.
 
 ## Testing
 
+- `tests/test_executable_names.py` — one table-driven test of the executable-name rule (each
+  reserved name, built-ins, near misses such as `Max premium`, case-only and sanitized
+  collisions, a root node against a submodel child, an occurrence alias against its own child,
+  and a reserved Quote Input frame, `inputMapping` alias, instance mapping and submodel port),
+  and one test per entry point proving a violation reaches the user through it: save, codegen,
+  the strict parse, a standalone import (with the direct `pipeline.polars(f)` form accepted and
+  a node named like a preamble helper refused), execution, the assistant and the document's
+  reserved frame labels.
 - `tests/test_codegen_input_identity.py` — graph-to-source tests pin edge-derived input names as generated Python parameters and persisted `connect` metadata.
 - `tests/test_codegen_layout.py` — the generated-file shape: a corpus graph covering every
   node type as a declaration and every code-accepting type as a hook (plus a transform, an

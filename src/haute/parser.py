@@ -26,6 +26,7 @@ from haute._ast_helpers import (
     _reject_reserved_global_constants_bindings,
 )
 from haute._config_io import parse_global_constants
+from haute._executable_names import executable_name_violations, format_name_violations
 from haute._graph_builders import (
     _build_edges,
     _build_rf_nodes,
@@ -400,6 +401,9 @@ def parse_pipeline_source(
         graph,
         graph_label=graph.pipeline_name or source_file or "pipeline",
     )
+    name_violations = executable_name_violations(graph)
+    if name_violations:
+        raise ParseError(format_name_violations(name_violations), source_file=source_file or None)
 
     logger.info(
         "pipeline_parsed",

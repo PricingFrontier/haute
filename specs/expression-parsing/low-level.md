@@ -256,8 +256,9 @@ no alias or migration shim; direct test callers use the same current contract.
   function; a syntactically invalid referenced submodel file; a missing submodel file; a
   submodel reference without a resolution root; a conflicting definition/file registration; a missing or duplicate
   canonical occurrence identity; an invalid structured public-port contract; nested submodel references; an exact duplicate
-  edge identity; a structure-conservation mismatch; or a submodel path that escapes the project
-  root. A folder-backed node with no matching `config=` kwarg raises `ConfigError` through
+  edge identity; a structure-conservation mismatch; a submodel path that escapes the project
+  root; or, once the graph is built, any `_executable_names.executable_name_violations`
+  entry, the message from `format_name_violations`. A folder-backed node with no matching `config=` kwarg raises `ConfigError` through
   `_sidecar_required_error`, consistently with other sidecar configuration failures.
 - **`SyntaxError` from `ast.parse`** at the top of `parse_pipeline_source` is converted into a
   contextual `ParseError`; strict callers never receive syntax-recovered graph output. The editor

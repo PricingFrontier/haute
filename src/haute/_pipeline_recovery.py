@@ -30,6 +30,7 @@ from haute._editor_identities import (
     recoverable_api_input_source_handles,
     resolve_editor_identity,
 )
+from haute._executable_names import RESERVED_NAMES
 from haute._graph_builders import (
     PipelineNodeSkeleton,
     _edge_param_names_for_node,
@@ -1702,7 +1703,7 @@ def _capabilities(
         can_preview=status != "source_only" and source_selection_trusted,
         can_manage_submodels=ready,
         can_repair=status == "degraded",
-        reserved_api_input_frame_labels=sorted(keyword.kwlist),
+        reserved_api_input_frame_labels=sorted({*keyword.kwlist, *RESERVED_NAMES}),
     )
 
 

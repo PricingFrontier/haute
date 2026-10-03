@@ -247,7 +247,7 @@ class TestValidateSingletons:
 
 
 # ---------------------------------------------------------------------------
-# _validate_unique_sanitized_names
+# _validate_executable_names
 # ---------------------------------------------------------------------------
 
 
@@ -258,7 +258,7 @@ class TestValidateUniqueSanitizedNames:
             _make_node("a", "Alpha", "polars"),
             _make_node("b", "Beta", "polars"),
         )
-        SavePipelineService._validate_unique_sanitized_names(graph)
+        SavePipelineService._validate_executable_names(graph)
 
     def test_dash_underscore_collision_raises_400(self) -> None:
         """'my-node' and 'my_node' both sanitize to 'my_node'."""
@@ -267,7 +267,7 @@ class TestValidateUniqueSanitizedNames:
             _make_node("b", "my_node", "polars"),
         )
         with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
+            SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "my_node" in exc_info.value.detail
 
@@ -278,7 +278,7 @@ class TestValidateUniqueSanitizedNames:
             _make_node("b", "Transform", "polars"),
         )
         with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
+            SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "Transform" in exc_info.value.detail
 
@@ -289,7 +289,7 @@ class TestValidateUniqueSanitizedNames:
             _make_node("b", "my_node", "polars"),
         )
         with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
+            SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "my_node" in exc_info.value.detail
 
@@ -301,7 +301,7 @@ class TestValidateUniqueSanitizedNames:
             _make_node("c", "my node", "polars"),
         )
         with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
+            SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "my_node" in exc_info.value.detail
 
@@ -316,7 +316,7 @@ class TestValidateUniqueSanitizedNames:
             _make_node("b", "caf", "polars"),
         )
         # Must not raise — the labels are now distinct after sanitisation.
-        SavePipelineService._validate_unique_sanitized_names(graph)
+        SavePipelineService._validate_executable_names(graph)
 
     def test_empty_labels_collide(self) -> None:
         """Multiple nodes with empty labels all sanitize to 'unnamed_node'."""
@@ -325,7 +325,7 @@ class TestValidateUniqueSanitizedNames:
             _make_node("b", "", "polars"),
         )
         with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
+            SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "unnamed_node" in exc_info.value.detail
 
@@ -336,17 +336,17 @@ class TestValidateUniqueSanitizedNames:
             _make_node("b", "transform", "dataInput"),
         )
         with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
+            SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
 
     def test_empty_graph_passes(self) -> None:
         """An empty graph has no collisions."""
         graph = _make_graph()
-        SavePipelineService._validate_unique_sanitized_names(graph)
+        SavePipelineService._validate_executable_names(graph)
 
 
 # ---------------------------------------------------------------------------
-# _validate_unique_sanitized_names — recursive (submodel-aware) scope
+# _validate_executable_names — recursive (submodel-aware) scope
 # ---------------------------------------------------------------------------
 
 
@@ -659,7 +659,7 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             root_nodes=(_make_node("root", "Foo Bar", "polars", {"code": "df"}),),
         )
         with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
+            SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "Foo_Bar" in exc_info.value.detail
 
@@ -671,7 +671,7 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             root_nodes=(_make_node("root", "Foo", "polars", {"code": "df"}),),
         )
         with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
+            SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "Foo" in exc_info.value.detail
 
@@ -684,19 +684,20 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             _make_node("c2", "my_node", "polars", {"code": "df"}),
         )
         with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
+            SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
         assert "my_node" in exc_info.value.detail
 
-    def test_submodel_placeholder_matching_its_child_passes(self) -> None:
-        """A submodel named after one of its own children is legal: the
-        placeholder's runtime id is ``submodel__<name>`` (never collides)
-        and no ``def`` is emitted for it.  Guard must NOT over-reject."""
+    def test_submodel_occurrence_matching_its_child_raises_400(self) -> None:
+        """An occurrence alias is a name like any node's: one name, one node,
+        across the pipeline and its submodels (NAME-01)."""
         graph = _make_submodel_graph(
             _make_node("pricing", "pricing", "polars", {"code": "df"}),
             sm_name="pricing",
         )
-        SavePipelineService._validate_unique_sanitized_names(graph)
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService._validate_executable_names(graph)
+        assert "take one name, `pricing`" in exc_info.value.detail
 
     def test_root_node_vs_placeholder_same_label_still_raises_400(self) -> None:
         """Pin current root-graph semantics: a root node whose label matches
@@ -707,7 +708,7 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             root_nodes=(_make_node("root", "pricing", "polars", {"code": "df"}),),
         )
         with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
+            SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
 
     def test_child_duplicated_in_root_nodes_raises_400(self) -> None:
@@ -721,7 +722,7 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             include_placeholder=False,
         )
         with pytest.raises(HTTPException) as exc_info:
-            SavePipelineService._validate_unique_sanitized_names(graph)
+            SavePipelineService._validate_executable_names(graph)
         assert exc_info.value.status_code == 400
 
     def test_distinct_names_across_modules_pass(self) -> None:
@@ -731,7 +732,7 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             _make_node("c2", "Adjust", "polars", {"code": "df"}),
             root_nodes=(_make_node("root", "Load Data", "polars", {"code": "df"}),),
         )
-        SavePipelineService._validate_unique_sanitized_names(graph)
+        SavePipelineService._validate_executable_names(graph)
 
     def test_save_rejects_cross_module_collision_with_400(self, tmp_path: Path) -> None:
         """End-to-end through ``save()``: the guard fires before codegen, so
@@ -2852,7 +2853,7 @@ class TestSaveGlobalConstants:
                         ],
                     }
                 ),
-                "would be named 'global_constants'",
+                "takes the name `global_constants`",
                 id="node-name",
             ),
             pytest.param(

@@ -100,11 +100,26 @@ Out of scope (owned by neighbouring components):
   deterministic unknown-node and dropped-edge evidence. It never silently removes a
   malformed connection from the generated pipeline.
 - **One function per node**, named by sanitizing the node's label
-  (`haute._graph_utils._sanitize_func_name`). Any two node labels or
-  submodel occurrence aliases that produce the same identifier, including exact duplicate labels, are a hard error at codegen time
-  (`_error_on_name_collisions`), checked globally across the root graph and
-  every submodel — not per file — because the flattened runtime graph is
-  keyed by the sanitized name across module boundaries.
+  (`haute._graph_utils._sanitize_func_name`). One executable-name rule
+  (`haute._executable_names`) governs those names, and save, codegen, the strict parse, the
+  assistant and the standalone `Pipeline` registration all apply it:
+  - node function names and submodel occurrence aliases are unique across the root graph and
+    every submodel graph, compared with `str.casefold`, so `Claims` and `claims` collide, as
+    do two labels that sanitize to one identifier or are identical;
+  - none is a *reserved name*, one the generated module binds itself: `haute`, `pl`,
+    `pipeline`, `submodel` (a submodel file's binding) and `global_constants`, compared
+    exactly;
+  - none is a public name of Python's `builtins` (`max`, `filter`, `id`, `ValueError`,
+    `Ellipsis`); the comparison is exact, so `Max premium` and `Filter` stay valid;
+  - no input a node body receives, as the executor binds it (a sanitized source label, an API
+    frame label, a submodel port name, an `inputMapping` alias, including an instance's), is
+    reserved. (`df` keeps its own rule: an input of that name is refused where node code reads
+    it and is an ordinary input on a node type without code.)
+
+  A node taking a reserved or built-in name would rebind it for every later node body when
+  the file is imported or run with `pipeline.run()`, while the canvas, which runs each body
+  against the preamble namespace alone, kept working. Every violation is listed in one
+  message naming each node, its module and the name.
 - **Function parameters are the listed input names, 1:1.** Each parameter of a
   generated node function is the *input name* of one incoming edge, derived by
   `haute._graph_utils.edge_input_name` in edge order: an `apiInput`-frame edge
@@ -328,15 +343,15 @@ with.
   declared once in `haute._registry` and consumed by both the executor builder and the
   standalone runtime. Other node types retain explicit builders until a direct
   cross-path result test proves that their semantics genuinely match.
-- **Global collision scope, not per-file.** A root-graph node and a
-  submodel-child node emit into different `.py` files (legal at the file
-  level), but `flatten_graph` later merges every submodel into one
-  execution graph keyed by sanitized function name. Catching collisions
-  per-file would let a genuinely fatal cross-module shadowing bug through
-  to runtime; `_error_on_name_collisions` is deliberately global.
-  Consequently, renaming a node in one submodel can be rejected because of a
-  same-named node in an unrelated submodel. That wider authoring error surface
-  is the accepted cost of preventing silent execution-time shadowing.
+- **Global, case-insensitive name scope, not per-file.** A root-graph node and a
+  submodel-child node emit into different `.py` files, and execution no longer needs them
+  distinct: `_submodel_instances.expand_submodel_instances` re-identifies children by
+  qualified runtime id rather than flattening bare names. Uniqueness across the project is a
+  deliberate policy: one name means one node in labels, traces, messages and generated
+  files, and names differing only in case read as one name there (config sidecars, API
+  parquet stems and submodel files already compare such names ignoring case).
+  Consequently, renaming a node in one submodel can be refused because of a same-named node
+  in an unrelated submodel; that is the accepted cost.
 - **`OSError`/`mlflow.*` are the only contract-computation errors treated as
   "offline," not fallback-worthy.** `_is_codegen_infra_error` narrowly
   allowlists environmental failures (missing artifact, unreachable MLflow
@@ -431,10 +446,10 @@ execution time on a mis-wired pipeline). Concretely:
   emitted parent with different columns** → `ParseError` from
   `_format_contract_source`; ambiguous data is never silently resolved by
   "keep the last writer."
-- **Node label collisions** (two node labels or submodel occurrence aliases sanitizing to the same Python
-  identifier, including exact duplicates, anywhere in the root graph or any submodel) →
-  `ParseError` enumerating every colliding bucket, from
-  `_error_on_name_collisions`.
+- **Executable-name violations** (two node function names or occurrence aliases equal
+  ignoring case anywhere in the root graph or any submodel, one that is reserved or a
+  built-in, or a reserved node input) → `ParseError` enumerating every violation, from
+  `check_executable_names`.
 - **An edge references a node absent from the graph** →
   `UnknownEdgeEndpointError` from the shared strict topology boundary before any
   generated source is accepted; codegen does not use filtered traversal.

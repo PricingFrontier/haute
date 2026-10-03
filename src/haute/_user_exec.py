@@ -12,6 +12,7 @@ from typing import Any
 
 import polars as pl
 
+from haute._executable_names import RESERVED_NAMES, reserved_input_problem
 from haute._global_constants import bind_code_view
 from haute._graph_utils import build_instance_mapping
 from haute._sandbox import (
@@ -53,7 +54,7 @@ def _exec_user_code(
     explore, and post-code hooks) pass ``alias_first_input_as_df=True`` to
     keep that contract. Polars transforms never do.
     """
-    local_ns: dict[str, Any] = {"pl": pl}
+    local_ns: dict[str, Any] = {}
     for i, d in enumerate(dfs):
         if i < len(src_names):
             local_ns[src_names[i]] = d
@@ -62,6 +63,12 @@ def _exec_user_code(
         for orig, inst in mapping.items():
             if orig not in local_ns and inst in local_ns:
                 local_ns[orig] = local_ns[inst]
+    # ``df`` has its own rule below; the other reserved names would replace
+    # what node code reads under them (polars, the constants view).
+    reserved_inputs = [name for name in local_ns if name in RESERVED_NAMES]
+    if reserved_inputs:
+        problem = reserved_input_problem(reserved_inputs)
+        raise ExecutionError(str(problem))
     if not alias_first_input_as_df and "df" in local_ns:
         raise ExecutionError(
             "The input name 'df' conflicts with the reserved output name in a Transform's "

@@ -7,8 +7,8 @@ column, a file or a storage key, and two of them can collide. The node naming
 rule is specified in
 [the codegen specification](../codegen/high-level.md) ("One function per
 node"). Exact and sanitized duplicate node labels are already refused at save
-(`routes/_save_pipeline.py::_validate_unique_sanitized_names`), at codegen
-(`codegen.check_function_name_collisions`), at parse (exact duplicates in one
+(`routes/_save_pipeline.py::_validate_executable_names`), at codegen
+(`codegen.check_executable_names`), at parse (exact duplicates in one
 file, `_graph_builders.py`) and by the standalone `Pipeline` class
 (`pipeline.py::_register_node`). These packages cover the collisions nothing
 checks, the entry points that check less than save does, the editor
@@ -104,7 +104,7 @@ ignoring case, while code-only nodes do not.
 - one result type listing each collision bucket or reserved hit with the
   node ids, labels and the module each sits in, and one message format.
 
-Route the save validator, `codegen.check_function_name_collisions`, the
+Route the save validator, `codegen.check_executable_names` (then `check_function_name_collisions`), the
 parser's duplicate check, the assistant's add and rename checks
 (`assistant/_ops.py`) and `Pipeline._register_node` through it, and delete
 the duplicated loops. In `_register_node`, refuse a reserved name, and
@@ -146,8 +146,8 @@ contract in `frontend-graph-canvas`.
 
 **Evidence:** `src/haute/_graph_utils.py::_sanitize_func_name`,
 `executable_input_name`; `src/haute/codegen.py::_render_module`,
-`check_function_name_collisions`;
-`src/haute/routes/_save_pipeline.py::_validate_unique_sanitized_names`,
+`check_executable_names`;
+`src/haute/routes/_save_pipeline.py::_validate_executable_names`,
 `_validate_global_constants`; `src/haute/_graph_builders.py` duplicate
 function-name check; `src/haute/pipeline.py::_register_node`;
 `src/haute/_user_exec.py` input binding; `src/haute/assistant/_ops.py` add

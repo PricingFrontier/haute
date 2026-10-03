@@ -595,7 +595,12 @@ Using a folder-backed node type without a `config=` sidecar raises, naming the c
 config folder and suggesting `haute init`. A JSON sidecar with a repeated key is rejected at
 read time rather than silently keeping the last value. Two node functions sharing a name are
 rejected, both at live decorator-registration time and again at static parse time (the
-function name becomes the graph node id, so a silent collision would drop a node). A
+function name becomes the graph node id, so a silent collision would drop a node).
+Registration also applies the codegen specification's executable-name rule, naming the node:
+a reserved or built-in name, a name equal ignoring case to another node or submodel
+occurrence, and a module-level function whose name the module already binds to something
+else (a preamble helper, an import) are refused, while `pipeline.polars(f)` on an
+already-defined `f` registers it. A
 Constant node whose `values` hold two entries with one non-empty name is refused with a
 node-config error naming the name, wherever its frame is built (`constant_frame`, which
 canvas execution and a standalone run share), rather than keeping the second value; an

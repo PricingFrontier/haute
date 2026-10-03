@@ -218,7 +218,11 @@ submodel constructor that declares constants are `ParseError`s naming the line.
   missing canonical identity fields, invalid structured public ports, or a
   nested submodel
   reference, an exact duplicate edge identity, or any node/edge/handle identity rejected by the
-  conservation gate. A parse that silently returned a plausible-but-incomplete graph here would
+  conservation gate. After the graph is built the strict parser applies the codegen
+  specification's executable-name rule (`haute._executable_names`) to the root graph and every
+  submodel graph, raising one `ParseError` that lists every violation: names equal ignoring
+  case, a reserved or built-in node name, a reserved node input. `haute run` and deploy parse
+  strictly, so they refuse such a file before running anything. A parse that silently returned a plausible-but-incomplete graph here would
   corrupt the file on the next save, which this codebase treats as strictly worse than a loud
   failure.
 - Config sidecar load/validation failures are raised as `ConfigError`. Editor-only recovery

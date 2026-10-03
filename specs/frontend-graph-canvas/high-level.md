@@ -614,8 +614,10 @@ candidate, with the error toast.
   *no* handle at all rather than a fabricated one — consistent with the
   codebase-wide preference for loud failure over a fallback that's wrong and
   hard to notice. The editor mirrors the backend's identifier rule exactly
-  (ASCII identifier `/^[A-Za-z_][A-Za-z0-9_]*$/`, no Python hard keyword)
-  before commit, because the label is also the downstream code argument
+  (ASCII identifier `/^[A-Za-z_][A-Za-z0-9_]*$/`, none of the server's reserved labels: the
+  Python hard keywords and the names generated code binds itself, `haute`, `pl`, `pipeline`,
+  `submodel` and `global_constants`, served as the document capability
+  `reserved_api_input_frame_labels`) before commit, because the label is also the downstream code argument
   name; the backend rule is ASCII-only precisely so this mirror can be
   exact rather than an approximation of Unicode `str.isidentifier()`.
 - **Connections that would duplicate an input name are rejected at drag
