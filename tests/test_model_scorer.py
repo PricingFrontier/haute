@@ -21,7 +21,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import numpy as np
 import polars as pl
@@ -938,6 +938,7 @@ class TestScoreFromConfig:
             artifact_path="model.cbm",
             task="regression",
             destination="",
+            backend=ANY,
         )
 
     # ---------------------------------------------------------------

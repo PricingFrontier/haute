@@ -632,3 +632,27 @@ def test_a_backslash_model_path_bundles_and_serves_under_one_key(project: Path) 
     assert artifact_basename("models\\ext.cbm") == artifact_basename("models/ext.cbm") == "ext.cbm"
     served = _remap_artifact("ms", config, remap, "model_path")
     assert served is not None and Path(served).resolve() == model.resolve()
+
+
+@pytest.mark.parametrize("kind", ["run", "registered"])
+def test_a_model_and_its_logged_contract_are_read_from_one_resolved_backend(
+    project: Path, kind: str
+) -> None:
+    """A settings change mid-load cannot split the model and contract reads."""
+    from unittest.mock import patch
+
+    from haute._mlflow_utils import resolve_backend
+    from haute._model_source import load_bound_model
+
+    model_path = external_catboost(project, offset=True)
+    contract = write_contract(model_path, offset="exposure", link="log")
+    source = source_for(kind, model_path, contract)
+    backend = resolve_backend(source.mlflow_destination)  # type: ignore[union-attr]
+
+    # Exactly one resolution is allowed: a second read resolving the
+    # destination again would raise StopIteration here.
+    with patch("haute._mlflow_utils.resolve_backend", side_effect=[backend]):
+        bound = load_bound_model(source, "regression")
+
+    assert bound.scoring_model.offset_column == "exposure"
+    assert bound.contract_path is not None

@@ -12,7 +12,7 @@ import ast
 import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import pytest
 
@@ -239,6 +239,7 @@ def test_a_run_source_loads_without_registry_fields(mock_load: Any) -> None:
         artifact_path="model.cbm",
         task="classification",
         destination="local",
+        backend=ANY,
     )
 
 
@@ -259,6 +260,7 @@ def test_a_registered_source_loads_by_alias(mock_load: Any) -> None:
         artifact_path="",
         task="regression",
         destination="",
+        backend=ANY,
     )
 
 

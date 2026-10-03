@@ -1175,19 +1175,17 @@ def resolve_run_artifact(
     registered_model: str = "",
     version: str = "",
     alias: str = "",
-    destination: str = "",
+    backend: ResolvedBackend,
 ) -> tuple[str, str]:
     """The concrete ``(run_id, artifact_path)`` a model source names right now.
 
-    A registered version, alias or ``latest`` resolves once, and an absent
-    artifact path is discovered in the run, so both reads that follow name the
-    same run.
+    A registered version, alias or ``latest`` resolves once against *backend*,
+    and an absent artifact path is discovered in the run, so both reads that
+    follow name the same run on the same backend.
 
     Raises:
         ModelNotInDiskCacheError: loads are limited to the disk cache.
     """
-    from haute._mlflow_utils import resolve_backend
-
     _require_remote_loads(source_type)
     if artifact_path:
         _validate_artifact_path(artifact_path)
@@ -1196,14 +1194,14 @@ def resolve_run_artifact(
         run_id=run_id,
         registered_model=registered_model,
         version=version,
-        backend=resolve_backend(destination),
+        backend=backend,
         alias=alias,
     )
     return resolved_run_id, artifact_path or _find_model_artifact(client, resolved_run_id)[0]
 
 
-def run_logged_contract_path(*, run_id: str, artifact_path: str, destination: str) -> str:
-    """The local copy of the contract a run logged beside its model artifact.
+def run_logged_contract_path(*, run_id: str, artifact_path: str, backend: ResolvedBackend) -> str:
+    """The local copy of the contract a run logged beside its model artifact on *backend*.
 
     Answered from the disk model cache when the contract is there; otherwise it
     downloads into the same cache (not within :func:`disk_cache_only_model_loads`).
@@ -1213,10 +1211,7 @@ def run_logged_contract_path(*, run_id: str, artifact_path: str, destination: st
         ModelNotInDiskCacheError: loads are limited to the disk cache and the
             contract is not in it.
     """
-    from haute._mlflow_utils import resolve_backend
-
     _validate_artifact_path(artifact_path)
-    backend = resolve_backend(destination)
     cached = _artifact_cache_path(
         _disk_cache_root(), backend.digest, run_id, _run_contract_artifact(artifact_path)
     )
@@ -1785,6 +1780,7 @@ def load_mlflow_model(
     task: str = "regression",
     destination: str = "",
     alias: str = "",
+    backend: ResolvedBackend | None = None,
 ) -> ScoringModel:
     """Load a model from MLflow through its registered model family.
 
@@ -1815,6 +1811,9 @@ def load_mlflow_model(
             CatBoost class to use for loading (ignored for pyfunc).
         destination: Destination key (``"databricks"``, ``"server"``,
             ``"local"``) or ``""`` for the local folder.
+        backend: The destination already resolved by a caller that makes
+            further reads of the same source, so every read uses one backend;
+            *destination* is resolved here otherwise.
 
     Returns:
         A ``ScoringModel`` wrapping the loaded model with a uniform interface.
@@ -1838,7 +1837,7 @@ def load_mlflow_model(
     # cache path, key, and lock below is keyed on this backend, and the full
     # path reuses the same object so a settings save mid-load cannot split
     # one load across two backends.
-    backend = resolve_backend(destination)
+    backend = backend if backend is not None else resolve_backend(destination)
 
     # Fast-path cache check using the raw inputs — avoids calling
     # resolve_mlflow_source() (which hits the MLflow tracking server)

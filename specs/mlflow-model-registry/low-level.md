@@ -263,9 +263,12 @@ it to its contract:
   source was not already one run and artifact, and
   `run_logged_contract_path(run_id, artifact_path, destination)` reads the
   contract beside it through the disk cache (`_resolve_run_contract`, raising
-  a `ConfigError` naming the run when there is none). An alias that moves
-  between the two reads therefore cannot pair one version's model with another
-  version's contract.
+  a `ConfigError` naming the run when there is none). The destination resolves
+  to one `ResolvedBackend` at the start, and the model load
+  (`load_mlflow_model(..., backend=)`), `resolve_run_artifact(..., backend=)` and
+  `run_logged_contract_path(..., backend=)` all use it. An alias that moves, or a
+  settings change, between the reads therefore cannot pair one version's or one
+  backend's model with another's contract.
 - **File.** `resolve_model_file(model_path, base_dir)` resolves the path through
   `resolve_runtime_file_path` (project preferred, pipeline directory
   `base_dir`, project root enforced) and raises `ConfigError` naming the file

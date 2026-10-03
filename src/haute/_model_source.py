@@ -26,6 +26,7 @@ from haute.errors import ConfigError
 
 if TYPE_CHECKING:
     from haute._mlflow_io import ScoringModel
+    from haute._mlflow_utils import ResolvedBackend
 
 MODEL_SOURCE_TYPES: tuple[str, ...] = ("run", "registered", "file")
 
@@ -323,17 +324,22 @@ def load_bound_model(
         )
         return BoundModel(scoring_model, contract_arg)
 
-    scoring_model = _load_mlflow_source(source, task)
+    from haute._mlflow_utils import resolve_backend
+
+    # One backend for every read below: a settings change mid-load cannot pair
+    # one backend's model with another's contract.
+    backend = resolve_backend(source.mlflow_destination)
+    scoring_model = _load_mlflow_source(source, task, backend)
     contract_path = feature_contract_path
     if contract_path is None and not scoring_model.offset_declared:
-        run_source = _concrete_run_source(source)
+        run_source = _concrete_run_source(source, backend)
         if run_source != source:
-            scoring_model = _load_mlflow_source(run_source, task)
+            scoring_model = _load_mlflow_source(run_source, task, backend)
         if not scoring_model.offset_declared:
             contract_path = _mlflow_io.run_logged_contract_path(
                 run_id=run_source.run_id,
                 artifact_path=run_source.artifact_path,
-                destination=run_source.mlflow_destination,
+                backend=backend,
             )
     contract = load_contract_cached(contract_path) if contract_path is not None else None
     bound = _mlflow_io.bind_feature_contract(
@@ -342,7 +348,9 @@ def load_bound_model(
     return BoundModel(bound, contract_path)
 
 
-def _load_mlflow_source(source: RunModelSource | RegisteredModelSource, task: str) -> ScoringModel:
+def _load_mlflow_source(
+    source: RunModelSource | RegisteredModelSource, task: str, backend: ResolvedBackend
+) -> ScoringModel:
     from haute import _mlflow_io
 
     if isinstance(source, RunModelSource):
@@ -352,6 +360,7 @@ def _load_mlflow_source(source: RunModelSource | RegisteredModelSource, task: st
             artifact_path=source.artifact_path,
             task=task,
             destination=source.mlflow_destination,
+            backend=backend,
         )
     return _mlflow_io.load_mlflow_model(
         source_type=source.source_type,
@@ -361,10 +370,13 @@ def _load_mlflow_source(source: RunModelSource | RegisteredModelSource, task: st
         artifact_path=source.artifact_path,
         task=task,
         destination=source.mlflow_destination,
+        backend=backend,
     )
 
 
-def _concrete_run_source(source: RunModelSource | RegisteredModelSource) -> RunModelSource:
+def _concrete_run_source(
+    source: RunModelSource | RegisteredModelSource, backend: ResolvedBackend
+) -> RunModelSource:
     """The source as one run and artifact, resolving a registered version or alias once."""
     from haute import _mlflow_io
 
@@ -374,7 +386,7 @@ def _concrete_run_source(source: RunModelSource | RegisteredModelSource) -> RunM
         run_id, artifact = _mlflow_io.resolve_run_artifact(
             source_type=source.source_type,
             run_id=source.run_id,
-            destination=source.mlflow_destination,
+            backend=backend,
         )
     else:
         run_id, artifact = _mlflow_io.resolve_run_artifact(
@@ -383,7 +395,7 @@ def _concrete_run_source(source: RunModelSource | RegisteredModelSource) -> RunM
             version=source.version,
             alias=source.alias,
             artifact_path=source.artifact_path,
-            destination=source.mlflow_destination,
+            backend=backend,
         )
     return RunModelSource(
         run_id=run_id, artifact_path=artifact, mlflow_destination=source.mlflow_destination
