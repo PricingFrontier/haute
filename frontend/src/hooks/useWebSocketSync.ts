@@ -10,6 +10,7 @@ import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
+import { constantDrafts } from "../utils/globalConstants"
 import {
   adaptPipelineEditorDocument,
   parsePipelineEditorDocument,
@@ -411,6 +412,8 @@ export default function useWebSocketSync({
                 edges: newEdges,
                 preamble: nextPreamble,
                 submodels: adapted.submodels,
+                globalConstants: constantDrafts(frame.document.global_constants),
+                globalConstantsError: frame.document.global_constants_error,
               })
               useDocumentStatusStore.getState().setGraphSynchronized(true)
               nodeIdCounter.current = computeNextNodeId(newNodes)

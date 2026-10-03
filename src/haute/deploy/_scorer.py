@@ -35,6 +35,7 @@ from haute._node_builder import NodeBuildHooks, NodeFnResult, node_fn_name, wrap
 from haute._polars_dtypes import contract_dtype_name
 from haute._polars_utils import streaming_collect
 from haute._types import (
+    GLOBAL_CONSTANTS_NAME,
     GraphNode,
     NodeType,
     PipelineGraph,
@@ -706,6 +707,8 @@ def _score_graph_lazy(
         node_type = node.data.nodeType
         config = node.data.config
         func_name = node_fn_name(node)
+        # The run's global constants, which code boxes bind beside their own names.
+        _constants = (build_kwargs.get("preamble_ns") or {}).get(GLOBAL_CONSTANTS_NAME)
 
         # Intercept: apiInput source → inject live DataFrame directly
         if node_type == NodeType.API_INPUT and nid in input_set:
@@ -815,7 +818,11 @@ def _score_graph_lazy(
                             _code,
                             _sn,
                             dfs,
-                            extra_ns={"obj": obj},
+                            extra_ns=(
+                                {"obj": obj}
+                                if _constants is None
+                                else {"obj": obj, GLOBAL_CONSTANTS_NAME: _constants}
+                            ),
                             alias_first_input_as_df=True,
                         )
 
@@ -974,6 +981,7 @@ def _score_graph_lazy(
                         required_output_columns=_required,
                         temporary_paths=model_score_temp_paths,
                         categorical_levels=score_categorical_levels,
+                        global_constants=_constants,
                     )
 
                 return func_name, model_score_fn, False

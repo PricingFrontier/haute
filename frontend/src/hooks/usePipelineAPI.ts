@@ -46,6 +46,7 @@ import { refreshRereadInput } from "../utils/inputSnapshotSource"
 import { newPreviewRequestId, pollPreviewProgress } from "./previewProgressPoller"
 import { apiErrorMessage } from "../api/errors"
 import { useDebouncedCallback } from "./useDebouncedCallback"
+import { constantDrafts, constantsPayload, saveRefusal } from "../utils/globalConstants"
 export { columnFingerprint } from "../utils/columnFingerprint"
 
 interface PipelineAPIParams {
@@ -555,6 +556,8 @@ export default function usePipelineAPI({
       edges: normalizeEdges(pipelineEdges),
       preamble: loadedPreamble,
       submodels: loadedSubmodels,
+      globalConstants: constantDrafts(data.global_constants),
+      globalConstantsError: data.global_constants_error,
     })
     useDocumentStatusStore.getState().setGraphSynchronized(true)
     if (data.pipeline_name) pipelineNameRef.current = data.pipeline_name
@@ -1375,6 +1378,17 @@ export default function usePipelineAPI({
       return false
     }
     const { sources: sc, activeSource: as_ } = useSettingsStore.getState()
+    // A constants file that failed to load is read-only: the save sends no
+    // constants and the server keeps the file. Otherwise every constant must
+    // be valid; a missing source value is allowed.
+    const { globalConstants: saveConstants, globalConstantsError } = useGraphStore.getState()
+    if (globalConstantsError === null) {
+      const refusal = saveRefusal(saveConstants, sc)
+      if (refusal) {
+        addToast("error", `Cannot save: ${refusal}`)
+        return false
+      }
+    }
     // Snapshot the exact graph/preamble/submodels that will reach the
     // backend, and stamp this attempt with a monotonic request id. The user
     // may keep editing — or start a newer save — while this request is in
@@ -1390,6 +1404,7 @@ export default function usePipelineAPI({
       edges: e,
       preamble: savePreamble,
       submodels: saveSubmodels,
+      globalConstants: saveConstants,
     })
     const requestGraph = toCanonicalGraphPayload(savedSnapshot)
     const saveRequestId = ++saveRequestSeq.current
@@ -1401,6 +1416,9 @@ export default function usePipelineAPI({
           nodes: requestGraph.nodes,
           edges: requestGraph.edges,
           submodels: requestGraph.submodels,
+          ...(globalConstantsError === null
+            ? { global_constants: constantsPayload(saveConstants) }
+            : {}),
         },
         preamble: savePreamble,
         source_file: sourceFileRef.current,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -177,3 +178,102 @@ def test_recovery_revision_rejects_artifacts_outside_project(tmp_path: Path) -> 
             project_root=tmp_path,
             artifacts=[("parent_source", outside)],
         )
+
+
+_CONSTANTS_PIPELINE = (
+    '"""Pipeline: main"""\n\n'
+    "import haute\n"
+    "import polars as pl\n\n"
+    'pipeline = haute.Pipeline("main", global_constants="config/global_constants.json")\n'
+    "global_constants = pipeline.global_constants\n\n\n"
+    "@pipeline.polars\n"
+    "def quotes() -> pl.LazyFrame:\n"
+    '    df = pl.LazyFrame({"rate": [global_constants.rate]})\n'
+    "    return df\n"
+)
+
+
+def _constants_document(tmp_path: Path, rate: float) -> Path:
+    main = tmp_path / "main.py"
+    main.write_text(_CONSTANTS_PIPELINE, encoding="utf-8")
+    constants = tmp_path / "config" / "global_constants.json"
+    constants.parent.mkdir(parents=True, exist_ok=True)
+    constants.write_text(
+        json.dumps({"constants": [{"name": "rate", "type": "float", "value": rate}]}) + "\n",
+        encoding="utf-8",
+    )
+    return main
+
+
+def _save_document(tmp_path: Path, document) -> None:
+    from haute._types import PipelineGraph
+    from haute.parser import parse_pipeline_file
+    from haute.routes._save_pipeline import SavePipelineService
+    from haute.schemas import SavePipelineRequest
+
+    graph = parse_pipeline_file(tmp_path / "main.py")
+    graph = PipelineGraph.model_validate(
+        {
+            **graph.model_dump(),
+            "global_constants": [constant.model_dump() for constant in document.global_constants],
+        }
+    )
+    SavePipelineService(project_root=tmp_path).save(
+        SavePipelineRequest(
+            graph=graph,
+            name="main",
+            source_file="main.py",
+            base_revision=document.source_revision,
+        )
+    )
+
+
+def test_an_edit_of_the_constants_file_after_load_makes_the_document_stale(
+    tmp_path: Path,
+) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute.routes._save_pipeline import StaleDocumentRevisionError
+
+    main = _constants_document(tmp_path, 1.05)
+    document = load_pipeline_editor_document(main, project_root=tmp_path)
+    assert [constant.value for constant in document.global_constants] == [1.05]
+    constants = tmp_path / "config" / "global_constants.json"
+    constants.write_text(
+        '{"constants": [{"name": "rate", "type": "float", "value": 2.5}]}\n',
+        encoding="utf-8",
+    )
+    newer = constants.read_bytes()
+
+    with pytest.raises(StaleDocumentRevisionError):
+        _save_document(tmp_path, document)
+
+    assert constants.read_bytes() == newer
+
+
+def test_a_write_between_the_loads_read_and_its_revision_leaves_the_document_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The constants a document carries are the bytes its revision authenticates."""
+    from haute import _pipeline_recovery
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute.routes._save_pipeline import StaleDocumentRevisionError
+
+    main = _constants_document(tmp_path, 1.05)
+    constants = tmp_path / "config" / "global_constants.json"
+    newer = b'{"constants": [{"name": "rate", "type": "float", "value": 2.5}]}\n'
+    original_revision = _pipeline_recovery.pipeline_recovery_revision
+
+    def replace_then_hash(**kwargs):
+        # Another writer lands after the load read the file, before it hashes.
+        constants.write_bytes(newer)
+        return original_revision(**kwargs)
+
+    monkeypatch.setattr(_pipeline_recovery, "pipeline_recovery_revision", replace_then_hash)
+    document = load_pipeline_editor_document(main, project_root=tmp_path)
+    monkeypatch.undo()
+
+    assert [constant.value for constant in document.global_constants] == [1.05]
+    with pytest.raises(StaleDocumentRevisionError):
+        _save_document(tmp_path, document)
+    assert constants.read_bytes() == newer

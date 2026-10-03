@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import datetime as _dt
 import json
 import math
 import re
@@ -1430,6 +1431,114 @@ def _wrap_expression_code(code: str) -> str:
     return code_clean
 
 
+_GLOBAL_CONSTANT_READ = re.compile(r"\bglobal_constants\.([A-Za-z][A-Za-z0-9_]*)\b")
+#: A quoted string (group 1, kept as written) or a constant read outside one (group 2).
+_DISPLAYED_CONSTANT_READ = re.compile(
+    r"""('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")|\bglobal_constants\.([A-Za-z][A-Za-z0-9_]*)\b"""
+)
+
+
+def _global_constant_values(namespace: Mapping[str, Any], code: str) -> dict[str, Any]:
+    """The scalar values of the constants *code* reads that resolve in *namespace*."""
+    constants = namespace.get("global_constants")
+    if constants is None:
+        return {}
+    values: dict[str, Any] = {}
+    for name in set(_GLOBAL_CONSTANT_READ.findall(code)):
+        try:
+            value = getattr(constants, name)
+        except Exception:  # noqa: BLE001 - an unresolved read stays as written in the trace
+            continue
+        if isinstance(value, (bool, int, float, str, _dt.date)):
+            values[name] = value
+    return values
+
+
+class _InlineGlobalConstants(ast.NodeTransformer):
+    def __init__(self, values: Mapping[str, Any]) -> None:
+        self._values = values
+
+    def _date_read(self, node: ast.AST) -> _dt.date | None:
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "global_constants"
+            and isinstance(self._values.get(node.attr), _dt.date)
+        ):
+            return cast(_dt.date, self._values[node.attr])
+        return None
+
+    @staticmethod
+    def _date_expression(value: _dt.date, node: ast.AST) -> ast.AST:
+        # A date is a literal of the run: Polars builds it per row.
+        built = f"pl.date({value.year}, {value.month}, {value.day})"
+        return ast.copy_location(ast.parse(built, mode="eval").body, node)
+
+    @staticmethod
+    def _is_date_dtype(node: ast.AST | None) -> bool:
+        """Whether *node* is no dtype at all, ``None`` or ``pl.Date``: what a date infers."""
+        if node is None or (isinstance(node, ast.Constant) and node.value is None):
+            return True
+        return (
+            isinstance(node, ast.Attribute)
+            and node.attr == "Date"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "pl"
+        )
+
+    def visit_Call(self, node: ast.Call) -> ast.AST:
+        # The step renderer writes a constant in expression position as
+        # ``pl.lit(global_constants.<name>)``; a date is already an expression,
+        # so that call becomes it. A call that names another dtype is left as
+        # written, so the trace reports it as not computable rather than
+        # guessing how ``pl.lit`` would apply the dtype.
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "lit"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "pl"
+        ):
+            keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+            argument = node.args[0] if node.args else keywords.get("value")
+            value = None if argument is None else self._date_read(argument)
+            if value is not None:
+                dtype = node.args[1] if len(node.args) > 1 else keywords.get("dtype")
+                equivalent = (
+                    len(node.args) <= 2
+                    and set(keywords) <= {"value", "dtype"}
+                    and self._is_date_dtype(dtype)
+                )
+                return self._date_expression(value, node) if equivalent else node
+        return self.generic_visit(node)
+
+    def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
+        date = self._date_read(node)
+        if date is not None:
+            return self._date_expression(date, node)
+        if (
+            isinstance(node.value, ast.Name)
+            and node.value.id == "global_constants"
+            and node.attr in self._values
+        ):
+            return ast.copy_location(ast.Constant(self._values[node.attr]), node)
+        return self.generic_visit(node)
+
+
+def _inline_global_constants(code: str, values: Mapping[str, Any]) -> str:
+    """*code* with each resolved ``global_constants.<name>`` read replaced by its literal.
+
+    A constant is a scalar literal of the run, so inlining it lets the row-local
+    evaluation compute the formula; the displayed formula keeps the name.
+    """
+    if not values:
+        return code
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return code
+    return ast.unparse(ast.fix_missing_locations(_InlineGlobalConstants(values).visit(tree)))
+
+
 def _evaluate_expression_impl(
     code: str,
     target_column: str,
@@ -1439,6 +1548,7 @@ def _evaluate_expression_impl(
 ) -> EvaluatedExpression:
     code = _wrap_expression_code(code)
     namespace = dict(preamble_ns or {})
+    constant_values = _global_constant_values(namespace, code)
 
     # Literal preamble constants display beside the row's values; the row wins.
     effective_row = {
@@ -1472,6 +1582,16 @@ def _evaluate_expression_impl(
             parsed.expression_text, _display_values(input_values, row)
         )
 
+    # Show each global constant's value where the formula reads it.
+    substituted_text = _DISPLAYED_CONSTANT_READ.sub(
+        lambda match: (
+            _format_value(constant_values[match.group(2)])
+            if match.group(2) in constant_values
+            else match.group(0)
+        ),
+        substituted_text,
+    )
+
     # Resolve preamble constants in substituted text
     if preamble_ns:
         for name, val in preamble_ns.items():
@@ -1480,7 +1600,9 @@ def _evaluate_expression_impl(
                 substituted_text = _replace_column_name(substituted_text, name, _format_value(val))
 
     traced_row = _native_row(row_values) if row is None else row
-    node = _locate_defining_expression(code, target_column)
+    node = _locate_defining_expression(
+        _inline_global_constants(code, constant_values), target_column
+    )
     computed = (
         _RowValue(reason="expression_not_located")
         if node is None

@@ -12,18 +12,18 @@ import useUIStore from "../useUIStore"
 function reset() {
   useUIStore.setState({
     utilityOpen: false,
-    importsOpen: false,
+    constantsOpen: false,
     gitOpen: false,
     assistantOpen: false,
   })
 }
 
-const FLAGS = ["utilityOpen", "importsOpen", "gitOpen", "assistantOpen"] as const
+const FLAGS = ["utilityOpen", "constantsOpen", "gitOpen", "assistantOpen"] as const
 type Flag = (typeof FLAGS)[number]
 
 const SETTERS: Record<Flag, (open: boolean) => void> = {
   utilityOpen: (open) => useUIStore.getState().setUtilityOpen(open),
-  importsOpen: (open) => useUIStore.getState().setImportsOpen(open),
+  constantsOpen: (open) => useUIStore.getState().setConstantsOpen(open),
   gitOpen: (open) => useUIStore.getState().setGitOpen(open),
   assistantOpen: (open) => useUIStore.getState().setAssistantOpen(open),
 }

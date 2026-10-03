@@ -1466,7 +1466,7 @@ again through the editor and save paths.
     prunes with a warning; W1.3: renaming a connected port rebinds its edge
     in one undo entry; W1.4: a blanked port label never reaches the graph;
     editing a non-port field never prunes a valid edge); panel
-    open/close mutual exclusivity (Utility/Imports/Git/branch indicator);
+    open/close mutual exclusivity (Utility/Constants/Git/branch indicator);
     the Submodel button's Dissolve mode (a lone selected submodel occurrence
     reads Dissolve and is dissolved by one request however often the button
     is clicked while it runs, a mixed selection still groups, and a read-only

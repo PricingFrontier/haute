@@ -143,3 +143,72 @@ describe("useGraphStore loadGraphSnapshot", () => {
     expect(state.dirty).toBe(false)
   })
 })
+
+describe("useGraphStore global constants", () => {
+  const rate = { name: "rate", type: "float" as const, split: false, value: "1.5", bySource: {} }
+
+  beforeEach(() => {
+    useGraphStore.getState().resetForTests()
+  })
+
+  it("loading sets the constants and their load error as the clean baseline", () => {
+    useGraphStore.getState().loadGraphSnapshot({
+      ...snapshot("a", "", {}),
+      globalConstants: [rate],
+      globalConstantsError: "bad JSON",
+    })
+
+    const state = useGraphStore.getState()
+    expect(state.globalConstants).toEqual([rate])
+    expect(state.globalConstantsError).toBe("bad JSON")
+    expect(state.dirty).toBe(false)
+    expect(state.isDirty()).toBe(false)
+  })
+
+  it("an edit marks the pipeline unsaved, moves the structural version and pushes no undo entry", () => {
+    useGraphStore.getState().loadGraphSnapshot({ ...snapshot("a", "", {}), globalConstants: [rate] })
+    const before = useGraphStore.getState().structuralVersion
+
+    useGraphStore.getState().setGlobalConstantsRaw([{ ...rate, value: "2" }])
+
+    const state = useGraphStore.getState()
+    expect(state.dirty).toBe(true)
+    expect(state.isDirty()).toBe(true)
+    expect(state.structuralVersion).toBe(before + 1)
+    expect(state.undoStack).toEqual([])
+
+    useGraphStore.getState().setGlobalConstantsRaw([rate])
+    expect(useGraphStore.getState().dirty).toBe(false)
+  })
+
+  it("undo and redo of a graph edit leave the constants alone", () => {
+    useGraphStore.getState().loadGraphSnapshot({ ...snapshot("a", "", {}), globalConstants: [rate] })
+    useGraphStore.getState().setPreamble("import math")
+    useGraphStore.getState().setGlobalConstantsRaw([{ ...rate, value: "2" }])
+
+    useGraphStore.getState().undo()
+    expect(useGraphStore.getState().preamble).toBe("")
+    expect(useGraphStore.getState().globalConstants).toEqual([{ ...rate, value: "2" }])
+    expect(useGraphStore.getState().dirty).toBe(true)
+
+    useGraphStore.getState().redo()
+    expect(useGraphStore.getState().globalConstants).toEqual([{ ...rate, value: "2" }])
+  })
+
+  it("marking a saved snapshot saves the constants it carries", () => {
+    useGraphStore.getState().loadGraphSnapshot({ ...snapshot("a", "", {}), globalConstants: [rate] })
+    const edited = [{ ...rate, value: "2" }]
+    useGraphStore.getState().setGlobalConstantsRaw(edited)
+    const state = useGraphStore.getState()
+
+    state.markSaved({
+      nodes: state.nodes,
+      edges: state.edges,
+      preamble: state.preamble,
+      submodels: state.submodels,
+      globalConstants: edited,
+    })
+
+    expect(useGraphStore.getState().dirty).toBe(false)
+  })
+})

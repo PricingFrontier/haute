@@ -688,3 +688,42 @@ class TestFingerprintBenchmark:
             f"Cached path ({cached:.4f}s) slower than baseline "
             f"({baseline:.4f}s) — a regression that would undo item #86."
         )
+
+
+class TestGlobalConstantsInTheGraphFingerprint:
+    """A graph fingerprint signs every value of each constant its nodes read."""
+
+    def _graph(self, *, rate: dict[str, Any], other: dict[str, Any]) -> PipelineGraph:
+        from haute._types import GlobalConstant
+
+        return PipelineGraph(
+            nodes=[
+                _make_node("reader", {"code": "df = pl.LazyFrame({'r': [global_constants.rate]})"})
+            ],
+            global_constants=[
+                GlobalConstant(name="rate", type="float", **rate),
+                GlobalConstant(name="other", type="float", **other),
+            ],
+        )
+
+    def test_any_value_of_a_read_constant_re_signs_and_an_unread_one_does_not(self) -> None:
+        baseline = graph_fingerprint(
+            self._graph(rate={"by_source": {"live": 1.0, "nb_batch": 2.0}}, other={"value": 1.0})
+        )
+
+        batch_edit = self._graph(
+            rate={"by_source": {"live": 1.0, "nb_batch": 2.5}}, other={"value": 1.0}
+        )
+        unread_edit = self._graph(
+            rate={"by_source": {"live": 1.0, "nb_batch": 2.0}}, other={"value": 5.0}
+        )
+
+        assert graph_fingerprint(batch_edit) != baseline
+        assert graph_fingerprint(unread_edit) == baseline
+
+    def test_a_load_error_is_signed_once_a_node_reads_a_constant(self) -> None:
+        graph = self._graph(rate={"value": 1.0}, other={"value": 1.0})
+        failed = graph.model_copy(update={"global_constants": [], "global_constants_error": "bad"})
+        failed_again = failed.model_copy(update={"global_constants_error": "worse"})
+
+        assert graph_fingerprint(failed) != graph_fingerprint(failed_again)

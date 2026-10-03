@@ -93,7 +93,14 @@ from haute._registry import (
 from haute._registry import (
     register_exec as _register_exec_in_registry,
 )
-from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph, _Frame
+from haute._types import (
+    GLOBAL_CONSTANTS_NAME,
+    GraphEdge,
+    GraphNode,
+    NodeType,
+    PipelineGraph,
+    _Frame,
+)
 from haute._user_exec import _exec_user_code
 from haute.errors import ConfigError, RatingFactorDtypeContractError
 
@@ -1268,6 +1275,7 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         reuse_loaded_model=ctx.reuse_loaded_model,
         input_fanout=_upstream_scenario_fanout(ctx.upstream_ids, ctx.node_map),
         base_dir=base_dir,
+        global_constants=(ctx.preamble_ns or {}).get(GLOBAL_CONSTANTS_NAME),
     )
 
     return ctx.func_name, scorer.score, False

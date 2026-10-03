@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, cleanup, fireEvent, within } from "@testing-library/react"
+import { act, render, screen, cleanup, fireEvent, within } from "@testing-library/react"
 import { useState } from "react"
 
 import { literal } from "../catalogue"
 import { completionMatches } from "../completion"
-import { ColumnListField, ColumnPicker, ConditionRow, NumberField, OperandField } from "../fields"
+import { ArgumentField, ColumnListField, ColumnPicker, ConditionRow, NumberField, OperandField } from "../fields"
+import useGraphStore from "../../../../stores/useGraphStore"
+import type { GlobalConstantDraft } from "../../../../utils/globalConstants"
 import { StepSchemaContext, schemaFor } from "../stepSchema"
 import type { Condition, Operand } from "../types"
 
@@ -338,3 +340,85 @@ describe("a value is one control", () => {
     expect(screen.queryByRole("combobox", { name: "Value kind" })).not.toBeInTheDocument()
   })
 })
+
+describe("a value can read a global constant", () => {
+  const drafts: GlobalConstantDraft[] = [
+    { name: "rate", type: "float", split: false, value: "1.5", bySource: {} },
+    { name: "region", type: "text", split: true, value: "", bySource: { live: "north" } },
+    { name: "digits", type: "integer", split: false, value: "2", bySource: {} },
+  ]
+
+  afterEach(() => {
+    cleanup()
+    useGraphStore.getState().resetForTests()
+  })
+
+  it("offers Constant only when a fitting constant exists, listing only the fitting ones", () => {
+    const onChange = vi.fn()
+    const { rerender } = render(
+      <OperandField value={literal("number", 3)} onChange={onChange} sources={["literal", "constant"]} literalTypes={["number"]} columns={[]} variables={[]} ariaLabel="Value" />,
+    )
+    expect(screen.queryByRole("combobox", { name: "Value kind" })).not.toBeInTheDocument()
+
+    act(() => useGraphStore.getState().setGlobalConstantsRaw(drafts))
+    const kind = screen.getByRole("combobox", { name: "Value kind" })
+    expect(within(kind).getByRole("option", { name: "Constant" })).toBeInTheDocument()
+    fireEvent.change(kind, { target: { value: "constant" } })
+    expect(onChange).toHaveBeenLastCalledWith({ kind: "constant", name: "rate" })
+
+    rerender(
+      <OperandField value={{ kind: "constant", name: "region" }} onChange={onChange} sources={["literal", "constant"]} literalTypes={["text"]} constantTypes={["text"]} columns={[]} variables={[]} ariaLabel="Value" />,
+    )
+    const choice = screen.getByRole("combobox", { name: "Value constant" })
+    expect(within(choice).getAllByRole("option").map((option) => option.textContent)).toEqual(["choose a constant", "region"])
+  })
+
+  it("keeps a constant value visible when no constant fits any more", () => {
+    render(
+      <OperandField value={{ kind: "constant", name: "gone" }} onChange={vi.fn()} sources={["literal", "constant"]} literalTypes={["number"]} columns={[]} variables={[]} ariaLabel="Value" />,
+    )
+    expect(screen.getByRole("combobox", { name: "Value kind" })).toHaveValue("constant")
+    expect(screen.getByRole("combobox", { name: "Value constant" })).toHaveValue("")
+  })
+
+  it("lets a typed function argument read a constant of its type", () => {
+    act(() => useGraphStore.getState().setGlobalConstantsRaw(drafts))
+    const onChange = vi.fn()
+    render(
+      <ArgumentField value={literal("number", 0)} onChange={onChange} constantTypes={["integer"]} plainValue={literal("number", 0)} plainLabel="number" ariaLabel="Digits">
+        <span>plain editor</span>
+      </ArgumentField>,
+    )
+    expect(screen.getByText("plain editor")).toBeInTheDocument()
+    fireEvent.change(screen.getByRole("combobox", { name: "Digits kind" }), { target: { value: "constant" } })
+    expect(onChange).toHaveBeenLastCalledWith({ kind: "constant", name: "digits" })
+  })
+
+  it("shows only the plain editor for an argument no constant fits", () => {
+    act(() => useGraphStore.getState().setGlobalConstantsRaw(drafts))
+    render(
+      <ArgumentField value={literal("text", "")} onChange={vi.fn()} constantTypes={[]} plainValue={literal("text", "")} plainLabel="text" ariaLabel="Type">
+        <span>plain editor</span>
+      </ArgumentField>,
+    )
+    expect(screen.queryByRole("combobox", { name: "Type kind" })).not.toBeInTheDocument()
+  })
+
+  it("offers a string operator's condition only text constants", () => {
+    act(() => useGraphStore.getState().setGlobalConstantsRaw(drafts))
+    render(
+      <StepSchemaContext.Provider value={schema([["region", "String"]])}>
+        <ConditionRow
+          condition={{ column: "region", operator: "contains", value: { kind: "constant", name: "region" } }}
+          onChange={vi.fn()}
+          columns={["region"]}
+          variables={[]}
+          ariaLabel="Condition"
+        />
+      </StepSchemaContext.Provider>,
+    )
+    const choice = screen.getByRole("combobox", { name: "Condition value constant" })
+    expect(within(choice).getAllByRole("option").map((option) => option.textContent)).toEqual(["choose a constant", "region"])
+  })
+})
+

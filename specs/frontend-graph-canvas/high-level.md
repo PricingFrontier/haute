@@ -248,7 +248,7 @@ candidate, with the error toast.
   per-parent markers are collapsed. Input-to-child and child-to-Output edges
   use the same solid default edge rendering as ordinary main-canvas edges;
   submodel boundaries add no private stroke or opacity styling.
-- **Graph state.** One store owns nodes, edges, imports preamble, and nested
+- **Graph state.** One store owns nodes, edges, imports preamble, global constants, and nested
   submodel metadata so every frame rename is one coherent transaction.
   Submodel occurrences rebind only their parent edge because definition configs
   already use public port ids. User-meaningful changes push one complete snapshot;

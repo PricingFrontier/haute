@@ -183,3 +183,62 @@ describe("callAtCaret", () => {
     expect(callAtCaret("nope(premium, ", 14)).toBeNull()
   })
 })
+
+describe("global constants in formulas", () => {
+  it("parses global_constants.<name> as a constant operand and prints it back", () => {
+    const expr = parseFormula("premium * global_constants.rate + round(cost, global_constants.digits)")
+    expect(withoutFormulaText(expr)).toEqual({
+      type: "binary",
+      left: { kind: "expr", expr: { type: "binary", left: { kind: "column", name: "premium" }, op: "*", right: { kind: "constant", name: "rate" } } },
+      op: "+",
+      right: {
+        kind: "expr",
+        expr: { type: "function", fn: "round", operand: { kind: "column", name: "cost" }, args: [{ kind: "constant", name: "digits" }] },
+      },
+    })
+    expect(formulaText(withoutFormulaText(expr))).toBe("premium * global_constants.rate + round(cost, global_constants.digits)")
+  })
+
+  it("reads a bare name as an earlier variable, then a constant, then a column", () => {
+    expect(withoutFormulaText(parseFormula("excess * rate", [], ["rate"]))).toEqual({
+      type: "binary",
+      left: { kind: "column", name: "excess" },
+      op: "*",
+      right: { kind: "constant", name: "rate" },
+    })
+    expect(withoutFormulaText(parseFormula("rate", ["rate"], ["rate"]))).toEqual({ type: "operand", operand: { kind: "variable", name: "rate" } })
+    expect(withoutFormulaText(parseFormula("`rate`", [], ["rate"]))).toEqual({ type: "operand", operand: { kind: "column", name: "rate" } })
+    expect(withoutFormulaText(parseFormula("round(excess, digits)", [], ["digits"]))).toMatchObject({
+      args: [{ kind: "constant", name: "digits" }],
+    })
+  })
+
+  it("prints a known constant bare and a column that shares its name in backticks", () => {
+    const expr = withoutFormulaText(parseFormula("`rate` * rate", [], ["rate"]))
+    expect(formulaText(expr, [], ["rate"])).toBe("`rate` * rate")
+    // Without the constant known, it reads back qualified.
+    expect(formulaText(expr)).toBe("rate * global_constants.rate")
+    expect(displayFormula(parseFormula("excess * rate", [], ["rate"]), [], ["rate"])).toBe("excess * rate")
+  })
+
+  it("keeps literal keywords and type arguments when a constant shares their name", () => {
+    const constants = ["false", "Float64", "null"]
+    const fill = parseFormula("fill_null(flag, false)", [], constants)
+    expect(withoutFormulaText(fill)).toMatchObject({ args: [{ kind: "literal", type: "boolean", value: false }] })
+    expect(displayFormula(fill, [], constants)).toBe("fill_null(flag, false)")
+
+    const cast = parseFormula("cast(excess, Float64)", [], constants)
+    expect(withoutFormulaText(cast)).toMatchObject({ args: [{ kind: "literal", type: "text", value: "Float64" }] })
+    expect(displayFormula(cast, [], constants)).toBe("cast(excess, Float64)")
+
+    // A constant named like a keyword is still readable, qualified.
+    const qualified = withoutFormulaText(parseFormula("excess * global_constants.null", [], constants))
+    expect(qualified).toMatchObject({ right: { kind: "constant", name: "null" } })
+    expect(formulaText(qualified, [], constants)).toBe("excess * global_constants.null")
+  })
+
+  it("refuses a constant where a type is expected", () => {
+    expect(() => parseFormula("cast(premium, global_constants.kind)")).toThrow(FormulaError)
+  })
+})
+

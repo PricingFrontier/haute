@@ -9,23 +9,29 @@
  * names too, text is quoted, `true`/`false`/`null` are keywords, dates are
  * written `date('2024-01-01')`, and functions take the catalogue's names in
  * any case (the kept text spells them as the catalogue does) with their extra
- * arguments as plain values. Operators follow Python: `+ - * / // % **`,
+ * arguments as plain values. A pipeline global constant is its bare name
+ * (or `global_constants.<name>`), also as an extra argument; a bare name is an
+ * earlier variable first, then one of the `constants` given, then a column, and
+ * backticks always name a column. The editor leaves out of `constants` any
+ * constant sharing a column's name, so a column's name always means the column. Operators follow Python: `+ - * / // % **`,
  * with `**` binding tightest and right-associative, and brackets group.
  * Expression types text cannot express (windows, conditionals, text joins)
  * make `formulaText` return null, and the structured editor takes over.
  */
 import { CAST_DTYPES, FUNCTIONS, literal, type FunctionArg } from "./catalogue"
-import type { BinaryOperator, CastDtype, Expr, FunctionName, LiteralOperand, Operand } from "./types"
+import type { BinaryOperator, CastDtype, Expr, FunctionArgValue, FunctionName, LiteralOperand, Operand } from "./types"
 
 const PRECEDENCE: Record<BinaryOperator, number> = { "+": 1, "-": 1, "*": 2, "/": 2, "//": 2, "%": 2, "**": 3 }
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/
 const KEYWORDS = new Set(["true", "false", "null", "date"])
+const NO_NAMES: ReadonlySet<string> = new Set()
 
 /** A token with its span in the text, so errors and rewrites can point at it. */
 type Token = (
   | { kind: "number"; value: number; text: string }
   | { kind: "string"; value: string }
   | { kind: "name"; value: string; quoted: boolean }
+  | { kind: "constant"; value: string }
   | { kind: "op"; value: BinaryOperator }
   | { kind: "punct"; value: "(" | ")" | "," }
 ) & { start: number; end: number }
@@ -105,6 +111,12 @@ function tokenize(text: string): Token[] {
       i = end + 1
       continue
     }
+    const constant = /^global_constants\s*\.\s*([A-Za-z][A-Za-z0-9_]*)/.exec(text.slice(i))
+    if (constant) {
+      tokens.push({ kind: "constant", value: constant[1], start: i, end: i + constant[0].length })
+      i += constant[0].length
+      continue
+    }
     const name = /^[A-Za-z_][A-Za-z0-9_]*/.exec(text.slice(i))
     if (name) {
       tokens.push({ kind: "name", value: name[0], quoted: false, start: i, end: i + name[0].length })
@@ -125,13 +137,15 @@ class Parser {
   private index = 0
   private readonly tokens: Token[]
   private readonly variables: ReadonlySet<string>
+  private readonly constants: ReadonlySet<string>
   private readonly length: number
   /** Function-name tokens and the catalogue spelling they stand for. */
   readonly calls: Array<{ start: number; end: number; name: string }> = []
 
-  constructor(tokens: Token[], variables: ReadonlySet<string>, length: number) {
+  constructor(tokens: Token[], variables: ReadonlySet<string>, constants: ReadonlySet<string>, length: number) {
     this.tokens = tokens
     this.variables = variables
+    this.constants = constants
     this.length = length
   }
 
@@ -230,6 +244,7 @@ class Parser {
     const token = this.take()
     if (token.kind === "number") return { type: "operand", operand: literal("number", token.value) }
     if (token.kind === "string") return { type: "operand", operand: literal("text", token.value) }
+    if (token.kind === "constant") return { type: "operand", operand: { kind: "constant", name: token.value } }
     if (token.kind === "punct" && token.value === "(") {
       const inner = this.additive()
       this.expect(")", `Expected ")" after ${this.previous()}.`)
@@ -241,6 +256,7 @@ class Parser {
         if (token.value === "null") return { type: "operand", operand: literal("null", null) }
         if (this.isPunct(this.peek(), "(")) return this.call(token)
         if (this.variables.has(token.value)) return { type: "operand", operand: { kind: "variable", name: token.value } }
+        if (this.constants.has(token.value)) return { type: "operand", operand: { kind: "constant", name: token.value } }
       }
       return { type: "operand", operand: { kind: "column", name: token.value } }
     }
@@ -260,7 +276,7 @@ class Parser {
     if (!spec) throw new FormulaError(`Unknown function "${name}". Functions: ${FUNCTIONS.map((f) => f.value).join(", ")}.`, token.start)
     this.calls.push({ start: token.start, end: token.end, name: spec.value })
     const operand = asOperand(this.additive())
-    const args: LiteralOperand[] = []
+    const args: FunctionArgValue[] = []
     const count = `${spec.value}() takes ${spec.args.length + 1} arguments.`
     for (const arg of spec.args) {
       this.expect(",", count)
@@ -270,8 +286,21 @@ class Parser {
     return { type: "function", fn: spec.value as FunctionName, operand, args }
   }
 
-  private literalArg(fn: string, arg: FunctionArg): LiteralOperand {
+  private literalArg(fn: string, arg: FunctionArg): FunctionArgValue {
     const token = this.take()
+    // A bare name is a constant only where a constant may stand: never a type
+    // argument, and never a keyword (`true`, `false`, `null`, `date`).
+    const bareConstant =
+      arg !== "dtype"
+      && token.kind === "name"
+      && !token.quoted
+      && !KEYWORDS.has(token.value)
+      && !this.variables.has(token.value)
+      && this.constants.has(token.value)
+    if (token.kind === "constant" || bareConstant) {
+      if (arg === "dtype") throw new FormulaError(`${fn}() expects a type here, not a constant.`, token.start)
+      return { kind: "constant", name: token.value }
+    }
     const negative = this.isOp(token, "-")
     const value = negative ? this.take() : token
     switch (arg) {
@@ -305,6 +334,8 @@ function describe(token: Token): string {
       return `text '${token.value}'`
     case "name":
       return `"${token.value}"`
+    case "constant":
+      return `global_constants.${token.value}`
     case "op":
       return `operator ${token.value}`
     case "punct":
@@ -318,8 +349,8 @@ function describe(token: Token): string {
  * the trimmed text so the editor and the card summary show it as typed,
  * brackets and all, with function names spelled as the catalogue does.
  */
-export function parseFormula(text: string, variables: readonly string[] = []): Expr {
-  const parser = new Parser(tokenize(text), new Set(variables), text.length)
+export function parseFormula(text: string, variables: readonly string[] = [], constants: readonly string[] = []): Expr {
+  const parser = new Parser(tokenize(text), new Set(variables), new Set(constants), text.length)
   const expr = parser.parse()
   if (!isFormulaType(expr)) return expr
   let spelled = text
@@ -363,18 +394,18 @@ export function withoutFormulaText(expr: Expr): Expr {
  * parses to this expression, else a fresh rendering; null when text cannot
  * express the expression.
  */
-export function displayFormula(expr: Expr, variables: readonly string[] = []): string | null {
+export function displayFormula(expr: Expr, variables: readonly string[] = [], constants: readonly string[] = []): string | null {
   // Empty text is a formula box nothing has been typed into yet.
   if (expr.type === "binary" && expr.text === "") return ""
   if (isFormulaType(expr) && typeof expr.text === "string") {
     try {
-      const reparsed = withoutFormulaText(parseFormula(expr.text, variables))
+      const reparsed = withoutFormulaText(parseFormula(expr.text, variables, constants))
       if (JSON.stringify(reparsed) === JSON.stringify(withoutFormulaText(expr))) return expr.text
     } catch {
       // fall through to a fresh rendering
     }
   }
-  return formulaText(expr, variables)
+  return formulaText(expr, variables, constants)
 }
 
 function quoteText(value: string): string {
@@ -409,19 +440,33 @@ export function literalText(operand: LiteralOperand): string {
   }
 }
 
-function operandText(operand: Operand, variables: ReadonlySet<string>, parent: { op: BinaryOperator; side: "left" | "right" } | null): string | null {
+/** A constant as text: its bare name where that reads back as the constant, else qualified. */
+function constantText(name: string, variables: ReadonlySet<string>, constants: ReadonlySet<string>): string | null {
+  if (!name) return null
+  const bare = constants.has(name) && !variables.has(name) && IDENTIFIER.test(name) && !KEYWORDS.has(name)
+  return bare ? name : `global_constants.${name}`
+}
+
+function operandText(
+  operand: Operand,
+  variables: ReadonlySet<string>,
+  parent: { op: BinaryOperator; side: "left" | "right" } | null,
+  constants: ReadonlySet<string> = NO_NAMES,
+): string | null {
   switch (operand.kind) {
     case "literal": {
       const text = literalText(operand)
       return parent?.op === "**" && parent.side === "left" && operand.type === "number" && Number(operand.value) < 0 ? `(${text})` : text
     }
     case "column":
-      return nameText(operand.name, variables, false)
+      return nameText(operand.name, constants.size ? new Set([...variables, ...constants]) : variables, false)
     case "variable":
       return nameText(operand.name, variables, true)
+    case "constant":
+      return constantText(operand.name, variables, constants)
     case "expr": {
-      if (operand.expr.type === "operand") return operandText(operand.expr.operand, variables, parent)
-      const inner = exprText(operand.expr, variables)
+      if (operand.expr.type === "operand") return operandText(operand.expr.operand, variables, parent, constants)
+      const inner = exprText(operand.expr, variables, constants)
       if (inner === null) return null
       if (operand.expr.type !== "binary") return inner
       // Text only has to re-parse to the same tree: a tighter-binding child
@@ -438,20 +483,24 @@ function operandText(operand: Operand, variables: ReadonlySet<string>, parent: {
   }
 }
 
-function exprText(expr: Expr, variables: ReadonlySet<string>): string | null {
+function exprText(expr: Expr, variables: ReadonlySet<string>, constants: ReadonlySet<string> = NO_NAMES): string | null {
   switch (expr.type) {
     case "operand":
-      return operandText(expr.operand, variables, null)
+      return operandText(expr.operand, variables, null, constants)
     case "binary": {
-      const left = operandText(expr.left, variables, { op: expr.op, side: "left" })
-      const right = operandText(expr.right, variables, { op: expr.op, side: "right" })
+      const left = operandText(expr.left, variables, { op: expr.op, side: "left" }, constants)
+      const right = operandText(expr.right, variables, { op: expr.op, side: "right" }, constants)
       return left === null || right === null ? null : `${left} ${expr.op} ${right}`
     }
     case "function": {
-      const receiver = expr.operand.kind === "expr" ? exprText(expr.operand.expr, variables) : operandText(expr.operand, variables, null)
+      const receiver = expr.operand.kind === "expr" ? exprText(expr.operand.expr, variables, constants) : operandText(expr.operand, variables, null, constants)
       if (receiver === null) return null
       const spec = FUNCTIONS.find((f) => f.value === expr.fn)
-      const args = expr.args.map((arg, index) => (spec?.args[index] === "dtype" ? String(arg.value) : literalText(arg)))
+      const args = expr.args.map((arg, index) => {
+        if (arg.kind === "constant") return constantText(arg.name, variables, constants)
+        return spec?.args[index] === "dtype" ? String(arg.value) : literalText(arg)
+      })
+      if (args.some((arg) => arg === null)) return null
       return `${expr.fn}(${[receiver, ...args].join(", ")})`
     }
     default:
@@ -464,9 +513,15 @@ function exprText(expr: Expr, variables: ReadonlySet<string>): string | null {
  * column references change: quoted text, function names, keywords and
  * earlier variables that happen to share the name are left alone.
  */
-export function renameColumnInFormula(text: string, from: string, to: string, variables: readonly string[] = []): string {
+export function renameColumnInFormula(
+  text: string,
+  from: string,
+  to: string,
+  variables: readonly string[] = [],
+  constants: readonly string[] = [],
+): string {
   const tokens = tokenize(text)
-  const known = new Set(variables)
+  const known = new Set([...variables, ...constants])
   const insert = nameText(to, known, false) ?? to
   // Which argument of which call each token sits in: a catalogue function's
   // arguments after the first are plain values (a type such as Float64, a
@@ -502,8 +557,8 @@ export function renameColumnInFormula(text: string, from: string, to: string, va
  * The formula text for an expression, or null when it contains something
  * text cannot express (a window, conditional or text join).
  */
-export function formulaText(expr: Expr, variables: readonly string[] = []): string | null {
-  return exprText(expr, new Set(variables))
+export function formulaText(expr: Expr, variables: readonly string[] = [], constants: readonly string[] = []): string | null {
+  return exprText(expr, new Set(variables), new Set(constants))
 }
 
 /**

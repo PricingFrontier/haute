@@ -1,11 +1,13 @@
 import { Suspense, lazy, useState, useMemo, useRef, useCallback, useEffect } from "react"
-import { Undo2, Redo2, ZoomIn, ZoomOut, Scan, Network, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, Bot, Loader2, Group, Ungroup, Link2, BookOpen, CircleHelp, Keyboard, Bug } from "lucide-react"
+import { Undo2, Redo2, ZoomIn, ZoomOut, Scan, Network, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Variable, Bot, Loader2, Group, Ungroup, Link2, BookOpen, CircleHelp, Keyboard, Bug } from "lucide-react"
 import type { WsStatus } from "../hooks/useWebSocketSync"
 import type { NodeTiming, NodeMemory } from "../api/types"
 import BreakdownDropdown, { type BreakdownItem } from "./BreakdownDropdown"
 import BranchIndicator from "./BranchIndicator"
 import useSettingsStore from "../stores/useSettingsStore"
 import useUIStore from "../stores/useUIStore"
+import useGraphStore from "../stores/useGraphStore"
+import { constantsWithSourceValue, withoutSource } from "../utils/globalConstants"
 import useClickOutside from "../hooks/useClickOutside"
 import { formatBytes } from "../utils/formatBytes"
 import { DOCUMENTATION_URL } from "../utils/documentation"
@@ -34,6 +36,25 @@ const OFFLINE_TITLES: Partial<Record<WsStatus, string>> = {
 
 const PIPELINE_SETTINGS_TITLE = "Pipeline settings - preview rows, chunk rows and cached data"
 
+/**
+ * Remove *source*, first removing its values from split global constants. When
+ * some constant holds a value for it, ask before discarding them.
+ */
+function removeSourceWithConstants(source: string, removeSource: (source: string) => void): void {
+  const graph = useGraphStore.getState()
+  const holders = constantsWithSourceValue(graph.globalConstants, source)
+  if (holders.length > 0) {
+    const listed = holders.join(", ")
+    if (!window.confirm(`Remove source "${source}"? Its values for ${listed} will be deleted.`)) {
+      return
+    }
+  }
+  if (graph.globalConstants.some((draft) => draft.split && source in draft.bySource)) {
+    graph.setGlobalConstantsRaw(withoutSource(graph.globalConstants, source))
+  }
+  removeSource(source)
+}
+
 interface ToolbarProps {
   nodeCount: number
   canUndo: boolean
@@ -43,7 +64,7 @@ interface ToolbarProps {
   onZoomIn: () => void
   onZoomOut: () => void
   onOpenUtility: () => void
-  onOpenImports: () => void
+  onOpenConstants: () => void
   /** What the Submodel button does for the current selection: "create"
    *  groups 2+ nodes into a new submodel, and "dissolve" (exactly one
    *  submodel occurrence selected) expands it back into the pipeline. The
@@ -71,7 +92,7 @@ export default function Toolbar({
   nodeCount,
   canUndo, canRedo, onUndo, onRedo,
   onZoomIn, onZoomOut,
-  onOpenUtility, onOpenImports,
+  onOpenUtility, onOpenConstants,
   submodelAction, canRunSubmodelAction, onSubmodelAction,
   canCreateInstance, onCreateInstance,
   onCentre, onAutoLayout,
@@ -262,7 +283,7 @@ export default function Toolbar({
                 </button>
                 {activeSource !== "live" && (
                   <button
-                    onClick={() => { removeSource(activeSource); setSourceOpen(false) }}
+                    onClick={() => { removeSourceWithConstants(activeSource, removeSource); setSourceOpen(false) }}
                     className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--danger-soft)]"
                     style={{ color: 'var(--danger)' }}
                   >
@@ -291,7 +312,7 @@ export default function Toolbar({
           {offlineTitle ? "Offline" : calculationMode === "manual" ? "Manual" : "Calculating"}
         </button>
       </div>
-      {/* Canvas actions (Undo/Redo through Utility/Imports) sit on the left,
+      {/* Canvas actions (Undo/Redo through Utility/Constants) sit on the left,
           between the Source/Pipeline column and the Timing/Memory readouts. */}
       <div className="ml-2.5 flex flex-wrap items-center gap-2.5" data-testid="toolbar-canvas-actions">
         {/* Undo / Redo column — Undo at the top, Redo underneath, leading the canvas action group */}
@@ -426,7 +447,7 @@ export default function Toolbar({
             Instance
           </button>
         </div>
-        {/* Utility and Imports column — Utility on top of Imports */}
+        {/* Utility and Constants column — Utility on top of Constants */}
         <div className="flex flex-col gap-1 w-fit">
           <button
             data-testid="toolbar-utility"
@@ -439,14 +460,14 @@ export default function Toolbar({
             Utility
           </button>
           <button
-            data-testid="toolbar-imports"
-            onClick={onOpenImports}
+            data-testid="toolbar-constants"
+            onClick={onOpenConstants}
             disabled={editingDisabled}
             className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
-            title="Pipeline imports - utility and library imports"
+            title="Global constants - values every node can read, per source"
           >
-            <Package size={13} />
-            Imports
+            <Variable size={13} />
+            Constants
           </button>
         </div>
       </div>

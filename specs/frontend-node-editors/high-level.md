@@ -366,15 +366,16 @@ Unique can drop every duplicate. The forms accept the renderer's own shorthand f
 persisted step (a null literal without a value, a columnless window aggregate without
 a column, an order key without a direction, a text join without a separator) and
 canonicalise it before editing. A value in a
-condition or expression is a typed literal, a column, or a variable
-defined by an earlier variable step, edited as one control: a marker at its start shows
-what the value is (number, text, date, true/false, missing, column, variable or
-expression) over a native select of the kinds allowed there, left out when only one kind
+condition or expression is a typed literal, a column, a variable
+defined by an earlier variable step, or a pipeline global constant, edited as one control: a
+marker at its start shows what the value is (number, text, date, true/false, missing, column,
+variable, constant or expression) over a native select of the kinds allowed there, left out when only one kind
 is, and each field offers only the sources and literal
 types the step schema accepts there (string operators take text values only; a variable
 holds a number, text or true/false; a `null` literal is offered for expression operands
-but never in a membership list or a variable; function arguments are labelled and typed
-per function). A fresh condition's value follows the chosen column's type (text for a
+but never in a membership list or a variable; Constant is offered only when a constant of a
+type the slot takes exists, listing only those; function arguments are labelled and typed
+per function, and take a constant of their type). A fresh condition's value follows the chosen column's type (text for a
 text column, a date for a date column, true/false for a boolean column, and the number 0
 otherwise or when the type is unknown); a value already edited, or a text operator's
 value, is left alone. Conditions read under a lead that says what they do: a filter's as
@@ -383,7 +384,11 @@ value, is left alone. Conditions read under a lead that says what they do: a fil
 offers Value, Formula, Function, If-then, Window and Join text; a new column starts in
 Formula, its name field taking focus first. A formula is edited as text
 (`(premium + tax) * 1.05 / 12`, `round(premium / sum_insured * 1000, 3)`: columns by name or
-in backticks, earlier variables by name, quoted text, `true`/`false`/`null`,
+in backticks, earlier variables by name, global constants by name or as `global_constants.<name>`
+(a bare name is an earlier variable first, then a column the step has, then a constant; a constant
+that shares a column's name is written `global_constants.<name>`, which its completion inserts),
+quoted
+text, `true`/`false`/`null`,
 `date('YYYY-MM-DD')`, Python operator precedence with `**` right-associative (power
 binds before a leading sign, while negative exponents are accepted: `-2 ** 2` is
 `-(2 ** 2)`, `(-2) ** 2` is distinct, and `2 ** -2` is valid), brackets,
@@ -403,7 +408,7 @@ can replace the last valid expression. A new formula box starts empty
 (a placeholder tree keeps the step renderable until something is typed) showing an example
 formula as its placeholder, as a tooltip on the box and on an info icon beside its label, and
 grows onto more lines as the formula lengthens (Enter still commits); as a name is typed the
-columns (with their types) and earlier variables starting with it are listed under the box,
+columns (with their types), earlier variables and global constants starting with it are listed under the box,
 then the catalogue's functions, marked `ƒ` with what they do (Up/Down move, Tab, Enter or a
 click takes the active entry, a column backticked when it is not an identifier, a function
 arriving as `name()` with the caret between the brackets; a word that already is a name is

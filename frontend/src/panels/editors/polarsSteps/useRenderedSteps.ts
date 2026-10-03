@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 
 import { renderPolarsSteps, resolveFreeCodeColumns } from "../../../api/client"
+import useGraphStore from "../../../stores/useGraphStore"
+import useSettingsStore from "../../../stores/useSettingsStore"
+import { constantsPayload, type GlobalConstant } from "../../../utils/globalConstants"
+import { EVERY_CONSTANT, nodeConstantReads } from "../../../utils/globalConstantsEditing"
 import type { StepStart } from "../../../utils/polarsStepInputs"
 import type { ColumnInfo } from "./derivedColumns"
 import type { Step } from "./types"
@@ -35,6 +39,27 @@ export type RenderedStepsState = {
 type Resolved = { signature: string; id: string; columns: FreeCodeColumns }
 
 const DEBOUNCE_MS = 250
+
+/**
+ * The constants *steps* read, as the requests carry them, with the source and
+ * load error they resolve under: what a render and the free-code columns
+ * depend on besides the steps and the known columns.
+ */
+function useStepConstants(steps: Step[]): { constants: GlobalConstant[]; error: string | null; source: string; key: string } {
+  const drafts = useGraphStore((s) => s.globalConstants)
+  const error = useGraphStore((s) => s.globalConstantsError)
+  const source = useSettingsStore((s) => s.activeSource)
+  const stepsKey = JSON.stringify(steps)
+  return useMemo(() => {
+    const reads = nodeConstantReads({ steps })
+    const constants = error === null
+      ? constantsPayload(drafts).filter((constant) => reads === EVERY_CONSTANT || reads.has(constant.name))
+      : []
+    return { constants, error, source, key: JSON.stringify([source, error, constants]) }
+    // `stepsKey` stands for `steps`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drafts, error, source, stepsKey])
+}
 
 /** What a free-code step's columns depend on: the steps up to it and the known columns. */
 const signatureOf = (steps: Step[], index: number, knownKey: string) => `${knownKey}\u0000${JSON.stringify(steps.slice(0, index + 1))}`
@@ -71,7 +96,10 @@ export function useRenderedSteps(
     [namesKey, known.inputs],
   )
   const frameColumns = start === "frame" ? known.frame : []
-  const knownKey = JSON.stringify([inputColumns, frameColumns])
+  const stepConstants = useStepConstants(steps)
+  // The constants the steps read are known values too: a free-code step's
+  // columns can depend on them, and the render checks the Constant operands.
+  const knownKey = JSON.stringify([inputColumns, frameColumns, stepConstants.key])
   const [state, setState] = useState<Omit<RenderedStepsState, "freeCode">>({
     status: steps.length === 0 ? "empty" : "pending",
     code: "",
@@ -94,7 +122,8 @@ export function useRenderedSteps(
     const controller = new AbortController()
     const timer = setTimeout(() => {
       const current = () => !controller.signal.aborted && revision === revisionRef.current
-      renderPolarsSteps({ steps, inputNames, start, signal: controller.signal })
+      const globalConstants = stepConstants.error === null ? stepConstants.constants : undefined
+      renderPolarsSteps({ steps, inputNames, start, globalConstants, signal: controller.signal })
         .then((response) => {
           if (!current()) return
           if (response.ok) {
@@ -116,7 +145,18 @@ export function useRenderedSteps(
               id: steps[index].id,
               columns,
             })
-            resolveFreeCodeColumns({ nodeId, steps, inputNames, start, inputColumns, frameColumns, signal: controller.signal })
+            resolveFreeCodeColumns({
+              nodeId,
+              steps,
+              inputNames,
+              start,
+              inputColumns,
+              frameColumns,
+              globalConstants: stepConstants.constants,
+              globalConstantsError: stepConstants.error,
+              source: stepConstants.source,
+              signal: controller.signal,
+            })
               .then((columns) => {
                 if (!current()) return
                 setResolved(

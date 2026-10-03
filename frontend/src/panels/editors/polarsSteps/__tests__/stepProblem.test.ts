@@ -51,6 +51,17 @@ describe("stepProblem", () => {
     for (const step of steps) expect(stepProblem(step)).toBeNull()
   })
 
+  it("accepts a global constant as a condition value, a formula operand and a function argument", () => {
+    const constant = { kind: "constant" as const, name: "threshold" }
+    const steps: Step[] = [
+      { id: "f", kind: "filter", match: "all", conditions: [{ column: "value", operator: "gt", value: constant }] },
+      { id: "w", kind: "with_column", name: "x", expr: { type: "binary", left: col("a"), op: "*", right: constant } },
+      { id: "r", kind: "with_column", name: "y", expr: { type: "function", fn: "round", operand: col("a"), args: [constant] } },
+    ]
+    for (const step of steps) expect(stepProblem(step)).toBeNull()
+    expect(stepProblem({ id: "b", kind: "filter", match: "all", conditions: [{ column: "v", operator: "gt", value: { kind: "constant" } as never }] })).toMatch(/malformed value/)
+  })
+
   it("accepts the renderer's own shorthand shapes and canonicalises them for the forms", () => {
     const shorthand: Step[] = [
       { id: "n", kind: "with_column", name: "m", expr: { type: "operand", operand: { kind: "literal", type: "null" } as never } },

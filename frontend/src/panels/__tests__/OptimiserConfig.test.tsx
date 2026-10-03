@@ -7,6 +7,7 @@ import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStor
 import useSettingsStore from "../../stores/useSettingsStore"
 import useUIStore, { type OptimiserPane } from "../../stores/useUIStore"
 import useGraphStore from "../../stores/useGraphStore"
+import { buildGraph } from "../../utils/buildGraph"
 import useOptimiserPublishStore from "../../stores/useOptimiserPublishStore"
 import { solveConfigHash } from "../optimiser/solveActions"
 import type { SimpleNode, SimpleEdge } from "../editors"
@@ -1479,6 +1480,29 @@ describe("OptimiserConfig", () => {
           }))
       const btn = screen.getByRole("button", { name: /Optimise/ })
       expect(btn).not.toBeDisabled()
+    })
+
+    it("solve sends a global constant edited after the panel mounted", async () => {
+      mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_42", error: null })
+      const actual = await vi.importActual<typeof import("../../utils/buildGraph")>("../../utils/buildGraph")
+      vi.mocked(buildGraph).mockImplementation(actual.buildGraph)
+      renderConfig(makeProps({
+        config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: {} },
+      }))
+      act(() => {
+        useGraphStore.getState().setGlobalConstantsRaw([
+          { name: "rate", type: "float", split: false, value: "1.5", bySource: {} },
+        ])
+      })
+      fireEvent.click(screen.getByRole("button", { name: /Optimise/ }))
+      await waitFor(() => expect(mockSolveOptimiser).toHaveBeenCalledTimes(1))
+      expect(mockSolveOptimiser.mock.calls[0][0].graph.global_constants).toEqual([
+        { name: "rate", type: "float", value: 1.5 },
+      ])
+      act(() => useGraphStore.getState().setGlobalConstantsRaw([]))
+      vi.mocked(buildGraph).mockImplementation(
+        () => ({ nodes: [], edges: [], preamble: "" }) as unknown as ReturnType<typeof buildGraph>,
+      )
     })
 
     it("solve button calls solveOptimiser with graph payload", async () => {

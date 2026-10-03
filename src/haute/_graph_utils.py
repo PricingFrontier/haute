@@ -60,6 +60,8 @@ def upstream_subgraph(graph: PipelineGraph, node_id: str) -> PipelineGraph:
         pipeline_description=graph.pipeline_description,
         preamble=graph.preamble,
         preserved_blocks=list(graph.preserved_blocks),
+        global_constants=list(graph.global_constants),
+        global_constants_error=graph.global_constants_error,
         source_file=graph.source_file,
         submodels=graph.submodels,
         warning=graph.warning,

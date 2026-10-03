@@ -38,11 +38,24 @@ function parseSyntaxError(err: unknown): { error: string; error_line: number | n
 interface UtilityPanelProps {
   onClose: () => void
   onImportAdded: (importLine: string) => void
+  /** The pipeline's imports (its preamble), edited through the fixed Imports entry. */
+  preamble: string
+  onPreambleChange: (value: string) => void
 }
 
-export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelProps) {
+const IMPORTS_LABEL = "Imports"
+
+export default function UtilityPanel({
+  onClose,
+  onImportAdded,
+  preamble,
+  onPreambleChange,
+}: UtilityPanelProps) {
   const addToast = useToastStore((s) => s.addToast)
   const [files, setFiles] = useState<UtilityFile[]>([])
+  // The Imports entry is first in the list; it edits the preamble and never
+  // goes through the utility file routes.
+  const [importsSelected, setImportsSelected] = useState(false)
   const [activeModule, setActiveModule] = useState<string | null>(null)
   const [content, setContent] = useState("")
   const [errorLine, setErrorLine] = useState<number | null>(null)
@@ -152,6 +165,7 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
       const res = await readUtilityFile(module)
       setContent(res.content)
       setActiveModule(module)
+      setImportsSelected(false)
       setErrorLine(null)
       setErrorMsg(null)
     } catch (err) {
@@ -161,13 +175,20 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
     }
   }, [addToast, flushSave])
 
+  const selectImports = useCallback(async () => {
+    if (!await flushSave()) return
+    setImportsSelected(true)
+    setErrorLine(null)
+    setErrorMsg(null)
+  }, [flushSave])
+
   // Auto-select first file
   useEffect(() => {
-    if (files.length > 0 && activeModule === null) {
+    if (!importsSelected && files.length > 0 && activeModule === null) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- auto-select on initial load
       loadFile(files[0].module)
     }
-  }, [files, activeModule, loadFile])
+  }, [files, activeModule, importsSelected, loadFile])
 
   const handleCreate = useCallback(async () => {
     const name = newName.trim().replace(/\.py$/, "")
@@ -238,6 +259,7 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
           <>
             <div className="relative flex-1" ref={dropdownRef}>
               <button
+                data-testid="utility-file-selector"
                 onClick={() => setDropdownOpen((v) => !v)}
                 className="w-full flex items-center gap-1.5 px-2 py-1 text-[12px] font-mono rounded-md transition-colors"
                 style={{
@@ -247,15 +269,26 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
                 }}
               >
                 <span className="flex-1 text-left truncate">
-                  {activeModule ?? "No files"}
+                  {importsSelected ? IMPORTS_LABEL : activeModule ?? "No files"}
                 </span>
                 <ChevronDown size={11} style={{ color: 'var(--text-muted)', transition: 'transform 150ms', transform: dropdownOpen ? 'rotate(180deg)' : undefined }} />
               </button>
-              {dropdownOpen && files.length > 0 && (
+              {dropdownOpen && (
                 <div className="absolute top-full left-0 right-0 mt-1 rounded-lg shadow-2xl z-50 overflow-hidden" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)' }}>
                   <div className="py-1">
+                    <button
+                      data-testid="utility-imports-entry"
+                      onClick={() => { setDropdownOpen(false); if (!importsSelected) void selectImports() }}
+                      className={`w-full flex items-center px-3 py-1.5 text-[12px] font-mono text-left transition-colors ${importsSelected ? "" : "hover:bg-[var(--bg-hover)]"}`}
+                      style={{
+                        color: importsSelected ? 'var(--accent)' : 'var(--text-secondary)',
+                        background: importsSelected ? 'var(--accent-soft)' : 'transparent',
+                      }}
+                    >
+                      {IMPORTS_LABEL}
+                    </button>
                     {files.map((f) => {
-                      const isActive = f.module === activeModule
+                      const isActive = !importsSelected && f.module === activeModule
                       return (
                         <button
                           key={f.module}
@@ -282,7 +315,7 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
             >
               <Plus size={14} />
             </button>
-            {activeModule && (
+            {activeModule && !importsSelected && (
               <button
                 onClick={handleDelete}
                 className="p-1.5 rounded-md transition-colors hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
@@ -298,10 +331,27 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
 
       {/* Editor */}
       <div className="flex-1 min-h-0 overflow-y-auto">
-        {activeModule ? (
+        {importsSelected ? (
+          <div className="h-full flex flex-col" data-testid="utility-imports">
+            <div className="px-3 py-2 shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
+              <p className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>
+                <span style={{ color: "var(--text-accent-muted)" }}>import polars as pl</span> and <span style={{ color: "var(--text-accent-muted)" }}>import haute</span> are always included
+              </p>
+            </div>
+            <div className="flex-1 min-h-0">
+              <CodeEditor
+                key="imports"
+                defaultValue={preamble}
+                onChange={onPreambleChange}
+                placeholder={"from utility.features import *\nimport numpy as np\nfrom catboost import CatBoostRegressor"}
+              />
+            </div>
+          </div>
+        ) : activeModule ? (
           <div className="h-full flex flex-col">
             <div className="flex-1 min-h-0">
               <CodeEditor
+                key={activeModule}
                 defaultValue={content}
                 onChange={(val) => { setContent(val); setErrorLine(null); setErrorMsg(null); if (activeModule) autoSave(activeModule, val) }}
                 errorLine={errorLine}

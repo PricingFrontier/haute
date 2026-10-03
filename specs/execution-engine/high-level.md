@@ -467,6 +467,12 @@ running heavy work in a child process the parent can kill on timeout or memory l
   failures into a diagnosed opaque contract. Every non-preview profile, and an
   unprofiled low-level eager or lazy call, raises `ContractResolutionError` before
   node work. This policy is independent of projection/materialisation strictness.
+- **Node code reads the run's global constants.** Every execution binds
+  `global_constants` in node code to the pipeline's constants resolved for the source it
+  routes on (the request's source, the batch scenario for the optimiser and a Data Output
+  write started under `live`, and `live` for deployed scoring), as concrete values each
+  code's own reads restrict; [pipeline-config](../pipeline-config/high-level.md) owns their
+  meaning and errors.
 - **Assistant schema inspection is plan-only.** `inspect_node`'s schema part performs the
   same flattening, preamble compilation, active-source selection, node building,
   and contract enforcement as production lazy execution up to the requested

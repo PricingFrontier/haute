@@ -17,6 +17,7 @@ from haute._ast_helpers import (
     _chained_receiver_calls,
     _connect_call_edge,
     _extract_function_bodies,
+    _extract_global_constants_declaration,
     _extract_pipeline_meta,
     _extract_preamble,
     _extract_preserved_blocks,
@@ -53,9 +54,20 @@ from haute._sidecar import (
 )
 from haute._submodel_paths import resolve_submodel_reference
 from haute._submodel_recovery import submodel_registration_evidence
-from haute._types import NODE_TYPE_TO_DECORATOR, GraphNode, NodeType, PipelineGraph
+from haute._types import (
+    GLOBAL_CONSTANTS_FILE,
+    NODE_TYPE_TO_DECORATOR,
+    GlobalConstant,
+    GraphNode,
+    NodeType,
+    PipelineGraph,
+)
 from haute.errors import ConfigError, HauteError, ParseError
-from haute.parser import _infer_parse_base_dir, parse_pipeline_source
+from haute.parser import (
+    _infer_parse_base_dir,
+    load_declared_global_constants,
+    parse_pipeline_source,
+)
 from haute.schemas import (
     PipelineDiagnosticScope,
     PipelineDocumentCapabilities,
@@ -1589,6 +1601,18 @@ def _source_references(
         reference = kwargs.get("config")
         if isinstance(reference, str) and reference.strip():
             config_refs.append(reference)
+    # The global constants file the pipeline constructor names is a config
+    # artifact too: the revision must authenticate the constants a document
+    # carries, as it does node configs.
+    if not child:
+        try:
+            declared = _extract_global_constants_declaration(tree, receiver="pipeline")
+        except ParseError:
+            # A keyword the parser refuses names no file; the document reports
+            # the refusal itself, so the manifest has nothing to hash.
+            declared = False
+        if declared:
+            config_refs.append(GLOBAL_CONSTANTS_FILE)
     # Revision discovery must be at least as tolerant as the editor recovery
     # pass.  The strict extractor validates cross-registration uniqueness and
     # would otherwise turn a representable duplicate alias/instance into a
@@ -1773,6 +1797,28 @@ def empty_pipeline_editor_document() -> PipelineEditorDocument:
     )
 
 
+def _recover_global_constants(
+    tree: ast.Module,
+    path: Path,
+    captures: _SourceCaptures,
+) -> tuple[list[GlobalConstant], str | None]:
+    """The global constants a recovered document carries, read through *captures*.
+
+    A constructor keyword the strict parser would refuse leaves no constants
+    and its reason, so the pane shows why instead of an empty list.
+    """
+    try:
+        declared = _extract_global_constants_declaration(tree, receiver="pipeline")
+    except ParseError as exc:
+        return [], str(exc)
+    if not declared:
+        return [], None
+    return load_declared_global_constants(
+        path.parent,
+        read_bytes=lambda constants_path: captures.read(constants_path)[0],
+    )
+
+
 def _load_readable_pipeline_editor_document(
     path: Path,
     root: Path,
@@ -1790,6 +1836,8 @@ def _load_readable_pipeline_editor_document(
     pipeline_description: str | None = None
     preamble: str | None = None
     preserved_blocks: list[str] = []
+    global_constants: list[GlobalConstant] = []
+    global_constants_error: str | None = None
     nodes: list[RecoveryPipelineNode] = []
     edges: list[RecoveryPipelineEdge] = []
     unresolved: list[RecoveryUnresolvedConnection] = []
@@ -1810,6 +1858,7 @@ def _load_readable_pipeline_editor_document(
             _base_dir=path.parent,
             _submodel_base_dir=_infer_parse_base_dir(path),
             _read_submodel_source=lambda child_path: captures.read(child_path)[1],
+            _read_global_constants_bytes=lambda constants_path: captures.read(constants_path)[0],
         )
     except (HauteError, OSError, UnicodeError) as exc:
         strict_failure = exc
@@ -1825,6 +1874,8 @@ def _load_readable_pipeline_editor_document(
         pipeline_description = strict_graph.pipeline_description
         preamble = strict_graph.preamble
         preserved_blocks = list(strict_graph.preserved_blocks)
+        global_constants = list(strict_graph.global_constants)
+        global_constants_error = strict_graph.global_constants_error
         nodes = snapshot.nodes
         edges = snapshot.edges
         unresolved = snapshot.unresolved_connections
@@ -1865,6 +1916,9 @@ def _load_readable_pipeline_editor_document(
             pipeline_name = pipeline_name or path.stem
             preamble = _extract_preamble(source, tree=tree)
             preserved_blocks = _extract_preserved_blocks(source)
+            global_constants, global_constants_error = _recover_global_constants(
+                tree, path, captures
+            )
             recovered_connections, initially_unresolved = _recover_ast_connections(
                 tree,
                 receiver="pipeline",
@@ -2006,6 +2060,8 @@ def _load_readable_pipeline_editor_document(
         pipeline_description=pipeline_description or "",
         preamble=preamble,
         preserved_blocks=preserved_blocks,
+        global_constants=global_constants,
+        global_constants_error=global_constants_error,
         source_file=source_file,
         source_revision=source_revision,
         source_text=source,

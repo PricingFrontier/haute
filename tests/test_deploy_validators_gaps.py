@@ -267,3 +267,35 @@ class TestConfiguredQuoteDirectoryGate:
         ) as score:
             score_test_quotes(resolved, tmp_path)
         assert score.call_args.kwargs["output_fields"] == ["premium"]
+
+
+# ===========================================================================
+# validate_deploy — global constants
+# ===========================================================================
+
+
+class TestValidateDeployGlobalConstants:
+    def test_a_read_constant_without_a_live_value_is_refused(self) -> None:
+        from haute._types import GlobalConstant
+        from haute.deploy._validators import validate_deploy
+
+        reader = _make_node(
+            "reader", config={"code": "df = df.with_columns(r=pl.lit(global_constants.rate))"}
+        )
+        resolved = _make_resolved(
+            nodes=[
+                _make_node("api_in", node_type=NodeType.API_INPUT),
+                reader,
+                _make_node("output", node_type=NodeType.OUTPUT),
+            ],
+            edges=[
+                GraphEdge(id="e1", source="api_in", target="reader"),
+                GraphEdge(id="e2", source="reader", target="output"),
+            ],
+        )
+        resolved.pruned_graph.global_constants = [
+            GlobalConstant(name="rate", type="float", by_source={"nb_batch": 2.0})
+        ]
+
+        with pytest.raises(DeployError, match="'rate' has no live value"):
+            validate_deploy(resolved)

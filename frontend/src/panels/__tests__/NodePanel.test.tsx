@@ -1500,6 +1500,8 @@ describe("NodePanel", () => {
         edges: [sourceEdge],
         submodels: undefined,
         preamble: undefined,
+        global_constants: [],
+        global_constants_error: null,
       },
       node_id: "explore_1",
       field: "premium",

@@ -37,7 +37,7 @@ import polars as pl
 
 from haute._polars_dtypes import parse_rendered_dtype
 from haute._polars_steps_layout import layout_statement
-from haute._types import NodeType
+from haute._types import GLOBAL_CONSTANTS_NAME, GlobalConstant, NodeType
 from haute._user_exec import _exec_user_code
 from haute.errors import SchemaMismatchError
 
@@ -204,11 +204,27 @@ class PolarsStepError(ValueError):
 
 
 @dataclass(frozen=True)
+class ConstantReference:
+    """One Constant operand: its step, the constant, and what its slot takes.
+
+    ``types`` are the constant types the slot accepts; ``non_negative`` says
+    every value the constant holds must be at least zero. The renderer does not
+    see the pipeline's constants, so whoever does checks the reference.
+    """
+
+    step_index: int
+    name: str
+    types: tuple[str, ...]
+    non_negative: bool = False
+
+
+@dataclass(frozen=True)
 class RenderedSteps:
     """The rendered function body and the 1-based inclusive line range per step."""
 
     code: str
     step_lines: tuple[tuple[int, int], ...]
+    constant_references: tuple[ConstantReference, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +338,20 @@ CAST_DTYPES: tuple[str, ...] = (
     "Categorical",
 )
 LITERAL_TYPES: tuple[str, ...] = ("number", "text", "boolean", "date", "null")
+#: What an operand may be: a column, a literal, a nested expression, a step
+#: variable or a pipeline global constant.
+OPERAND_KINDS: tuple[str, ...] = ("column", "literal", "expr", "variable", "constant")
+#: The types a global constant may have; a slot takes some of them.
+CONSTANT_TYPES: tuple[str, ...] = ("integer", "float", "text", "boolean", "date")
+#: The constant types each typed function argument takes (``dtype`` takes none).
+_ARGUMENT_CONSTANT_TYPES: dict[str, tuple[str, ...]] = {
+    "integer": ("integer",),
+    "int": ("integer",),
+    "number": ("integer", "float"),
+    "text": ("text",),
+    "scalar": ("integer", "float", "text", "boolean"),
+    "dtype": (),
+}
 #: How deep expressions may nest as operands; a with_column expression is depth 1.
 #: A formula chain nests one level per operator, so a dozen terms fit.
 MAX_EXPR_DEPTH = 12
@@ -388,8 +418,9 @@ _OPTIONAL_STEP_KEYS: dict[str, frozenset[str]] = {
 }
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_CONSTANT_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_RESERVED_NAMES = frozenset({"df", "pl"})
+_RESERVED_NAMES = frozenset({"df", "pl", GLOBAL_CONSTANTS_NAME})
 
 
 # ---------------------------------------------------------------------------
@@ -507,13 +538,17 @@ def resolve_free_code_columns(
     input_names: Sequence[str],
     input_columns: Mapping[str, ColumnList],
     frame_columns: ColumnList,
+    global_constants: Sequence[GlobalConstant] = (),
+    global_constants_error: str | None = None,
+    source: str = "live",
 ) -> list[ResolvedFreeCode]:
     """The schema of ``df`` after each ``free_code`` step of a rendered list.
 
     The rendered lines up to the end of the step run as node code over empty
     frames of the columns the editor knows (the eligible inputs by name, and
     ``df`` on a frame-mode surface) without the preamble, and only the
-    resulting schema is read. An entry has no columns and a one-line reason
+    resulting schema is read. The code reads the pipeline's global constants
+    for *source*, as a run under that source would. An entry has no columns and a one-line reason
     when the code names an input whose columns are not known, a known column's
     type cannot be rebuilt, or the code or its schema fails.
     """
@@ -538,6 +573,13 @@ def resolve_free_code_columns(
         except SchemaMismatchError as exc:
             frame_problem = exc.message
 
+    from haute._global_constants import GlobalConstantsNamespace
+
+    constants_ns = {
+        GLOBAL_CONSTANTS_NAME: GlobalConstantsNamespace(
+            global_constants, source=source, error=global_constants_error
+        )
+    }
     lines = rendered.code.split("\n")
     resolved: list[ResolvedFreeCode] = []
     for index, step in enumerate(steps):
@@ -561,7 +603,11 @@ def resolve_free_code_columns(
             names, bound = ["df", *names], (frame, *bound)
         try:
             result = _exec_user_code(
-                program, names, bound, alias_first_input_as_df=frame is not None
+                program,
+                names,
+                bound,
+                extra_ns=constants_ns,
+                alias_first_input_as_df=frame is not None,
             )
             if not isinstance(result, pl.LazyFrame):
                 resolved.append(
@@ -641,6 +687,7 @@ class _Renderer:
         self.start = start
         self.earlier = spelling == "earlier"
         self.variables: set[str] = set()
+        self.constant_references: list[ConstantReference] = []
         self.index = 0
         self.depth = 0
         # Inside a grouped aggregation's row filter a nested aggregate would
@@ -730,7 +777,11 @@ class _Renderer:
                 )
                 start = step_lines[self.index][0]
                 raise self.fail(f"Invalid Python on line {line - start + 1}: {exc.msg}.") from None
-        return RenderedSteps(code=code, step_lines=tuple(step_lines))
+        return RenderedSteps(
+            code=code,
+            step_lines=tuple(step_lines),
+            constant_references=tuple(self.constant_references),
+        )
 
     def _render_free_code(self, step: Mapping[str, Any]) -> str:
         code = self._str(step["code"], "Code").replace("\r\n", "\n").replace("\r", "\n").rstrip()
@@ -839,6 +890,24 @@ class _Renderer:
             raise self.fail(f"{label} {value!r} is not a real date.") from None
         return literal_type, f"pl.lit({value!r}).str.to_date()"
 
+    def _constant(
+        self,
+        operand: Mapping[str, Any],
+        label: str,
+        types: tuple[str, ...],
+        *,
+        non_negative: bool = False,
+    ) -> str:
+        """Record a Constant operand's reference and render its bare read."""
+        self._keys(operand, ("kind", "name"), label)
+        name = self._str(operand.get("name"), f"{label} constant")
+        if not _CONSTANT_NAME.match(name) or keyword.iskeyword(name):
+            raise self.fail(f"{label} constant {name!r} is not a valid constant name.")
+        self.constant_references.append(
+            ConstantReference(self.index, name, types, non_negative=non_negative)
+        )
+        return f"{GLOBAL_CONSTANTS_NAME}.{name}"
+
     def _operand(
         self,
         value: object,
@@ -846,12 +915,14 @@ class _Renderer:
         *,
         expr: bool,
         parent: tuple[str, str] | None = None,
+        constant_types: tuple[str, ...] = CONSTANT_TYPES,
     ) -> str:
         """Render an operand in value position (bare) or expression position.
 
         ``parent`` names the enclosing formula operator and side (``"left"`` or
         ``"right"``) so a nested formula is parenthesised only where Python's
-        left-to-right evaluation would otherwise change it.
+        left-to-right evaluation would otherwise change it. ``constant_types``
+        are the constant types the slot takes.
         """
         operand = self._object(value, label)
         kind = operand.get("kind")
@@ -880,7 +951,12 @@ class _Renderer:
             if name not in self.variables:
                 raise self.fail(f"Variable {name!r} is not defined by an earlier step.")
             return f"pl.lit({name})" if expr else name
-        raise self.fail(f"{label} must be a column, a value or a variable, got {kind!r}.")
+        if kind == "constant":
+            read = self._constant(operand, label, constant_types)
+            return f"pl.lit({read})" if expr else read
+        raise self.fail(
+            f"{label} must be a column, a value, a variable or a constant, got {kind!r}."
+        )
 
     # -- conditions ------------------------------------------------------
 
@@ -902,7 +978,12 @@ class _Renderer:
                 and raw_value.get("type") != "text"
             ):
                 raise self.fail(f"{label} operator {operator!r} needs a text value.")
-            operand = self._operand(raw_value, f"{label} value", expr=False)
+            operand = self._operand(
+                raw_value,
+                f"{label} value",
+                expr=False,
+                constant_types=CONSTANT_TYPES if operator in _COMPARISON_OPERATORS else ("text",),
+            )
             if operator in _COMPARISON_OPERATORS:
                 return f"{column} {_COMPARISON_OPERATORS[operator]} {operand}"
             if operator == "contains":
@@ -1121,8 +1202,13 @@ class _Renderer:
 
     def _function_arg(self, value: object, expected: str, label: str) -> str:
         operand = self._object(value, label)
+        if operand.get("kind") == "constant":
+            types = _ARGUMENT_CONSTANT_TYPES[expected]
+            if not types:
+                raise self.fail(f"{label} must be one of {list(CAST_DTYPES)!r}, not a constant.")
+            return self._constant(operand, label, types, non_negative=expected == "integer")
         if operand.get("kind") != "literal":
-            raise self.fail(f"{label} must be a plain value.")
+            raise self.fail(f"{label} must be a plain value or a constant.")
         literal_type, rendered = self._literal(operand, label)
         if expected == "integer":
             raw = operand.get("value")

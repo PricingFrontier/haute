@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import hypothesis.strategies as st
+import pytest
 from hypothesis import HealthCheck, assume, given, settings
 
 from haute._config_io import collect_node_configs
@@ -1792,3 +1793,173 @@ class TestSanitizeFuncName:
 
     def test_sanitize_spaces_and_hyphens(self) -> None:
         assert _sanitize_func_name("my node-test") == "my_node_test"
+
+
+# ---------------------------------------------------------------------------
+# Global constants
+# ---------------------------------------------------------------------------
+
+_ALL_CONSTANT_KINDS: list[dict[str, Any]] = [
+    {"name": "inflation", "type": "float", "value": 1.05},
+    {"name": "loading", "type": "float", "by_source": {"live": 1.0, "nb_batch": 1.25}},
+    {"name": "max_age", "type": "integer", "value": 99},
+    {"name": "cohort", "type": "integer", "by_source": {"live": 1, "nb_batch": 2}},
+    {"name": "channel", "type": "text", "value": "web"},
+    {"name": "region", "type": "text", "by_source": {"live": "UK", "nb_batch": "EU"}},
+    {"name": "apply_cap", "type": "boolean", "value": True},
+    {"name": "is_batch", "type": "boolean", "by_source": {"live": False, "nb_batch": True}},
+    {"name": "effective", "type": "date", "value": "2026-11-01"},
+    {
+        "name": "as_at",
+        "type": "date",
+        "by_source": {"live": "2026-10-02", "nb_batch": "2026-06-30"},
+    },
+]
+
+
+def _constants_graph(*, with_submodel: bool) -> PipelineGraph:
+    """Two Polars nodes that read constants, optionally with a submodel that reads one too."""
+    nodes: list[dict[str, Any]] = [
+        {
+            "id": "quotes",
+            "data": {
+                "label": "quotes",
+                "nodeType": "polars",
+                "config": {"code": 'df = pl.LazyFrame({"age": [30, 70]})'},
+            },
+        },
+        {
+            "id": "rated",
+            "data": {
+                "label": "rated",
+                "nodeType": "polars",
+                "config": {
+                    "code": (
+                        "df = quotes.with_columns(\n"
+                        '    (pl.col("age") * global_constants.inflation).alias("loaded"),\n'
+                        '    pl.lit(f"{global_constants.region}").alias("region"),\n'
+                        ")"
+                    )
+                },
+            },
+        },
+    ]
+    payload: dict[str, Any] = {
+        "nodes": nodes,
+        "edges": [{"id": "e1", "source": "quotes", "target": "rated"}],
+        "global_constants": _ALL_CONSTANT_KINDS,
+    }
+    if with_submodel:
+        nodes.append(
+            {
+                "id": "instance_sm",
+                "type": "submodel",
+                "data": {
+                    "label": "sm_alias",
+                    "nodeType": "submodel",
+                    "config": {"definitionId": "definition_sm", "alias": "sm_alias"},
+                },
+            }
+        )
+        payload["submodels"] = {
+            "definition_sm": {
+                "definitionId": "definition_sm",
+                "file": "modules/sm.py",
+                "graph": {
+                    "pipeline_name": "sm",
+                    "nodes": [
+                        {
+                            "id": "capped",
+                            "data": {
+                                "label": "capped",
+                                "nodeType": "polars",
+                                "config": {
+                                    "code": (
+                                        'df = pl.LazyFrame({"cap": [global_constants.max_age]})'
+                                    )
+                                },
+                            },
+                        }
+                    ],
+                    "edges": [],
+                },
+                "inputPorts": [],
+                "outputPorts": [],
+            }
+        }
+    return PipelineGraph.model_validate(payload)
+
+
+def _write_project(files: dict[str, str], constants_json: str, base_dir: Path) -> Path:
+    for rel_path, code in files.items():
+        out = base_dir / rel_path
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(code, encoding="utf-8")
+    constants_path = base_dir / "config" / "global_constants.json"
+    constants_path.parent.mkdir(parents=True, exist_ok=True)
+    constants_path.write_text(constants_json, encoding="utf-8")
+    return base_dir / "main.py"
+
+
+class TestGlobalConstantsRoundTrip:
+    """A pipeline's constants survive codegen -> files -> parse -> codegen unchanged."""
+
+    @pytest.mark.parametrize("with_submodel", [False, True], ids=["pipeline", "with-submodel"])
+    def test_constants_of_every_kind_round_trip_byte_identically(
+        self,
+        tmp_path: Path,
+        with_submodel: bool,
+    ) -> None:
+        from haute._config_io import global_constants_json
+        from haute.codegen import graph_to_code_multi
+        from haute.parser import parse_pipeline_file
+
+        graph = _constants_graph(with_submodel=with_submodel)
+        files = graph_to_code_multi(graph, pipeline_name="main", source_file="main.py")
+        constants_json = global_constants_json(graph.global_constants)
+        main = _write_project(files, constants_json, tmp_path)
+
+        assert (
+            'pipeline = haute.Pipeline("main", global_constants="config/global_constants.json")\n'
+            "global_constants = pipeline.global_constants\n"
+        ) in files["main.py"]
+        if with_submodel:
+            assert "\nglobal_constants = submodel.global_constants\n" in files["modules/sm.py"]
+
+        parsed = parse_pipeline_file(main)
+
+        assert parsed.global_constants == graph.global_constants
+        assert parsed.global_constants_error is None
+        assert graph_to_code_multi(parsed, pipeline_name="main", source_file="main.py") == files
+        assert global_constants_json(parsed.global_constants) == constants_json
+
+    def test_a_pipeline_without_constants_names_no_file_and_binds_nothing(self) -> None:
+        from haute.codegen import graph_to_code_multi
+
+        graph = _constants_graph(with_submodel=True).model_copy(update={"global_constants": []})
+        files = graph_to_code_multi(graph, pipeline_name="main", source_file="main.py")
+
+        assert all("global_constants" not in line for line in files["main.py"].splitlines()[:8])
+        assert 'pipeline = haute.Pipeline("main")\n' in files["main.py"]
+        assert "global_constants = submodel" not in files["modules/sm.py"]
+
+    def test_a_declared_file_that_is_missing_is_a_load_error_that_keeps_its_lines(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from haute.codegen import graph_to_code_multi
+        from haute.parser import parse_pipeline_file
+
+        graph = _constants_graph(with_submodel=False)
+        files = graph_to_code_multi(graph, pipeline_name="main", source_file="main.py")
+        main = tmp_path / "main.py"
+        main.write_text(files["main.py"], encoding="utf-8")
+
+        parsed = parse_pipeline_file(main)
+
+        assert parsed.global_constants == []
+        assert parsed.global_constants_error is not None
+        assert "does not exist" in parsed.global_constants_error
+        assert "Global constants could not be loaded" in (parsed.warning or "")
+        regenerated = graph_to_code_multi(parsed, pipeline_name="main", source_file="main.py")
+        assert regenerated == files

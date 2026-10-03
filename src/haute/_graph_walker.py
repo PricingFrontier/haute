@@ -68,6 +68,7 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
+from haute._global_constants import node_code_globals
 from haute._graph_utils import edge_input_name, resolve_orig_source_names
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._logging import get_logger
@@ -998,7 +999,8 @@ class _Walk:
             all_incoming_edges_by_target=self.prepared.all_incoming_edges_by_target,
             all_node_map=self.graph.node_map,
             row_limit=self.policy.row_limit,
-            preamble_ns=request.preamble_ns,
+            # Constants resolve for the routing source, never a per-node builder override.
+            preamble_ns=node_code_globals(request.preamble_ns, self.graph, request.source),
             source=request.source,
             source_by_node=request.source_by_node,
             required_output_columns_by_node=self.projection.builder_needed,

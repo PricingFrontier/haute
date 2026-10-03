@@ -20,6 +20,7 @@ handlers see the real cause.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 from collections import defaultdict
 from collections.abc import Callable, Iterator, Sequence
@@ -29,7 +30,15 @@ from typing import NamedTuple
 from fastapi import HTTPException
 
 from haute._api_input_schema import is_json_api_input_path
+from haute._ast_helpers import _extract_global_constants_declaration
 from haute._file_ops import Writer, atomic_write_bytes
+from haute._global_constants import (
+    code_binds_global_constants,
+    node_code_sources,
+    node_constant_reads,
+    node_step_constant_problems,
+    preamble_binds_global_constants,
+)
 from haute._logging import get_logger
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._sandbox import contained_path
@@ -38,7 +47,7 @@ from haute._submodel_paths import (
     SubmodelPathOutsideProjectError,
     resolve_submodel_reference,
 )
-from haute._types import SINK_ONLY_NODE_TYPES
+from haute._types import GLOBAL_CONSTANTS_FILE, GLOBAL_CONSTANTS_NAME, SINK_ONLY_NODE_TYPES
 from haute.errors import ConfigError, ParseError, PathOutsideProjectError
 from haute.graph_utils import (
     GraphEdge,
@@ -351,7 +360,12 @@ class SavePipelineService:
         """
         graph = body.graph
 
+        # Global constants: the file on disk, never the request, says whether
+        # the declared constants file loads. Validation and codegen read it.
+        self._adopt_disk_global_constants_state(graph, self._resolve_source_file(body.source_file))
+        self._refuse_preamble_global_constants_binding(body.preamble, label="The preamble")
         warnings = self.validate_graph(graph, source_file=body.source_file)
+        warnings.extend(self._global_constant_source_warnings(graph, body.sources))
         py_path = self._resolve_source_file(body.source_file)
         self._require_base_revision(py_path, body.base_revision)
         derived_new_files, derived_delete_files = self._derive_definition_file_lifecycle(
@@ -598,6 +612,7 @@ class SavePipelineService:
         self._validate_quote_input_tables_do_not_shadow_nodes(graph)
         self._validate_codegen_function_names(graph)
         self._validate_no_load_errors(graph)
+        self._validate_global_constants(graph)
         py_path = self._resolve_source_file(source_file)
         self._validate_source_file_matches_pipeline_root(py_path)
         warnings: list[str] = []
@@ -838,6 +853,131 @@ class SavePipelineService:
                     "Remove that edge. Nothing was saved."
                 ),
             )
+
+    def _adopt_disk_global_constants_state(self, graph: PipelineGraph, py_path: Path) -> None:
+        """Take the global constants load state from the file on disk.
+
+        A request's ``global_constants_error`` is ignored. While the declared
+        file on disk fails to load, codegen keeps naming it, the file is
+        neither rewritten nor deleted, and a request that carries constants is
+        refused rather than overwriting what could not be read.
+        """
+        error = self._disk_global_constants_error(py_path)
+        if error is not None and graph.global_constants:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Global constants could not be loaded from {GLOBAL_CONSTANTS_FILE}: "
+                    f"{error} Fix or remove the file, then save again."
+                ),
+            )
+        graph.global_constants_error = error
+
+    @staticmethod
+    def _disk_global_constants_error(py_path: Path) -> str | None:
+        """Why the on-disk pipeline's declared constants file fails to load, or ``None``.
+
+        Only the constructor is read, so an unparseable source (which no save
+        can be based on) reports nothing here.
+        """
+        from haute.parser import load_declared_global_constants
+
+        if not py_path.is_file():
+            return None
+        try:
+            tree = ast.parse(py_path.read_bytes())
+        except (SyntaxError, ValueError):
+            return None
+        try:
+            declared = _extract_global_constants_declaration(tree, receiver="pipeline")
+        except ParseError as exc:
+            return str(exc)
+        if not declared:
+            return None
+        _constants, error = load_declared_global_constants(py_path.parent)
+        return error
+
+    @staticmethod
+    def _refuse_preamble_global_constants_binding(preamble: str | None, *, label: str) -> None:
+        if preamble and preamble_binds_global_constants(preamble):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{label} binds {GLOBAL_CONSTANTS_NAME!r}, which is reserved for the "
+                    "pipeline's global constants. Rename it."
+                ),
+            )
+
+    @staticmethod
+    def _validate_global_constants(graph: PipelineGraph) -> None:
+        """Refuse what would shadow ``global_constants`` or read an undefined constant.
+
+        While the constants file fails to load the definitions are unavailable
+        rather than absent, so reads are not checked against them.
+        """
+        SavePipelineService._refuse_preamble_global_constants_binding(
+            graph.preamble, label="The preamble"
+        )
+        for definition_id, definition in (graph.submodels or {}).items():
+            SavePipelineService._refuse_preamble_global_constants_binding(
+                definition.graph.preamble, label=f"Submodel {definition_id!r}'s preamble"
+            )
+        constants_by_name = {constant.name: constant for constant in graph.global_constants}
+        defined = set(constants_by_name)
+        check_reads = graph.global_constants_error is None
+        for node in SavePipelineService._iter_nodes_recursive(graph):
+            label = node.data.label
+            if _sanitize_func_name(label) == GLOBAL_CONSTANTS_NAME:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Node {label!r} would be named {GLOBAL_CONSTANTS_NAME!r}, which is "
+                        "reserved for the pipeline's global constants. Rename the node."
+                    ),
+                )
+            config = node.data.config
+            if any(code_binds_global_constants(code) for code in node_code_sources(config)):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Node {label!r}'s code binds {GLOBAL_CONSTANTS_NAME!r}, which is "
+                        "reserved for the pipeline's global constants. Rename the variable."
+                    ),
+                )
+            if not check_reads:
+                continue
+            step_problems = node_step_constant_problems(node, constants_by_name)
+            if step_problems:
+                step_index, reason = step_problems[0]
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Node {label!r}, step {step_index + 1}: {reason}",
+                )
+            reads = node_constant_reads(config)
+            undefined = sorted(reads - defined) if isinstance(reads, frozenset) else []
+            if undefined:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Node {label!r} reads global constant(s) {undefined} that the "
+                        "pipeline does not define. Define them in the Constants pane or "
+                        "correct the names."
+                    ),
+                )
+
+    @staticmethod
+    def _global_constant_source_warnings(
+        graph: PipelineGraph,
+        sources: Sequence[str],
+    ) -> list[str]:
+        """One warning per split constant and pipeline source it holds no value for."""
+        return [
+            f"Global constant {constant.name!r} has no value for source {source!r}."
+            for constant in graph.global_constants
+            if constant.by_source is not None
+            for source in sources
+            if source not in constant.by_source
+        ]
 
     @staticmethod
     def _validate_codegen_function_names(graph: PipelineGraph) -> None:
@@ -1617,6 +1757,12 @@ class SavePipelineService:
         # on-disk graph, not rotated from the previous `_last`.  See
         # `_compute_disk_prev_config_files` for rationale.
         self._last_config_files = self._collect_node_configs_recursive(graph)
+        if graph.global_constants and graph.global_constants_error is None:
+            from haute._config_io import global_constants_json
+
+            self._last_config_files[GLOBAL_CONSTANTS_FILE] = global_constants_json(
+                graph.global_constants
+            )
         self._protected_config_files: set[str] = set(
             self._collect_config_load_errors_recursive(graph)
         )
@@ -1635,7 +1781,15 @@ class SavePipelineService:
         for rel_path, json_content in self._last_config_files.items():
             out_path = (self._pipeline_root / rel_path).resolve()
             if not out_path.is_relative_to(self._pipeline_root):
-                continue
+                # A link out of the pipeline folder: writing would leave it,
+                # and skipping would drop the edit while the save succeeds.
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Cannot save {rel_path}: it resolves outside the pipeline folder. "
+                        "Replace the link with a folder inside the project, then save again."
+                    ),
+                )
             self._stage_write(out_path, json_content, touched)
 
     @staticmethod
@@ -1888,6 +2042,15 @@ class SavePipelineService:
                 path = (self._pipeline_root / rel).resolve()
                 if rel not in prev and path.is_relative_to(self._pipeline_root) and path.is_file():
                     prev[rel] = path.read_text(encoding="utf-8")
+            # A declared constants file that loads is this pipeline's to retire
+            # when its last constant goes; one that fails to load is left alone.
+            constants_path = self._pipeline_root / GLOBAL_CONSTANTS_FILE
+            if (
+                disk_graph._parser_global_constants_declared
+                and disk_graph.global_constants_error is None
+                and constants_path.is_file()
+            ):
+                prev[GLOBAL_CONSTANTS_FILE] = constants_path.read_text(encoding="utf-8")
             return prev
         except HTTPException as exc:
             logger.warning(

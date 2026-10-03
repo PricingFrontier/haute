@@ -55,6 +55,7 @@ from haute._pipeline_settings import (
     MAX_STREAMING_CHUNK_SIZE,
     MAX_TIME_LIMIT_MINUTES,
 )
+from haute._types import GlobalConstant as GlobalConstant  # noqa: F401
 from haute._types import GraphEdge as GraphEdge  # noqa: F401
 from haute._types import GraphNode as GraphNode  # noqa: F401
 from haute._types import NodeData as GraphNodeData  # noqa: F401
@@ -814,6 +815,8 @@ class PipelineEditorDocument(BaseModel):
     pipeline_description: str | None = None
     preamble: str | None = None
     preserved_blocks: list[str] = Field(default_factory=list)
+    global_constants: list[GlobalConstant] = Field(default_factory=list)
+    global_constants_error: str | None = None
     source_file: str = ""
     source_revision: RevisionToken | None = None
     source_text: str = ""
@@ -1114,6 +1117,8 @@ class PolarsStepsRenderRequest(BaseModel):
     #: Where ``df`` comes from: ``input`` for a Transform (the first step
     #: chooses an input), ``frame`` for a surface whose ``df`` is already bound.
     start: Literal["input", "frame"]
+    #: The pipeline's constants; given, each Constant operand is checked against them.
+    global_constants: list[GlobalConstant] | None = None
 
 
 class PolarsStepsRenderResponse(BaseModel):
@@ -1146,6 +1151,10 @@ class PolarsFreeCodeColumnsRequest(BaseModel):
     input_columns: dict[str, list[ColumnInfo]]
     #: The columns the editor knows for a frame-mode surface's ``df``.
     frame_columns: list[ColumnInfo]
+    #: The pipeline's global constants and the source the code reads them for.
+    global_constants: list[GlobalConstant] = Field(default_factory=list)
+    global_constants_error: str | None = None
+    source: str = "live"
 
     @model_validator(mode="after")
     def _frame_columns_need_a_frame(self) -> PolarsFreeCodeColumnsRequest:

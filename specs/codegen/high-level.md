@@ -262,6 +262,18 @@ Out of scope (owned by neighbouring components):
   are not separately extracted or relocated to module scope. Leading/trailing
   blank lines inside a completed module block are stripped, and unmatched
   module-level starts are ignored.
+
+  > NOTE: Any other module-level statement after the constructor (a constant, a helper
+  > function, trailing code) is neither preamble nor a preserved block, so regeneration drops
+  > it without a diagnostic while keeping the node code that uses it.
+  > [BUG-12](../roadmap/bugs.md#bug-12--a-save-keeps-the-statements-written-after-the-pipeline-constructor)
+  > makes the parser report it and save wait for it to move.
+- **Global constants.** When the graph has global constants, or its declared constants file
+  failed to load, the pipeline constructor gets `global_constants="config/global_constants.json"`
+  after `description`, and every generated file, pipeline and submodel alike, binds
+  `global_constants = <receiver>.global_constants` on the line after its constructor, so node
+  code reads a defined name and the file passes `ruff check`. Otherwise neither appears, and a
+  pipeline without constants generates exactly the code it did before constants existed.
 - **Fails loudly, never emits a corrupt file.** Every code path that could
   produce invalid Python — a missing codegen builder, an invalid description or
   literal, an unparseable emitted file — raises rather than degrading to a

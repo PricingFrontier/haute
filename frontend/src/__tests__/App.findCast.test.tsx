@@ -187,7 +187,7 @@ vi.mock("../components/Toolbar", () => ({
   ),
 }))
 vi.mock("../panels/UtilityPanel", () => ({ default: () => <div data-testid="utility-panel" /> }))
-vi.mock("../panels/ImportsPanel", () => ({ default: () => <div data-testid="imports-panel" /> }))
+vi.mock("../panels/GlobalConstantsPanel", () => ({ default: () => <div data-testid="global-constants-panel" /> }))
 vi.mock("../panels/GitPanel", () => ({ default: () => <div data-testid="git-panel" /> }))
 vi.mock("../components/SubmodelDialog", () => ({ default: () => <div data-testid="submodel-dialog" /> }))
 vi.mock("../components/RenameDialog", () => ({ default: () => <div data-testid="rename-dialog" /> }))
@@ -235,7 +235,7 @@ describe("App - lastSelectedId referencing deleted node resolves cleanly (#38)",
       renameDialog: null,
       syncBanner: null,
       utilityOpen: false,
-      importsOpen: false,
+      constantsOpen: false,
       gitOpen: false,
       ratingStepEditorSections: {},
       explorePanes: {},

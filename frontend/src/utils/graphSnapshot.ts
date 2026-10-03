@@ -13,6 +13,7 @@
  */
 import type { Node } from "@xyflow/react"
 import type { PipelineEdge } from "../types/node"
+import type { GlobalConstant, GlobalConstantDraft } from "./globalConstants"
 import { authoredPolarsConfig, isSteppedConfig } from "./polarsStepInputs"
 
 // ---------------------------------------------------------------------------
@@ -248,13 +249,23 @@ export function toCanonicalGraphPayload(input: {
   edges: readonly PipelineEdge[]
   submodels?: Record<string, unknown>
   preamble?: string
+  global_constants?: readonly GlobalConstant[]
+  global_constants_error?: string | null
 }): {
   nodes: Node[]
   edges: PipelineEdge[]
   submodels: Record<string, unknown> | undefined
   preamble: string | undefined
+  global_constants?: GlobalConstant[]
+  global_constants_error?: string | null
 } {
   return {
+    ...(input.global_constants === undefined
+      ? {}
+      : { global_constants: structuredClone([...input.global_constants]) }),
+    ...(input.global_constants_error === undefined
+      ? {}
+      : { global_constants_error: input.global_constants_error }),
     nodes: input.nodes.map(
       (node) => cloneGraphValue(stripNodeUiFields(node)) as Node,
     ),
@@ -273,8 +284,8 @@ export function toCanonicalGraphPayload(input: {
 /**
  * Canonical serialization of a graph snapshot used for dirty-derivation.
  *
- * Scope: `{nodes, edges, preamble, submodels}` — the complete persisted,
- * user-editable graph surface. Preserved blocks remain out of scope because
+ * Scope: `{nodes, edges, preamble, submodels, globalConstants}` — the complete
+ * persisted, user-editable graph surface. Preserved blocks remain out of scope because
  * they round-trip outside the graph store, while submodels are editable in
  * the GUI and must participate in dirty detection.
  * A stepped Polars node's code and validation result are generated caches;
@@ -288,6 +299,7 @@ export function serializeSnapshot(input: {
   edges: readonly PipelineEdge[]
   preamble: string
   submodels: Record<string, unknown>
+  globalConstants?: readonly GlobalConstantDraft[]
 }): string {
   return JSON.stringify(
     canonicalize({
@@ -295,6 +307,7 @@ export function serializeSnapshot(input: {
       edges: input.edges.map(stripEdgeUiFields),
       preamble: input.preamble,
       submodels: stripGraphMetadataTransientFields(input.submodels, true),
+      globalConstants: input.globalConstants ?? [],
     }),
   )
 }
@@ -311,13 +324,18 @@ export function cloneGraphSnapshot(input: {
   edges: readonly PipelineEdge[]
   preamble: string
   submodels: Record<string, unknown>
+  globalConstants?: readonly GlobalConstantDraft[]
 }): {
   nodes: Node[]
   edges: PipelineEdge[]
   preamble: string
   submodels: Record<string, unknown>
+  globalConstants?: GlobalConstantDraft[]
 } {
   return {
+    ...(input.globalConstants === undefined
+      ? {}
+      : { globalConstants: structuredClone([...input.globalConstants]) }),
     nodes: input.nodes.map(
       (node) => cloneGraphValue(stripNodeHistoryFields(node)) as Node,
     ),

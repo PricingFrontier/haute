@@ -136,7 +136,7 @@ def test_signature_is_deterministic(project: Path) -> None:
     graph = _graph(project)
 
     assert _signature(graph) == _signature(_graph(project))
-    assert _signature(graph).startswith("node-snapshot:v1:")
+    assert _signature(graph).startswith("node-snapshot:v2:")
 
 
 @pytest.mark.parametrize(
@@ -430,3 +430,32 @@ def test_a_switch_free_lineage_is_the_upstream_subgraph(project: Path) -> None:
 def test_signing_an_unknown_node_fails(project: Path) -> None:
     with pytest.raises(ValueError, match="unknown node 'missing'"):
         _signature(_graph(project), node_id="missing")
+
+
+def test_a_read_constant_re_signs_its_lineage_and_leaves_others_alone(project: Path) -> None:
+    from haute._types import GlobalConstant
+
+    def declare(graph: PipelineGraph, rate: float, other: float) -> PipelineGraph:
+        return graph.model_copy(
+            update={
+                "global_constants": [
+                    GlobalConstant(
+                        name="rate", type="float", by_source={"live": 1.0, "nb_batch": rate}
+                    ),
+                    GlobalConstant(name="other", type="float", value=other),
+                ]
+            }
+        )
+
+    graph = _with_config(
+        _graph(project),
+        "transform",
+        code="df = source.with_columns(r=pl.lit(global_constants.rate))",
+    )
+    graph = _with_config(
+        graph, "downstream", code="df = join.with_columns(o=pl.lit(global_constants.other))"
+    )
+    baseline = _signature(declare(graph, rate=2.0, other=1.0))
+
+    assert _signature(declare(graph, rate=2.5, other=1.0)) != baseline
+    assert _signature(declare(graph, rate=2.0, other=9.0)) == baseline

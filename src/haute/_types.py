@@ -8,6 +8,10 @@ FastAPI endpoint validation.
 
 from __future__ import annotations
 
+import datetime as _dt
+import keyword
+import math
+import re
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from enum import StrEnum
@@ -25,7 +29,18 @@ from typing import (
 )
 
 import polars as pl
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 from haute._graph_utils import _sanitize_func_name, build_parents_of
 
@@ -1189,6 +1204,126 @@ class SubmodelDefinition(BaseModel):
         return self
 
 
+GLOBAL_CONSTANTS_NAME = "global_constants"
+"""The one reserved name through which node code reads global constants."""
+
+GLOBAL_CONSTANTS_FILE = "config/global_constants.json"
+"""A pipeline's global constants file, relative to its folder; its constructor names no other."""
+
+GlobalConstantType: TypeAlias = Literal["integer", "float", "text", "boolean", "date"]
+GlobalConstantValue: TypeAlias = StrictBool | StrictInt | StrictFloat | StrictStr
+
+_GLOBAL_CONSTANT_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+#: The largest integer a global constant may hold: the editor edits values as
+#: JavaScript numbers, which represent every integer up to this one exactly.
+MAX_CONSTANT_INTEGER = 2**53 - 1
+
+
+def _checked_constant_value(
+    name: str,
+    constant_type: GlobalConstantType,
+    value: GlobalConstantValue,
+    *,
+    where: str,
+) -> GlobalConstantValue:
+    """Return *value* if it is valid for *constant_type* (a float as a float), else raise."""
+    if constant_type == "integer":
+        if (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and abs(value) <= MAX_CONSTANT_INTEGER
+        ):
+            return value
+        expected = f"a whole number between -{MAX_CONSTANT_INTEGER} and {MAX_CONSTANT_INTEGER}"
+    elif constant_type == "float":
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+            return float(value)
+        expected = "a finite number"
+    elif constant_type == "text":
+        if isinstance(value, str):
+            return value
+        expected = "text"
+    elif constant_type == "boolean":
+        if isinstance(value, bool):
+            return value
+        expected = "true or false"
+    else:
+        if isinstance(value, str) and _ISO_DATE.fullmatch(value):
+            try:
+                _dt.date.fromisoformat(value)
+            except ValueError:
+                pass
+            else:
+                return value
+        expected = "a real date written YYYY-MM-DD"
+    raise ValueError(
+        f"Global constant {name!r} {where} must be {expected} for type "
+        f"{constant_type!r}, got {value!r}."
+    )
+
+
+class GlobalConstant(BaseModel):
+    """One named, typed value that node code reads as ``global_constants.<name>``.
+
+    A uniform constant holds ``value``, which every source reads. A constant
+    split by source holds ``by_source``, which may lack a source: reading it
+    under that source fails, naming both. Values stay JSON scalars, so a date
+    is its ``YYYY-MM-DD`` text, and a ``float`` is stored as a float however it
+    was written.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    type: GlobalConstantType
+    value: GlobalConstantValue | None = None
+    by_source: dict[str, GlobalConstantValue] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        if not _GLOBAL_CONSTANT_NAME.fullmatch(value) or keyword.iskeyword(value):
+            raise ValueError(
+                f"Global constant name {value!r} must start with a letter, continue with "
+                "letters, digits and underscores, and not be a Python keyword."
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _validate_values(self) -> Self:
+        if (self.value is None) == (self.by_source is None):
+            raise ValueError(
+                f"Global constant {self.name!r} needs exactly one of 'value' (the same for "
+                "every source) and 'by_source' (split by source)."
+            )
+        if self.value is not None:
+            self.value = _checked_constant_value(self.name, self.type, self.value, where="value")
+        if self.by_source is not None:
+            checked: dict[str, GlobalConstantValue] = {}
+            for source, value in self.by_source.items():
+                if not source or source != source.strip():
+                    raise ValueError(
+                        f"Global constant {self.name!r} has a by_source key {source!r}: a "
+                        "source name must be non-empty and unpadded."
+                    )
+                checked[source] = _checked_constant_value(
+                    self.name, self.type, value, where=f"value for source {source!r}"
+                )
+            self.by_source = checked
+        return self
+
+
+def _reject_duplicate_constant_names(constants: Sequence[GlobalConstant]) -> None:
+    seen: set[str] = set()
+    for constant in constants:
+        if constant.name in seen:
+            raise ValueError(f"Global constant {constant.name!r} is defined more than once.")
+        seen.add(constant.name)
+
+
 class PipelineGraph(BaseModel):
     """React Flow graph structure used throughout Haute.
 
@@ -1204,9 +1339,22 @@ class PipelineGraph(BaseModel):
     pipeline_description: str | None = None
     preamble: str | None = None
     preserved_blocks: list[str] = Field(default_factory=list)
+    global_constants: list[GlobalConstant] = Field(default_factory=list)
+    # Why the declared constants file could not be loaded, set by the parser.
+    # Executions honour it; save derives it from disk instead.
+    global_constants_error: str | None = None
     source_file: str | None = None
     source_revision: str | None = None
     submodels: dict[str, SubmodelDefinition] | None = None
+
+    @field_validator("global_constants")
+    @classmethod
+    def _validate_global_constant_names(
+        cls,
+        value: list[GlobalConstant],
+    ) -> list[GlobalConstant]:
+        _reject_duplicate_constant_names(value)
+        return value
 
     @model_validator(mode="before")
     @classmethod
@@ -1259,6 +1407,9 @@ class PipelineGraph(BaseModel):
     _parser_definition_id: str | None = PrivateAttr(default=None)
     _parser_input_ports: list[SubmodelInputPort] | None = PrivateAttr(default=None)
     _parser_output_ports: list[SubmodelOutputPort] | None = PrivateAttr(default=None)
+    # Whether the parsed constructor names the global constants file, which a
+    # declared but empty file leaves invisible in ``global_constants``.
+    _parser_global_constants_declared: bool = PrivateAttr(default=False)
 
     # Names of ``@cached_property`` slots that must be invalidated when
     # ``model_copy`` produces a new instance with changed structure —
@@ -1272,6 +1423,7 @@ class PipelineGraph(BaseModel):
         "node_map",
         "parents_of",
         "_haute_base_fingerprint",
+        "_haute_global_constant_reads",
     )
 
     def model_copy(
@@ -1333,6 +1485,17 @@ class PipelineGraph(BaseModel):
         from haute._cache import _graph_base_fingerprint
 
         return _graph_base_fingerprint(self)
+
+    @cached_property
+    def _haute_global_constant_reads(self) -> Any:
+        """The global constants this graph's nodes read, memoised like the base fingerprint.
+
+        Returns a set of names or ``EVERY_CONSTANT`` (see
+        :func:`haute._global_constants.graph_constant_reads`).
+        """
+        from haute._global_constants import graph_constant_reads
+
+        return graph_constant_reads(self.nodes, self.node_map)
 
 
 SubmodelDefinition.model_rebuild()

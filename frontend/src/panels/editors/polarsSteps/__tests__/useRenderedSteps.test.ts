@@ -8,6 +8,8 @@ vi.mock("../../../../api/client", () => ({
 
 import { renderPolarsSteps, resolveFreeCodeColumns } from "../../../../api/client"
 import { useRenderedSteps, type KnownColumns } from "../useRenderedSteps"
+import useGraphStore from "../../../../stores/useGraphStore"
+import useSettingsStore from "../../../../stores/useSettingsStore"
 import type { Step } from "../types"
 
 const mockRender = vi.mocked(renderPolarsSteps)
@@ -207,7 +209,7 @@ describe("useRenderedSteps", () => {
       vi.advanceTimersByTime(250)
       await Promise.resolve()
     })
-    expect(Object.keys(mockRender.mock.calls[0][0]).sort()).toEqual(["inputNames", "signal", "start", "steps"])
+    expect(Object.keys(mockRender.mock.calls[0][0]).sort()).toEqual(["globalConstants", "inputNames", "signal", "start", "steps"])
     expect(mockResolve.mock.calls[0][0]).toMatchObject({ nodeId: "rated", steps: withCode, inputNames: ["quotes"], start: "input", inputColumns: { quotes: QUOTES }, frameColumns: [] })
     const frameCode: Step[] = [{ ...code, id: "frame-code" }]
     renderHook(() => useRenderedSteps(frameCode, [], "frame", KNOWN, "explore"))
@@ -290,5 +292,100 @@ describe("useRenderedSteps", () => {
     mockRender.mockReturnValueOnce(deferred().promise)
     rerender({ steps: [one[0], { ...code, code: "df = df" }, unfinished[2]] })
     expect(result.current.freeCode.size).toBe(0)
+  })
+
+  describe("global constants", () => {
+    const reads: Step[] = [
+      one[0],
+      { id: "code", kind: "free_code", code: "df = df.with_columns(pl.lit(1).alias(global_constants.column))" },
+    ]
+    const columnsFor = (name: string) => ({
+      free_code_columns: [{ step_index: 1, columns: [{ name, dtype: "Int32" }], message: "" }],
+    })
+    const settle = async () => {
+      await act(async () => {
+        vi.advanceTimersByTime(250)
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+    }
+
+    beforeEach(() => {
+      useGraphStore.getState().resetForTests()
+      useGraphStore.getState().setGlobalConstantsRaw([
+        { name: "column", type: "text", split: true, value: "", bySource: { live: "live_col", nb_batch: "nb_col" } },
+        { name: "unread", type: "float", split: false, value: "1", bySource: {} },
+      ])
+      useSettingsStore.getState().setSources(["live", "nb_batch"])
+      useSettingsStore.getState().setActiveSource("live")
+    })
+
+    afterEach(() => {
+      useGraphStore.getState().resetForTests()
+      useSettingsStore.getState().setActiveSource("live")
+    })
+
+    it("sends the constants the steps read with the source, for the render and the free-code columns", async () => {
+      mockRender.mockResolvedValue(renderedCode(reads))
+      mockResolve.mockResolvedValue(columnsFor("live_col"))
+      renderHook(() => useRenderedSteps(reads, ["quotes"], "input", KNOWN, "rated"))
+      await settle()
+
+      const constants = [{ name: "column", type: "text", by_source: { live: "live_col", nb_batch: "nb_col" } }]
+      expect(mockRender.mock.calls[0][0].globalConstants).toEqual(constants)
+      expect(mockResolve.mock.calls[0][0]).toMatchObject({
+        globalConstants: constants,
+        globalConstantsError: null,
+        source: "live",
+      })
+    })
+
+    it("refreshes the columns after a source switch and after a constant edit, discarding a late answer", async () => {
+      mockRender.mockResolvedValue(renderedCode(reads))
+      mockResolve.mockResolvedValueOnce(columnsFor("live_col"))
+      const { result } = renderHook(() => useRenderedSteps(reads, ["quotes"], "input", KNOWN, "rated"))
+      await settle()
+      expect(result.current.freeCode.get("code")?.columns).toEqual([{ name: "live_col", dtype: "Int32" }])
+
+      const late = deferredColumns()
+      mockResolve.mockReturnValueOnce(late.promise)
+      act(() => useSettingsStore.getState().setActiveSource("nb_batch"))
+      expect(result.current.freeCode.size).toBe(0)
+      await settle()
+      expect(mockResolve.mock.calls[1][0].source).toBe("nb_batch")
+
+      mockResolve.mockResolvedValueOnce(columnsFor("renamed_col"))
+      act(() => {
+        useGraphStore.getState().setGlobalConstantsRaw([
+          { name: "column", type: "text", split: true, value: "", bySource: { live: "live_col", nb_batch: "renamed_col" } },
+        ])
+      })
+      await settle()
+      expect(result.current.freeCode.get("code")?.columns).toEqual([{ name: "renamed_col", dtype: "Int32" }])
+
+      await act(async () => {
+        late.resolve(columnsFor("nb_col"))
+        await Promise.resolve()
+      })
+      expect(result.current.freeCode.get("code")?.columns).toEqual([{ name: "renamed_col", dtype: "Int32" }])
+    })
+
+    it("does not re-request when a constant the steps do not read changes", async () => {
+      mockRender.mockResolvedValue(renderedCode(reads))
+      mockResolve.mockResolvedValue(columnsFor("live_col"))
+      renderHook(() => useRenderedSteps(reads, ["quotes"], "input", KNOWN, "rated"))
+      await settle()
+
+      act(() => {
+        const [column] = useGraphStore.getState().globalConstants
+        useGraphStore.getState().setGlobalConstantsRaw([
+          column,
+          { name: "unread", type: "float", split: false, value: "2", bySource: {} },
+        ])
+      })
+      await settle()
+
+      expect(mockRender).toHaveBeenCalledTimes(1)
+    })
   })
 })

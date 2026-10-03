@@ -388,3 +388,75 @@ def test_trace_cache_survives_a_downstream_only_edit(
     assert [step.output_values for step in second.steps] == [
         step.output_values for step in first.steps
     ]
+
+
+def _constants(**values) -> list:
+    from haute._types import GlobalConstant
+
+    return [GlobalConstant(name=name, type="float", **spec) for name, spec in values.items()]
+
+
+def _reading(code: str, **constants):
+    """The fixture graph whose ``mid`` node runs *code*, with *constants* declared."""
+    graph = _replace_node_config(_graph(), "mid", code=code)
+    return graph.model_copy(update={"global_constants": _constants(**constants)})
+
+
+_READ_RATE = "df = source.with_columns(y=pl.col('x') * global_constants.rate)"
+
+
+def test_lineage_key_signs_the_value_a_read_constant_holds_for_its_source() -> None:
+    graph = _reading(_READ_RATE, rate={"by_source": {"live": 1.0, "nb_batch": 2.0}})
+    live_key = lineage_cache_key(_request(graph))
+    batch_key = lineage_cache_key(_request(graph, source="nb_batch"))
+
+    live_edit = _reading(_READ_RATE, rate={"by_source": {"live": 1.5, "nb_batch": 2.0}})
+    batch_edit = _reading(_READ_RATE, rate={"by_source": {"live": 1.0, "nb_batch": 2.5}})
+
+    assert lineage_cache_key(_request(live_edit)) != live_key
+    assert lineage_cache_key(_request(batch_edit)) == live_key
+    assert lineage_cache_key(_request(batch_edit, source="nb_batch")) != batch_key
+    assert lineage_cache_key(_request(live_edit, source="nb_batch")) == batch_key
+
+
+def test_lineage_key_ignores_constants_its_lineage_does_not_read() -> None:
+    graph = _reading(_READ_RATE, rate={"value": 1.0}, other={"value": 1.0})
+    downstream_reads = _replace_node_config(
+        graph, "downstream", code="df = target.with_columns(z=pl.lit(global_constants.other))"
+    )
+
+    baseline = lineage_cache_key(_request(downstream_reads))
+    edited = downstream_reads.model_copy(
+        update={"global_constants": _constants(rate={"value": 1.0}, other={"value": 9.0})}
+    )
+
+    assert lineage_cache_key(_request(edited)) == baseline
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        pytest.param(
+            "df = source.with_columns(y=pl.lit(getattr(global_constants, 'other')))", id="getattr"
+        ),
+        pytest.param(
+            "df = source.with_columns(y=pl.lit(f'{global_constants.other}'))", id="f-string"
+        ),
+    ],
+)
+def test_lineage_key_signs_reads_through_getattr_and_f_strings(code: str) -> None:
+    graph = _reading(code, rate={"value": 1.0}, other={"value": 1.0})
+    edited = graph.model_copy(
+        update={"global_constants": _constants(rate={"value": 1.0}, other={"value": 2.0})}
+    )
+
+    assert lineage_cache_key(_request(edited)) != lineage_cache_key(_request(graph))
+
+
+def test_lineage_key_tells_a_missing_source_value_from_a_set_one() -> None:
+    split = _reading(_READ_RATE, rate={"by_source": {"live": 1.0}})
+    filled = _reading(_READ_RATE, rate={"by_source": {"live": 1.0, "nb_batch": 1.0}})
+
+    assert lineage_cache_key(_request(split, source="nb_batch")) != lineage_cache_key(
+        _request(filled, source="nb_batch")
+    )

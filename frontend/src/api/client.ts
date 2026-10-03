@@ -8,6 +8,7 @@
  * - Consistent error handling via ApiError
  */
 
+import type { GlobalConstant } from "../utils/globalConstants"
 import type {
   ApplyOptimiserRequest,
   ApplyOptimiserResponse,
@@ -872,6 +873,8 @@ export interface RenderPolarsStepsArgs {
   inputNames: string[]
   /** `input` for a Transform (the first step chooses an input), `frame` when `df` is already bound. */
   start: "input" | "frame"
+  /** The pipeline's constants; given, the render checks every Constant operand against them. */
+  globalConstants?: GlobalConstant[]
   signal?: AbortSignal
 }
 
@@ -879,7 +882,12 @@ export interface RenderPolarsStepsArgs {
 export function renderPolarsSteps(args: RenderPolarsStepsArgs): Promise<PolarsStepsRenderResponse> {
   return post<unknown>(
     "/api/pipeline/polars-steps/render",
-    { steps: args.steps, input_names: args.inputNames, start: args.start },
+    {
+      steps: args.steps,
+      input_names: args.inputNames,
+      start: args.start,
+      ...(args.globalConstants === undefined ? {} : { global_constants: args.globalConstants }),
+    },
     { signal: args.signal },
   ).then(async (data) => expectGeneratedContract("PolarsStepsRenderResponse", (await editorValidators()).validatePolarsStepsRenderResponse, data))
 }
@@ -891,6 +899,9 @@ export interface ResolveFreeCodeColumnsArgs extends RenderPolarsStepsArgs {
   inputColumns: Record<string, { name: string; dtype: string }[]>
   /** The columns the editor knows for a frame-mode surface's `df`; empty in `input` mode. */
   frameColumns: { name: string; dtype: string }[]
+  /** The source the free code reads its constants for, and the constants' load error. */
+  source: string
+  globalConstantsError: string | null
 }
 
 /**
@@ -908,6 +919,9 @@ export function resolveFreeCodeColumns(args: ResolveFreeCodeColumnsArgs): Promis
       start: args.start,
       input_columns: args.inputColumns,
       frame_columns: args.frameColumns,
+      global_constants: args.globalConstants ?? [],
+      global_constants_error: args.globalConstantsError,
+      source: args.source,
     },
     { signal: args.signal },
   ).then(async (data) => expectGeneratedContract("PolarsFreeCodeColumnsResponse", (await editorValidators()).validatePolarsFreeCodeColumnsResponse, data))

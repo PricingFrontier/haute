@@ -2184,3 +2184,33 @@ def test_code_without_recompute_facts_is_unproven() -> None:
     assert code_bounds_rows("", None) is False
     broken = "df = M.with_columns("
     assert code_bounds_rows(broken, code_recompute_facts(broken, frozenset({"M"}))) is True
+
+
+def test_a_seed_plan_lineage_signs_the_constants_it_reads() -> None:
+    from haute._types import GlobalConstant
+
+    def graph(rate: float) -> PipelineGraph:
+        return PipelineGraph(
+            nodes=[
+                GraphNode(
+                    id="reader",
+                    data=NodeData(
+                        label="reader",
+                        nodeType=NodeType.POLARS,
+                        config={"code": "df = pl.LazyFrame({'r': [global_constants.rate]})"},
+                    ),
+                ),
+                GraphNode(
+                    id="target",
+                    data=NodeData(
+                        label="target", nodeType=NodeType.POLARS, config={"code": "df = reader"}
+                    ),
+                ),
+            ],
+            edges=[GraphEdge(id="e", source="reader", target="target")],
+            global_constants=[GlobalConstant(name="rate", type="float", value=rate)],
+        )
+
+    assert seed_plans.seed_plan_lineage_fingerprint(graph(1.0), "target") != (
+        seed_plans.seed_plan_lineage_fingerprint(graph(2.0), "target")
+    )

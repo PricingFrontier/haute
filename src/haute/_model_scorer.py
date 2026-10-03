@@ -29,7 +29,7 @@ from haute._lru_cache import LRUCache
 from haute._model_flavors import is_registered_flavor, model_families, model_family
 from haute._model_source import BoundModel, ModelSource, require_model_source
 from haute._polars_utils import bounded_collect_batches
-from haute._types import _Frame
+from haute._types import GLOBAL_CONSTANTS_NAME, _Frame
 from haute.errors import ConfigError
 from haute.errors import FeatureMismatchError as FeatureMismatchError
 
@@ -1336,6 +1336,7 @@ def _run_score_pipeline(
     required_output_columns: frozenset[str] | set[str] | None = None,
     temporary_paths: list[str] | None = None,
     categorical_levels: _CategoricalLevels = None,
+    global_constants: Any = None,
 ) -> _Frame:
     """Core scoring logic shared by ``ModelScorer.score()`` and deploy scorer.
 
@@ -1468,7 +1469,11 @@ def _run_score_pipeline(
             code,
             ["df", *(source_names or [])[1:]],
             all_dfs,
-            extra_ns={"model": scoring_model},
+            extra_ns=(
+                {"model": scoring_model}
+                if global_constants is None
+                else {"model": scoring_model, GLOBAL_CONSTANTS_NAME: global_constants}
+            ),
             alias_first_input_as_df=True,
         )
     return result_lf
@@ -1573,9 +1578,12 @@ class ModelScorer:
         reuse_loaded_model: bool = False,
         input_fanout: int = 1,
         base_dir: str | Path | None = None,
+        global_constants: Any = None,
     ) -> None:
         from haute.modelling._feature_contract import normalise_categorical_levels
 
+        # The run's constants, bound in the post-processing code beside ``model``.
+        self.global_constants = global_constants
         self.model_source = model_source
         self.task = task
         self.output_col = output_col
@@ -1712,6 +1720,7 @@ class ModelScorer:
                 schema_only=self.schema_only,
                 required_output_columns=self.required_output_columns,
                 categorical_levels=categorical_levels,
+                global_constants=self.global_constants,
             )
         finally:
             _score_input_fanout.reset(fanout_token)

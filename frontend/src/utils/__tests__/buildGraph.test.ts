@@ -10,10 +10,11 @@
  * 6. resolveGraphFromRefs: falls back to graphRef when parentGraphRef is null
  * 7. buildGraph: empty inputs
  */
-import { describe, it, expect } from "vitest"
+import { afterEach, describe, it, expect } from "vitest"
 import type { Node, Edge } from "@xyflow/react"
 import { buildGraph, graphForRequestIdentity, resolveGraphFromRefs } from "../buildGraph"
 import { makeSimpleNode, makeSimpleEdge } from "../../test-utils/factories"
+import useGraphStore from "../../stores/useGraphStore"
 
 describe("buildGraph", () => {
   it("serializes nodes with id, type, data, and zeroed position", () => {
@@ -334,5 +335,45 @@ describe("resolveGraphFromRefs", () => {
     const result = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
 
     expect(result.preamble).toBe("import pandas as pd")
+  })
+})
+
+describe("global constants in built graphs", () => {
+  afterEach(() => {
+    useGraphStore.getState().resetForTests()
+  })
+
+  it("both builders carry the store's valid constants without caller arguments", () => {
+    useGraphStore.getState().setGlobalConstantsRaw([
+      { name: "rate", type: "float", split: true, value: "", bySource: { live: "1.5", nb_batch: "2.5" } },
+      { name: "broken", type: "integer", split: false, value: "x", bySource: {} },
+    ])
+    const graphRef = { current: { nodes: [] as Node[], edges: [] as Edge[] } }
+
+    for (const graph of [
+      buildGraph([], []),
+      resolveGraphFromRefs(graphRef, { current: null }, { current: {} }, { current: "" }),
+    ]) {
+      expect(graph.global_constants).toEqual([
+        { name: "rate", type: "float", by_source: { live: 1.5, nb_batch: 2.5 } },
+      ])
+      expect(graph.global_constants_error).toBeNull()
+    }
+  })
+
+  it("carry a load error and no constants while the file failed to load", () => {
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: [],
+      edges: [],
+      preamble: "",
+      submodels: {},
+      globalConstants: [{ name: "rate", type: "float", split: false, value: "1", bySource: {} }],
+      globalConstantsError: "bad JSON",
+    })
+
+    const graph = buildGraph([], [])
+
+    expect(graph.global_constants).toEqual([])
+    expect(graph.global_constants_error).toBe("bad JSON")
   })
 })

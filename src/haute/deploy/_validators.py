@@ -15,7 +15,7 @@ import polars as pl
 
 from haute._io import read_user_text
 from haute._logging import get_logger
-from haute._types import NodeType
+from haute._types import GLOBAL_CONSTANTS_FILE, NodeType, PipelineGraph
 from haute.deploy._config import ResolvedDeploy
 from haute.deploy._scorer import score_graph
 
@@ -257,6 +257,36 @@ def _validate_expected_outputs(
         raise ValueError("expected-output validation failed: " + "; ".join(errors))
 
 
+def _global_constant_errors(graph: PipelineGraph) -> list[str]:
+    """Why the deployed *graph*'s constant reads cannot resolve: it scores under ``live``."""
+    from haute._global_constants import graph_constant_reads
+
+    reads = graph_constant_reads(graph.nodes, {node.id: node for node in graph.nodes})
+    if not reads:
+        return []
+    if graph.global_constants_error:
+        return [
+            f"The deployed pipeline reads global constants, but {GLOBAL_CONSTANTS_FILE} "
+            f"could not be loaded: {graph.global_constants_error}"
+        ]
+    by_name = {constant.name: constant for constant in graph.global_constants}
+    names = sorted(reads) if isinstance(reads, frozenset) else list(by_name)
+    errors: list[str] = []
+    for name in names:
+        constant = by_name.get(name)
+        if constant is None:
+            errors.append(
+                f"Global constant {name!r} is read by the deployed pipeline but is not "
+                "defined. Define it in the Constants pane."
+            )
+        elif constant.by_source is not None and "live" not in constant.by_source:
+            errors.append(
+                f"Global constant {name!r} has no live value, and deployed scoring runs "
+                "under live. Set its live value in the Constants pane."
+            )
+    return errors
+
+
 def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
     """Run all pre-deploy validations.
 
@@ -342,6 +372,9 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
     # 7. Output schema is non-empty
     if not resolved.output_schema:
         errors.append("Output schema is empty - dry-run produced no output columns.")
+
+    # 8. Every global constant the deployed graph reads has a live value.
+    errors.extend(_global_constant_errors(resolved.pruned_graph))
 
     # Project-local imports the bundle does not carry would fail on import in
     # the served bundle, although they resolve from the project here.

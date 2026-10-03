@@ -4,12 +4,13 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/pipeline.py` | `Node` / `NodeRegistry` / `Pipeline` / `Submodel`: the decorator API, `connect()`, the standalone `run()`/`score()` executor, `to_graph()` (live-object → React-Flow dict). A configured node's `Node` classifies its function as a declaration or a hook at registration (`function_kind`) and runs its configured work through `run_configured_node`; `_runs_node` is what a configured node's decorator returns. |
+| `src/haute/pipeline.py` | `Node` / `NodeRegistry` / `Pipeline` / `Submodel`: the decorator API, `connect()`, the standalone `run()`/`score()` executor, `to_graph()` (live-object → React-Flow dict). A configured node's `Node` classifies its function as a declaration or a hook at registration (`function_kind`) and runs its configured work through `run_configured_node`; `_runs_node` is what a configured node's decorator returns. `Pipeline` takes a keyword-only `global_constants` argument (only `config/global_constants.json`), and every registry's `global_constants` property returns the standalone sentinel; `Pipeline.run(source=...)` and `score()` call each node function as a copy that binds the run's constants (`Node._invoke`, `Pipeline._run_constants`). |
 | `src/haute/_standalone_nodes.py` | What each configured node type does in a standalone run or score: `run_configured_node(node_type, kind, name, config, fn, frames, pipeline_dir)` performs the node's work through the same shared helpers canvas execution uses (`resolve_api_input_from_config`, `resolve_data_input_from_config`, `constant_frame`, `select_live_switch_input`, `execute_edge_join`, `apply_banding_from_config`, `apply_rating_step_from_config`, `expand_scenarios_from_config`, `score_from_config`, `apply_optimiser_apply_from_config`, `assemble_output_from_config`, `resolve_optimiser_data_input`, `load_external_object_from_config`); `function_kind` classifies a function as a declaration or hook; `has_empty_body` recognises a body that does nothing from its bytecode; `pipeline_directory` finds the directory a function's `config=` paths resolve against (the defining file's directory joined with its registry's `pipeline_dir`). |
 | `src/haute/_config_builder.py` | Per-node-type config dict construction from decorator kwargs + function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). For Live Switch nodes, `config["inputs"]` records only positional edge parameters (frame labels for apiInput edges, sanitised source labels otherwise), the same strings referenced by the input-to-scenario mapping; keyword-only configuration parameters are excluded. It consumes the per-type user-code extractors from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
-| `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers, `collect_node_configs` (graph → sidecar files), per-type validation/normalisation of canonical configs, and the Windows-reserved-filename guard. |
+| `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers, `collect_node_configs` (graph → sidecar files), per-type validation/normalisation of canonical configs, and the Windows-reserved-filename guard. It also owns the global constants file: `parse_global_constants` validates its strict UTF-8 bytes, `load_global_constants` reads it, and `global_constants_json` writes it canonically. |
+| `src/haute/_global_constants.py` | Global constants analysis and the standalone sentinel: `code_constant_reads`, `step_constant_reads`, `node_code_sources` and `node_constant_reads` (what a node reads, from its steps' Constant operands and the AST of its code, or `EVERY_CONSTANT`), `code_binds_global_constants`, `preamble_binds_global_constants`, `module_binding_lines` and `is_generated_binding` (what would shadow the reserved name), `STANDALONE_GLOBAL_CONSTANTS`, the sentinel every registry's global-constants property returns, `reference_problem` and `node_step_constant_problems` (whether a step's Constant operand can read its constant: defined, of a type its slot takes, and at least zero for every source where required), and the run-time table: `GlobalConstantsNamespace` (one source's values and its per-code views), `node_code_globals`, `bind_code_view`, `function_constant_reads` and `bind_function_view`. |
 | `src/haute/_config_validation.py` | `VALID_KEYS` registry derived from each node type's TypedDict definition, `unrecognized_config_keys`, and `reject_unrecognized_config_keys`. |
-| `src/haute/_polars_steps.py` | Low-code Polars step schema: `validate_polars_steps`, `render_polars_steps` (a `spelling` of `current` or, only to recognise bodies it saved before, `earlier`; one statement per structured step, laid out over several lines by `src/haute/_polars_steps_layout.py` when its single-line form does not fit in 88 columns at the function body's indentation, optional input-name validation, a required `start` mode of `input` or `frame`, `PolarsStepError` with the step index), `STEPPED_NODE_TYPES` (each stepped node type's `SteppedSurface`: start mode plus input eligibility `edges`/`none`), `STEPPED_SURFACE_LABELS` (the name each stepped node type goes by in messages about its steps), `stepped_surface_for`, `step_input_names`, `is_stepped_config`, `stepped_surface_allows_input_references` (the gate for rewriting step references on a rename), `referenced_step_inputs`, `rename_step_inputs` for boundary renames, and `resolve_free_code_columns` (the schema of `df` after each free-code step, for the free-code columns endpoint, which runs it in the interactive preview worker: the rendered prefix run through `_exec_user_code` over empty frames of the columns the editor supplied and only its schema read, or a one-line reason when it cannot be resolved). Consumed by the node data model, the parser, the executor builder, codegen, the save service, the assistant's authoring checks, the deploy interceptors, submodel flattening, and the render endpoint. |
+| `src/haute/_polars_steps.py` | Low-code Polars step schema: `validate_polars_steps`, `render_polars_steps` (a `spelling` of `current` or, only to recognise bodies it saved before, `earlier`; one statement per structured step, laid out over several lines by `src/haute/_polars_steps_layout.py` when its single-line form does not fit in 88 columns at the function body's indentation, optional input-name validation, a required `start` mode of `input` or `frame`, `PolarsStepError` with the step index), `STEPPED_NODE_TYPES` (each stepped node type's `SteppedSurface`: start mode plus input eligibility `edges`/`none`), `STEPPED_SURFACE_LABELS` (the name each stepped node type goes by in messages about its steps), `stepped_surface_for`, `step_input_names`, `is_stepped_config`, `stepped_surface_allows_input_references` (the gate for rewriting step references on a rename), `referenced_step_inputs`, `rename_step_inputs` for boundary renames, `OPERAND_KINDS` (a column, a literal, a nested expression, a step variable or a global constant; a Constant operand renders as the bare `global_constants.<name>` in value position and `pl.lit(global_constants.<name>)` in expression position, checks only the name rule, and is reported in `RenderedSteps.constant_references` as a `ConstantReference` with its step, the `CONSTANT_TYPES` its slot takes, a string operator's value taking `text` and a typed function argument following its expected type, and whether every value must be at least zero), and `resolve_free_code_columns` (the schema of `df` after each free-code step, for the free-code columns endpoint, which runs it in the interactive preview worker: the rendered prefix run through `_exec_user_code` over empty frames of the columns the editor supplied and only its schema read, or a one-line reason when it cannot be resolved). Consumed by the node data model, the parser, the executor builder, codegen, the save service, the assistant's authoring checks, the deploy interceptors, submodel flattening, and the render endpoint. |
 | `src/haute/_polars_steps_layout.py` | `restyle_statement` rewrites one rendered structured-step statement in common Python style on one line: `ast.unparse` keeps exactly the brackets operator precedence needs, and every string takes double quotes unless single ones need fewer escapes; the rewrite must parse to the same syntax tree or it is refused. `layout_statement` restyles, then lays out the statement through the document printer shared with codegen (`src/haute/_source_layout.py`) as `ruff format` lays it out inside a function body at its default 88 columns: the last call's brackets break first, a list or dict that still does not fit puts one entry per line with a trailing comma, a call chain with two or more links after a call or parentheses breaks before each such link (ruff's fluent layout), a binary expression breaks before its weakest operators, a long name or literal on the right of `=` is parenthesised only when that makes it fit, and doubled parentheses collapse to one pair. One choice is the renderer's own: a broken call always puts one argument per line with a trailing comma, where ruff would keep arguments that fit on one indented line together, and ruff keeps that layout because it reads the trailing comma as a magic trailing comma. The rendered body, indented as a function body, is therefore a fixed point of `ruff format --line-length 88` with its default quote style. It parses only the renderer's closed vocabulary and refuses anything else with a value error; free-code steps never pass through it. |
 | `src/haute/_builders.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration consumes its `NODE_REGISTRY` registration contracts. |
 | `src/haute/_node_builder.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration documents its builder-interception seam. |
@@ -440,6 +441,85 @@ forwards projection/profile fields; external-file resolution validates
 `path`/`fileType`. Invalid tables raise
 `ApiInputSchemaError`, which the HTTP contract adapter maps to 422.
 
+**Global constants.** `src/haute/parser.py::load_declared_global_constants` loads the file a
+pipeline constructor declares, from the pipeline's folder or through an injected byte reader,
+and returns no constants with the reason when the file is missing, unreadable or invalid, or
+resolves outside the pipeline folder (a link that leaves it, checked with
+`src/haute/_sandbox.py::contained_path`), which never fails the parse. Save refuses with HTTP 400
+any config file whose path resolves outside the pipeline folder rather than skipping its write. `src/haute/_config_io.py::parse_global_constants` decodes the
+bytes as strict UTF-8, rejects duplicate keys and validates each entry through
+`src/haute/_types.py::GlobalConstant`, naming the entry and the field in a `ConfigError`.
+The reads analysis in `src/haute/_global_constants.py::node_constant_reads` takes the
+configuration a node executes: each Constant operand in its steps contributes its name, and its
+`code` and free-code steps are parsed as a function body (so a closing `return` parses), where
+every attribute of the name `global_constants`, an f-string's expressions included, contributes
+the attribute; any other use of the name, or code that does not parse, means
+`EVERY_CONSTANT`. Strings and comments are not inspected. The binding checks walk module scope
+(a function or class contributes its name, decorators and defaults but not its body) for any
+binding of the reserved name; only `global_constants = <receiver>.global_constants` is exempt.
+
+**Global constants at run time (`src/haute/_global_constants.py`, `src/haute/pipeline.py`).**
+`GlobalConstantsNamespace` is one run's table: the graph's constants and load error resolved for
+one source as concrete values (`int`, `float`, `str`, `bool` or `datetime.date`). Nothing in it
+consults a context variable or the calling thread, and it pickles. `restricted_to(reads)` returns
+the view one piece of code may use (all of it for `EVERY_CONSTANT`). Reading a name through a
+view returns its value or raises `src/haute/errors.py::GlobalConstantError`, checked in this
+order:
+
+- `Global constants could not be loaded from config/global_constants.json: <error>`;
+- `Global constant 'x' is not defined. Define it in the Constants pane.` followed by the
+  defined names, or by `This pipeline has no global constants.`;
+- `Code read global constant 'x' without naming it. Write global_constants.x so its value is
+  tracked.`, for a defined constant outside the view's reads; or
+- `Global constant 'x' has no value for source 'nb_batch'. Set its nb_batch value in the
+  Constants pane.`
+
+A name starting with an underscore raises an ordinary `AttributeError`, so copy, pickle and
+display probes behave as on any object; setting or deleting an attribute raises the error.
+`dir()` lists the view's names and `repr()` names the source. The error is an `ExecutionError`
+subclass with no public `error_code`, carrying the constant and the source, so a preview shows
+it on the reading node instead of aborting the walk, and every other run propagates it.
+
+- `node_code_globals(namespace, graph, source)` returns a new mapping: the cached preamble
+  namespace, never mutated, plus the run's table under `global_constants`. The graph walker's
+  build step and the chain builder in `src/haute/execution.py` call it with the run's routing
+  source, never a per-node builder override, so every path that builds node functions through
+  them reads it (see [execution-engine](../execution-engine/low-level.md#global-constants)), and
+  `src/haute/trace.py` builds its formula names the same way for the trace's source.
+- `src/haute/_user_exec.py::_exec_user_code` binds `bind_code_view(namespace, code)`, the view
+  for the code's own reads, in place of the table. That covers every builder's code (Transform,
+  Data Input, External File, Rating Step, Scenario Expander and Explore), Model Score
+  post-processing code in `src/haute/_model_scorer.py::_run_score_pipeline` (beside `model`;
+  the builder hands the table to `ModelScorer` as `global_constants`), deployed External File
+  code in `src/haute/deploy/_scorer.py` (beside `obj`) and free-code column resolution. Lazy
+  Polars callbacks the code creates close over that view, so they read the run's values on any
+  thread.
+- `PolarsFreeCodeColumnsRequest` in `src/haute/schemas.py` carries `global_constants`,
+  `global_constants_error` and `source`, and
+  `src/haute/_polars_steps.py::resolve_free_code_columns` builds the table from them.
+- Save validation checks every node's Constant operands with
+  `node_step_constant_problems`, unless the constants file failed to load, and refuses the first
+  that cannot read with HTTP 400 `Node 'n', step k: <reason>`; the reason is `Global constant 'x'
+  is not defined.`, `Global constant 'x' is float; this value takes integer.` or `Global constant
+  'x' must be zero or more; it is -1 for source 'nb_batch'.`. The render request
+  (`PolarsStepsRenderRequest`) takes optional `global_constants`; given them, the first failing
+  reference is the response's step problem.
+- `Pipeline.run` takes a keyword-only `source` (default `"batch"`); it and `Pipeline.score`
+  (which uses `live`) set `_scenario_ctx` to that source for the run and build the table with
+  `Pipeline._run_constants`, which loads a declared file through
+  `src/haute/parser.py::load_declared_global_constants` from the pipeline directory that
+  `src/haute/_standalone_nodes.py::pipeline_directory` derives from the first node's function.
+  A load failure is carried in the table, so only reads fail. `Node._invoke` calls the node's
+  function (a transform's function, or a configured node's hook through
+  `src/haute/_standalone_nodes.py::run_configured_node`) as the copy
+  `bind_function_view(fn, table)` returns: the same code, defaults and closure, with globals
+  that are the module's plus `global_constants` bound to the view for
+  `function_constant_reads(fn)`, the reads of the function's source (every constant when its
+  source cannot be read). Two runs therefore never share a binding. Calling a node's decorated
+  name outside a run binds nothing, so its code reads the sentinel. A standalone run of a
+  pipeline that wires a submodel fails before any node runs
+  ([BUG-17](../roadmap/bugs.md#bug-17--a-standalone-run-of-a-pipeline-with-a-submodel-says-what-it-cannot-do)).
+
 ## Edge cases and invariants
 
 - `Pipeline.to_graph()` materialises live registrations through `_build_rf_nodes` and
@@ -583,6 +663,12 @@ forwards projection/profile fields; external-file resolution validates
 - `tests/test_registry_contracts.py` verifies exec/codegen registration metadata, duplicate/missing-entry failures, readiness/idempotence, and behavioural-body detection.
 - `tests/test_sidecar_golden.py` verifies canonical sidecar JSON emission and loader round-trip.
 - `tests/test_polars_steps.py` verifies the step schema (every invalid payload names its step), golden rendering per step kind and expression type (a statement too long for one line read back through its step's line range; the restyle's brackets, quoting and escapes), the multi-line layout of a long select, a two-aggregation group-by and a join one column too wide for the function body beside the golden join that fits exactly (`test_long_statements_break_one_argument_per_line`), a long free-code statement kept as authored (`test_free_code_keeps_its_authored_layout_however_long`), a long text variable parenthesised only when that makes it fit (`test_a_long_variable_is_parenthesised_only_when_that_makes_it_fit`), the layout's refusal of any statement outside the renderer's vocabulary (`test_the_layout_refuses_a_statement_outside_the_renderer_vocabulary`), every golden and corpus rendering, inside a function body, left unchanged by `ruff format --isolated --line-length 88` with quotes preserved (`test_rendered_code_is_a_fixed_point_of_ruff_format`), value-versus-expression operand positions, the extraction fixpoint, `NodeData` materialisation, chunk classification of the materialised code, assistant re-materialisation, executor runs of every step kind, incomplete and unknown-input run-time errors, instance execution with implicit mapping, `inputMapping` rejection, codegen/parse round trip, hand-edit discard (a body in an older quoting or bracketing of the same steps, or main's earlier one-line rendering with list arguments, keeps them, the earlier spelling reproduces the renderer's previous output for each step kind, while a mixed list argument or a respelled free-code statement is still an edit, and a changed free-code comment discards them), incomplete-list retention, malformed sidecar rejection, sidecar collection, save-time sidecar write/retirement/collision/warnings, the node-scoped save of a stepped transform's sidecar, submodel flattening rewrites (downstream and internal stepped consumers, the latter executed), the explicit-instance mapping round trip, the render and free-code columns endpoints, and the extended vocabulary (golden renders, step-indexed rejections, and an executed program covering ordered windows, date arithmetic, string parsing, quantile and filtered aggregates, whole-frame summaries, null literals, and join validation), and nested expressions (golden renders for every operand position, the depth cap, literal-only positions, and an executed program), reshaping and dtype selectors (golden renders and rejections for select/drop types, dtype aggregations, pivot and unpivot; a cell-for-cell parity check of the pivot lowering against `LazyFrame.pivot` for every offered aggregate on populated, all-null, absent and empty inputs; an executed program; and a check that the generated shapes stay inside the lineage and cardinality models with and without dtypes). Its frame-start cases cover the required `start` argument, an empty frame-mode list rendering to empty code, a `source` step refused at any frame-mode position, `join`/`concat` refused against an empty eligibility list, byte-identical rendering of every other kind in both modes, `NodeData` materialisation for a Data Input (empty list, valid list, broken list, and a Scenario Expander's integer `steps` left alone), a stepped Data Input's sidecar carrying `steps` through `collect_node_configs` and `validate_data_input_config`, a Data Input's codegen/parse round trip (the rendered code after the load scaffold, and a lone `df = (df.head(2))` free-code step reloading in step mode), the hand-edit discard without `_discarded_sidecar`, the placeholder round trip keeping unrenderable steps behind empty code, the save warning naming the Data Input's step, the render endpoint in frame mode, every corpus translation without inputs reloading unchanged on a Data Input, and a free-code step whose code opens with a comment keeping its steps on every frame-start surface through the editor's save and the assistant's apply (`test_comment_first_free_code_keeps_its_steps_through_the_editor_save`, `test_comment_first_free_code_keeps_its_steps_through_the_assistant_apply`).
+- Global constants: `tests/test_config_io.py` covers the file's round trip and every
+  refusal; `tests/test_parser_roundtrip.py` the byte-identical round trip of every kind of
+  constant, with and without a submodel file, and a missing file as a load error that keeps its
+  lines; `tests/test_parser_fail_loudly.py` the constructor keyword and every refused binding;
+  `tests/test_pipeline.py` the keyword, the sentinel and importing generated files;
+  `tests/test_polars_steps.py` the reserved step variable name.
 - `tests/test_polars_steps_catalogue.py` reads the editor's `catalogue.ts` and holds its step kinds and required fields, operators, aggregates, join and fill vocabularies, cast types, function argument shapes and depth cap equal to the renderer's.
 - The free-code cases in `tests/test_polars_steps.py` cover multiline rendering and inclusive line ranges, syntax and control-flow validation without executing code, execution between structured steps, actual runtime error locations, helper-return and trailing-comment round trips, and render API responses, including the columns resolved after each free-code step (a column the code creates, a `Datetime` column's type carried through, a frame-mode `df`) and the reason given when they cannot be (an input with no known columns, code that fails on an empty frame).
 - `tests/test_polars_steps_corpus.py` executes the 45-snippet equivalence corpus in `tests/fixtures/polars_steps_corpus/` (hand-written Polars across 18 categories and each snippet's step translation, auxiliary upstream nodes included) on a normal and a hard synthetic dataset (`tests/assistant_eval/_frames.py`, shared with the assistant evaluation), comparing exact dtypes, null patterns and row order (order-free only where the snippet leaves it unspecified) and requiring the same exception class when the snippet raises; the two snippets the vocabulary does not express (Enum categories, `cut` banding) are listed with their reasons and the suite asserts those constructs are still absent from the vocabulary.
@@ -656,3 +742,22 @@ API and real JSON round-trips rather than mocks:
 Property/round-trip style coverage (`TestRoundTripDrift` in `test_graph_shape_contracts.py`,
 `test_codegen_roundtrip_property.py`) asserts that parse → build → save → parse is stable for
 generated graphs.
+
+- `tests/test_polars_steps.py` covers Constant operands: both positions' golden renders and
+  references, each slot's constant types (comparison, string operator, fill, branch and every
+  typed function argument), the refusal of a type argument and of an invalid name,
+  `reference_problem` on an undefined constant, a wrong type and a negative source value, and the
+  render route's and save's refusals; `tests/test_polars_steps_catalogue.py` holds the editor's
+  `OPERAND_KINDS` equal to the renderer's.
+- `tests/test_global_constants_runs.py` verifies that one graph run under `live` and `nb_batch`
+  reads each source's value in Transform, Data Input and External File code; that `getattr` and
+  f-string reads resolve while an `eval` of a string fails with the untracked-read message; that
+  a missing source value, an undefined name and a load error fail only the reading node; that a
+  Data Output write started under `live` reads the batch scenario's values; that the Model Score
+  builder hands the run's table to `ModelScorer` and deployed Model Score code reads `live`
+  values; that the cached preamble namespace is not mutated; the deploy validator's refusals;
+  that a view pickles; that a trace formula shows and computes a constant's value; and that
+  standalone `run(source=...)` and `score()` agree with the executor, two runs on two threads
+  with a grouped lazy callback each read their own values, a missing source value and a file
+  that fails to load fail the reading node, and a module-level read says where constants are
+  read.

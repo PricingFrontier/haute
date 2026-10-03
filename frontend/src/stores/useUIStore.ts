@@ -28,8 +28,8 @@ interface UIState {
   setPaletteOpen: (open: boolean) => void
   utilityOpen: boolean
   setUtilityOpen: (open: boolean) => void
-  importsOpen: boolean
-  setImportsOpen: (open: boolean) => void
+  constantsOpen: boolean
+  setConstantsOpen: (open: boolean) => void
   assistantOpen: boolean
   /** Opening the panel clears `assistantUnseenOutcome`. */
   setAssistantOpen: (open: boolean) => void
@@ -126,14 +126,14 @@ const useUIStore = create<UIState>()((set) => ({
   paletteOpen: true,
   setPaletteOpen: (open) => set({ paletteOpen: open }),
   utilityOpen: false,
-  setUtilityOpen: (open) => set({ utilityOpen: open, importsOpen: false, assistantOpen: false, gitOpen: false }),
-  importsOpen: false,
-  setImportsOpen: (open) => set({ importsOpen: open, utilityOpen: false, assistantOpen: false, gitOpen: false }),
+  setUtilityOpen: (open) => set({ utilityOpen: open, constantsOpen: false, assistantOpen: false, gitOpen: false }),
+  constantsOpen: false,
+  setConstantsOpen: (open) => set({ constantsOpen: open, utilityOpen: false, assistantOpen: false, gitOpen: false }),
   assistantOpen: false,
   setAssistantOpen: (open) => set({
     assistantOpen: open,
     utilityOpen: false,
-    importsOpen: false,
+    constantsOpen: false,
     gitOpen: false,
     ...(open ? { assistantUnseenOutcome: false } : {}),
   }),
@@ -149,13 +149,13 @@ const useUIStore = create<UIState>()((set) => ({
     assistantPreviewErrorNodeId: nodeId,
     assistantOpen: true,
     utilityOpen: false,
-    importsOpen: false,
+    constantsOpen: false,
     gitOpen: false,
     assistantUnseenOutcome: false,
   }),
   clearAssistantPreviewError: () => set({ assistantPreviewErrorNodeId: null }),
   gitOpen: false,
-  setGitOpen: (open) => set({ gitOpen: open, utilityOpen: false, importsOpen: false, assistantOpen: false }),
+  setGitOpen: (open) => set({ gitOpen: open, utilityOpen: false, constantsOpen: false, assistantOpen: false }),
   mlflowSettingsOpen: false,
   setMlflowSettingsOpen: (open) => set({ mlflowSettingsOpen: open }),
   shortcutsOpen: false,
