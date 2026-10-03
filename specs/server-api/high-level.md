@@ -281,7 +281,11 @@ disconnects.
 **Utility scripts.** `GET/POST/PUT/DELETE /api/utility[/{module}]` manage Python files under
 the project's `utility/` directory — reusable helpers a pipeline's preamble imports via
 `from utility.<module> import *`. Every write is AST-syntax-checked before landing on disk;
-a syntax error is rejected with a line-numbered message, never written half-valid. Create and
+a syntax error is rejected with a line-numbered message, never written half-valid. Create
+also refuses a module name that is a Python hard keyword (`from utility.class import *` cannot
+be written) or a Windows device name (`CON`, `NUL`, `COM1`), with HTTP 400, and one equal to an
+existing module's ignoring case (HTTP 409), on every platform whatever its file system allows,
+so a checkout made on Linux still works on Windows and macOS. Create and
 update also parse every project pipeline that mentions `utility` twice, with its support code
 read as it is and with the module holding the new content, and refuse (HTTP 400, nothing
 written) any name violation the edit adds (codegen "Names cannot collide with support code"),

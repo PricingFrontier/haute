@@ -93,6 +93,37 @@ class TestReadUtilityFile:
 
 
 class TestCreateUtilityFile:
+    @pytest.mark.parametrize(
+        ("name", "status", "message"),
+        [
+            pytest.param("class", 400, "is a Python keyword", id="hard-keyword"),
+            pytest.param("NUL", 400, "reserved device name on Windows", id="device-NUL"),
+            pytest.param("con", 400, "reserved device name on Windows", id="device-con"),
+            pytest.param("COM1", 400, "reserved device name on Windows", id="device-COM1"),
+        ],
+    )
+    def test_refuses_a_name_that_cannot_be_imported_or_checked_out(
+        self, client: TestClient, tmp_path: Path, name: str, status: int, message: str
+    ) -> None:
+        res = client.post("/api/utility", json={"name": name})
+
+        assert res.status_code == status
+        assert message in res.json()["detail"]
+        assert not (tmp_path / "utility" / f"{name}.py").exists()
+
+    def test_refuses_a_name_differing_only_in_case_on_every_platform(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        utility = tmp_path / "utility"
+        utility.mkdir()
+        (utility / "features.py").write_text("x = 1\n", encoding="utf-8")
+
+        res = client.post("/api/utility", json={"name": "Features"})
+
+        assert res.status_code == 409
+        assert "differing only in case" in res.json()["detail"]
+        assert [p.name for p in utility.iterdir()] == ["features.py"]
+
     def test_creates_file_with_default_content(self, client: TestClient, tmp_path: Path) -> None:
         res = client.post("/api/utility", json={"name": "helpers"})
         assert res.status_code == 200

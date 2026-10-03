@@ -8,11 +8,13 @@ nodes can reference via the preamble (``from utility.<module> import *``).
 from __future__ import annotations
 
 import ast
+import keyword
 import re
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
+from haute._config_io import is_windows_reserved_filename
 from haute._io import read_user_text
 from haute._logging import get_logger
 from haute._sandbox import contained_path
@@ -46,6 +48,41 @@ def _validate_module_name(name: str) -> None:
             status_code=400,
             detail=f"Invalid module name: '{name}'. Use only letters, digits, and underscores.",
         )
+
+
+def _validate_new_module_name(name: str, utility_dir: Path) -> None:
+    """Refuse a new module name that cannot be imported, or would break another checkout.
+
+    A hard keyword cannot follow ``from utility.``; a Windows device name
+    (``CON``, ``NUL``, ``COM1``) cannot be a file there; and a name equal to
+    an existing module's ignoring case is one file on Windows and macOS, so a
+    Linux checkout holding both would break on them. Every platform refuses
+    all three, whatever its own file system allows.
+    """
+    if keyword.iskeyword(name):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid module name: '{name}' is a Python keyword, so "
+            f"`from utility.{name} import *` could not be written. Choose another name.",
+        )
+    if is_windows_reserved_filename(name):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid module name: '{name}' is a reserved device name on Windows, "
+            "so the file could not exist there. Choose another name.",
+        )
+    if utility_dir.is_dir():
+        for entry in utility_dir.iterdir():
+            if entry.suffix == ".py" and entry.stem.casefold() == name.casefold():
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Utility file already exists: {entry.name}"
+                    + (
+                        ""
+                        if entry.stem == name
+                        else " (names differing only in case are one file on Windows and macOS)."
+                    ),
+                )
 
 
 def _validate_syntax(content: str) -> tuple[bool, str | None, int | None]:
@@ -171,17 +208,13 @@ async def read_utility_file(module: str) -> UtilityReadResponse:
 async def create_utility_file(body: UtilityCreateRequest) -> UtilityWriteResponse:
     """Create a new utility file in ``utility/``."""
     _validate_module_name(body.name)
-
     d = _utility_dir()
+    _validate_new_module_name(body.name, d)
+
     d.mkdir(exist_ok=True)
     _ensure_init(d)
 
     target = contained_path(d, f"{body.name}.py")
-    if target.exists():
-        raise HTTPException(
-            status_code=409,
-            detail=f"Utility file already exists: {body.name}.py",
-        )
 
     content = body.content or f'"""Utility module: {body.name}."""\n\nimport polars as pl\n'
 
