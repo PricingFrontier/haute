@@ -3752,7 +3752,7 @@ class TestGenTransformEdgeCases:
             if edge["target"] == "enriched"
         ] == [("Replacement_Parent", "enriched")]
 
-        result = runtime_pipeline.run()  # type: ignore[union-attr]
+        result = runtime_pipeline.run(source="batch")  # type: ignore[union-attr]
         if isinstance(result, pl.LazyFrame):
             result = result.collect()
         assert result["value_doubled"].to_list() == [4]  # type: ignore[index]

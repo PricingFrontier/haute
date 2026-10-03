@@ -2545,7 +2545,7 @@ def test_standalone_data_input_declaration_reads_from_the_discovered_project_roo
     namespace: dict[str, object] = {"__file__": str(main)}
     exec(compile(source, str(main), "exec"), namespace)
 
-    frame = namespace["pipeline"].run()  # type: ignore[attr-defined]
+    frame = namespace["pipeline"].run(source="batch")  # type: ignore[attr-defined]
 
     assert frame.lazy().collect().to_dicts() == [{"quote_id": 1}, {"quote_id": 2}]
 

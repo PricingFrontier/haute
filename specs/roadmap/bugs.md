@@ -19,14 +19,9 @@ Current rating behaviour is specified in
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | BUG-12 | Planned | P1 | A save never drops a statement written after the pipeline constructor; such a statement is reported and saving waits for it to move. |
-| BUG-15 | Decision | P2 | A bare `pipeline.run()` routes a source the pipeline has instead of a `batch` scenario no pipeline declares. |
 | BUG-17 | Decision | P3 | A standalone run of a pipeline with a submodel runs it, or refuses up front naming the submodel, instead of reporting it as an unknown node. |
 
 ## Planned improvements
-
-`BUG-02` decides when `onMissing` matters for a table built in the editor, so
-`BUG-01`'s control is easiest to place after it; the fix that stops the
-setting being lost does not wait for it.
 
 ### BUG-12 — A save keeps the statements written after the pipeline constructor
 **Why:** Codegen regenerates a pipeline file from the parsed graph, and the
@@ -63,35 +58,6 @@ preserve markers save and regenerate unchanged.
 `src/haute/_ast_helpers.py::_extract_preamble_from_ast`;
 `src/haute/_ast_helpers.py::_extract_preserved_blocks`;
 `src/haute/parser.py::parse_pipeline_source`.
-
-### BUG-15 — A bare `pipeline.run()` routes a source the pipeline has
-**Why:** `Pipeline.run()` sets the scenario to `"batch"`, while `haute run`
-executes `live` and the editor executes the toolbar's source. No pipeline has a
-source called `batch` unless the analyst adds one, so a Source Switch mapped to
-the pipeline's own sources fails a standalone run. Reproduced on 2 October 2026
-with a two-input switch mapped to `live` and `nb_batch`: `pipeline.run()` raised
-`LiveSwitchScenarioError` ("Live switch 'switch' has no input for scenario
-'batch'"). The scenario also selects batched model scoring (anything but
-`live`), so the default cannot simply become `live` without changing how a
-standalone run scores models.
-
-**Plan:** Decide between making `run()` require a keyword `source` and refuse to
-guess, or defaulting to the pipeline's only non-live source when there is
-exactly one and requiring `source` otherwise. Then implement it, update the
-docstring and the pipeline-config specification, and fix the documentation's
-`pipeline.run()` examples.
-
-**Acceptance:** `pipeline.run(source="nb_batch")` routes the switch's
-`nb_batch` input; a bare `run()` behaves as decided, with any refusal naming the
-sources; and `tests/test_pipeline.py` covers both.
-
-**Dependencies:** None. `run()` already takes a keyword-only `source`, for
-global constants, with today's default `"batch"`; this package owns the
-default.
-
-**Evidence:** `src/haute/pipeline.py::Pipeline.run`;
-`src/haute/_model_scorer.py::_scenario_ctx`;
-`src/haute/_standalone_nodes.py::run_configured_node`.
 
 ### BUG-17 — A standalone run of a pipeline with a submodel says what it cannot do
 **Why:** `Pipeline.submodel()` records an occurrence without loading its

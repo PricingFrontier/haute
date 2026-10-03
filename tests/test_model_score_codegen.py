@@ -338,7 +338,7 @@ class TestModelScoreStandaloneRun:
             "haute._mlflow_io.load_mlflow_model",
             return_value=_stub_scoring_model([0.25, 0.75]),
         ) as mock_load:
-            result = module.pipeline.run()
+            result = module.pipeline.run(source="batch")
 
         assert result.to_dicts() == [
             {"a": 1.0, "b": 2.0, "prediction": 0.25},
@@ -357,7 +357,7 @@ class TestModelScoreStandaloneRun:
             "haute._mlflow_io.load_mlflow_model",
             return_value=_stub_scoring_model([0.25, 0.75]),
         ):
-            result = module.pipeline.run()
+            result = module.pipeline.run(source="batch")
 
         assert result["prediction"].to_list() == [0.25, 0.75]
         assert result["doubled"].to_list() == [0.5, 1.5]

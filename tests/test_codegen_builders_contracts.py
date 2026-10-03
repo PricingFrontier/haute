@@ -114,7 +114,7 @@ def test_live_switch_is_a_declaration_routing_by_the_active_scenario(tmp_path: P
 
     assert "input_scenario_map" not in source
     assert "return live_src" not in source
-    batch = module.pipeline.run()
+    batch = module.pipeline.run(source="batch")
     live = module.pipeline.score(pl.DataFrame({"v": [5]}))
     assert batch.to_dicts() == [{"v": 1, "branch": "batch_src"}]
     assert live.to_dicts() == [{"v": 5, "branch": "live_src"}]
@@ -128,14 +128,14 @@ def test_live_switch_runs_with_its_declared_input_order_and_switch_name(tmp_path
     source, module = _write_and_import(graph, tmp_path)
 
     assert "def Switch(shadow_src, batch_src): ...\n" in source
-    assert module.pipeline.run()["branch"].to_list() == ["shadow_src"]
+    assert module.pipeline.run(source="batch")["branch"].to_list() == ["shadow_src"]
 
     graph = _switch_graph(
         {"missing_live_src": "live", "batch_src": "batch"}, ("batch_src", "shadow_src")
     )
     _source, module = _write_and_import(graph, tmp_path)
 
-    assert module.pipeline.run()["branch"].to_list() == ["batch_src"]
+    assert module.pipeline.run(source="batch")["branch"].to_list() == ["batch_src"]
     with pytest.raises(LiveSwitchScenarioError, match="'Switch' has no input for scenario 'live'"):
         module.pipeline.score(pl.DataFrame({"v": [5]}))
 
@@ -194,7 +194,7 @@ def test_model_score_registered_source_is_read_from_the_sidecar(tmp_path: Path) 
     with patch(
         "haute._mlflow_io.load_mlflow_model", return_value=_stub_scoring_model()
     ) as load_model:
-        result = module.pipeline.run()
+        result = module.pipeline.run(source="batch")
 
     assert result["score"].to_list() == [0.25]
     assert load_model.call_args.kwargs["source_type"] == "registered"

@@ -92,7 +92,7 @@ class TestPipeline:
 
     def test_run(self):
         p = self._simple_pipeline()
-        result = p.run()
+        result = p.run(source="batch")
         assert "y" in result.columns
         assert result["y"].to_list() == [2, 4, 6]
 
@@ -215,7 +215,7 @@ class TestPipeline:
     def test_empty_pipeline_raises(self):
         p = Pipeline("empty")
         with pytest.raises(ValueError, match="no nodes"):
-            p.run()
+            p.run(source="batch")
 
     def test_topo_order_delegates_to_graph_utils(self):
         p = Pipeline("topo")
@@ -276,7 +276,7 @@ class TestPipeline:
 
         # No connect() calls — must raise, not silently use wrong data
         with pytest.raises(ValueError, match="no inbound edges"):
-            p.run()
+            p.run(source="batch")
 
     def test_score_no_edges_raises(self):
         """score() without edges raises rather than silently chaining."""
@@ -331,8 +331,8 @@ class TestPipeline:
         g = p.to_graph()
         assert g["edges"] == []
 
-    def test_run_sets_scenario_ctx_to_batch(self):
-        """Pipeline.run() must set _scenario_ctx to 'batch' during execution."""
+    def test_run_sets_scenario_ctx_to_its_source(self):
+        """Pipeline.run(source=...) sets _scenario_ctx to that source during execution."""
         captured: list[str] = []
         p = Pipeline("ctx_batch")
 
@@ -347,7 +347,7 @@ class TestPipeline:
             return df
 
         p.connect("source", "transform")
-        p.run()
+        p.run(source="batch")
         assert captured == ["batch", "batch"]
         # Context must be reset after run() completes
         assert _scenario_ctx.get() == "batch"  # default
@@ -390,7 +390,7 @@ class TestPipeline:
 
         p.connect("source", "boom")
         with pytest.raises(RuntimeError, match="kaboom"):
-            p.run()
+            p.run(source="batch")
         assert _scenario_ctx.get() == "batch"  # reset despite error
 
     def test_run_raises_typed_rating_miss_from_a_lazy_output(self):
@@ -413,7 +413,7 @@ class TestPipeline:
 
         p.connect("source", "rated")
         with pytest.raises(RatingTableMissError):
-            p.run()
+            p.run(source="batch")
         assert _scenario_ctx.get() == "batch"
 
     @pytest.mark.parametrize(("method", "expected"), [("run", "batch"), ("score", "live")])
@@ -433,7 +433,7 @@ class TestPipeline:
 
         p.connect("source", "tagged")
         runner = getattr(p, method)
-        result = runner() if method == "run" else runner(pl.DataFrame({"x": [1]}))
+        result = runner(source="batch") if method == "run" else runner(pl.DataFrame({"x": [1]}))
 
         assert isinstance(result, pl.DataFrame)
         assert result["ctx"].to_list() == [expected]
@@ -513,7 +513,7 @@ class TestPipelinePortAwareExecution:
 
         p.connect("api_source", "consume", source_port="quotes")
 
-        result = p.run()
+        result = p.run(source="batch")
         assert isinstance(result, pl.DataFrame)
         assert result.to_dict(as_series=False) == {"quote_id": [17]}
 
@@ -541,7 +541,7 @@ class TestPipelinePortAwareExecution:
         p.connect("api_source", "combine", source_port="quotes")
         p.connect("api_source", "combine", source_port="drivers")
 
-        assert p.run().to_dict(as_series=False) == {
+        assert p.run(source="batch").to_dict(as_series=False) == {
             "quote_id": [17],
             "driver_id": [31],
         }
@@ -872,7 +872,7 @@ class TestPipelineEdgeCases:
 
         p.connect("a", "b")
         with pytest.raises(ValueError, match="disconnected|no inbound edges"):
-            p.run()
+            p.run(source="batch")
 
     def test_self_loop_detected(self):
         p = Pipeline("loop")
@@ -909,7 +909,7 @@ class TestPipelineEdgeCases:
             return left.hstack(right.select("c"))
 
         p.connect("a", "b").connect("a", "c").connect("b", "d").connect("c", "d")
-        result = p.run()
+        result = p.run(source="batch")
         assert result["b"].to_list() == [11]
         assert result["c"].to_list() == [101]
 
@@ -1053,7 +1053,7 @@ class TestPipelineEdgeCases:
     def test_empty_pipeline_run_raises(self):
         p = Pipeline("empty")
         with pytest.raises(ValueError, match="no nodes"):
-            p.run()
+            p.run(source="batch")
 
     def test_no_edges_multiple_nodes_raises(self):
         p = Pipeline("no_edges")
@@ -1067,7 +1067,7 @@ class TestPipelineEdgeCases:
             return df
 
         with pytest.raises(ValueError, match="no inbound edges"):
-            p.run()
+            p.run(source="batch")
 
     def test_to_graph_config_filters_internal_keys(self):
         p = Pipeline("cfg_filter")
@@ -1182,7 +1182,7 @@ class TestOutputResolution:
         # 'audit' is wired after 'result' so it sorts last in topo order, but
         # 'result' is the declared output that must be returned.
         p.connect("src", "result").connect("result", "audit")
-        out = p.run()
+        out = p.run(source="batch")
         assert "kept" in out.columns
         assert "sink" not in out.columns
 
@@ -1204,7 +1204,7 @@ class TestOutputResolution:
 
         p.connect("src", "left").connect("src", "right")
         with pytest.raises(ExecutionError, match="multiple terminal nodes"):
-            p.run()
+            p.run(source="batch")
 
     def test_run_multiple_output_nodes_raises(self):
         p = Pipeline("two_outputs")
@@ -1223,7 +1223,7 @@ class TestOutputResolution:
 
         p.connect("src", "out_a").connect("src", "out_b")
         with pytest.raises(ExecutionError, match="multiple @pipeline.output"):
-            p.run()
+            p.run(source="batch")
 
     def test_score_returns_declared_output(self):
         p = Pipeline("score_out")
@@ -1317,7 +1317,7 @@ class TestNodeArityValidation:
 
         p.connect("a", "one_input").connect("b", "one_input")
         with pytest.raises(ExecutionError, match="accepts 1 input.*2 edge"):
-            p.run()
+            p.run(source="batch")
 
     def test_multi_param_node_under_wired_raises_haute_error(self):
         """Under-wiring must raise an actionable HauteError, not a raw TypeError."""
@@ -1333,7 +1333,7 @@ class TestNodeArityValidation:
 
         p.connect("a", "needs_two")
         with pytest.raises(ExecutionError, match="accepts 2 input.*1 edge"):
-            p.run()
+            p.run(source="batch")
 
     def test_node_call_extra_dfs_raises(self):
         def one(df: pl.DataFrame) -> pl.DataFrame:
@@ -1401,7 +1401,7 @@ class TestInstanceReferencesFailLoud:
 
         p.connect("src", "inst")
         with pytest.raises(ExecutionError, match="instanceOf.*inputMapping|cannot resolve"):
-            p.run()
+            p.run(source="batch")
 
     def test_instance_decorator_without_reference_values_still_raises(self):
         p = Pipeline("instance_marker")
@@ -1417,7 +1417,7 @@ class TestInstanceReferencesFailLoud:
         p.connect("src", "inst")
 
         with pytest.raises(ExecutionError, match="instance"):
-            p.run()
+            p.run(source="batch")
         with pytest.raises(ExecutionError, match="instance"):
             p.score(pl.DataFrame({"x": [2]}))
 
@@ -1429,7 +1429,7 @@ class TestInstanceReferencesFailLoud:
             return pl.DataFrame({"stub": [1]})
 
         with pytest.raises(ExecutionError, match="instance"):
-            p.run()
+            p.run(source="batch")
         with pytest.raises(ExecutionError, match="instance"):
             p.score(pl.DataFrame({"x": [2]}))
 
@@ -1550,3 +1550,65 @@ class TestGlobalConstantsRuntimeApi:
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             assert module.global_constants is Pipeline("x").global_constants
+
+
+def _switch_pipeline(tmp_path, *, sources: list[str] | None) -> Pipeline:
+    """A file-backed pipeline whose switch routes ``live`` and ``nb_batch``."""
+    import json
+
+    from tests.conftest import write_node_config
+
+    def constant(name: str, origin: str) -> str:
+        values = {"values": [{"name": "origin", "value": origin}]}
+        return write_node_config(tmp_path, NodeType.CONSTANT, name, values)
+
+    live = constant("live_rows", "live")
+    batch = constant("nb_rows", "nb_batch")
+    switch = write_node_config(
+        tmp_path,
+        NodeType.LIVE_SWITCH,
+        "switch",
+        {"input_scenario_map": {"live_rows": "live", "nb_rows": "nb_batch"}},
+    )
+    source = (
+        "import haute\n\n"
+        'pipeline = haute.Pipeline("p")\n\n\n'
+        f'@pipeline.constant(config="{live}")\n'
+        "def live_rows(): ...\n\n\n"
+        f'@pipeline.constant(config="{batch}")\n'
+        "def nb_rows(): ...\n\n\n"
+        f'@pipeline.live_switch(config="{switch}")\n'
+        "def switch(live_rows, nb_rows): ...\n\n\n"
+        'pipeline.connect("live_rows", "switch")\n'
+        'pipeline.connect("nb_rows", "switch")\n'
+    )
+    path = tmp_path / "main.py"
+    path.write_text(source, encoding="utf-8")
+    if sources is not None:
+        sidecar = {"sources": sources, "active_source": sources[0]}
+        (tmp_path / "main.haute.json").write_text(json.dumps(sidecar), encoding="utf-8")
+    namespace: dict = {"__file__": str(path), "__name__": "pipeline_under_test"}
+    exec(compile(source, str(path), "exec"), namespace)
+    return namespace["pipeline"]
+
+
+class TestRunSource:
+    """``run()`` routes the source it is given and never guesses one."""
+
+    def test_run_routes_the_named_source(self, tmp_path) -> None:
+        pipeline = _switch_pipeline(tmp_path, sources=["live", "nb_batch"])
+
+        assert pipeline.run(source="nb_batch").lazy().collect()["origin"].to_list() == ["nb_batch"]
+        assert pipeline.run(source="live").lazy().collect()["origin"].to_list() == ["live"]
+
+    def test_a_bare_run_is_refused_naming_the_pipelines_sources(self, tmp_path) -> None:
+        pipeline = _switch_pipeline(tmp_path, sources=["live", "nb_batch"])
+
+        with pytest.raises(TypeError, match=r"source=.*sources are live, nb_batch"):
+            pipeline.run()
+
+    def test_without_a_sidecar_the_only_source_is_live(self, tmp_path) -> None:
+        pipeline = _switch_pipeline(tmp_path, sources=None)
+
+        with pytest.raises(TypeError, match=r"sources are live\."):
+            pipeline.run()

@@ -156,8 +156,8 @@ through `_resolve_output_node`: an explicit `@pipeline.output` node wins if ther
 otherwise the single node with no outgoing edge; otherwise raise, naming every candidate node.
 A lazy output is collected by `_collect_standalone_output` through Haute's
 `execution_collect` inside the call's scenario context, so `run()` and `score()` always return a
-`pl.DataFrame`, a node reading the scenario context during collection observes `batch` or
-`live`, and typed Haute errors raised while collecting (such as `RatingTableMissError` from a
+`pl.DataFrame`, a node reading the scenario context during collection observes the run's
+source (`run(source=...)`) or `live` (`score()`), and typed Haute errors raised while collecting (such as `RatingTableMissError` from a
 rating step's miss guard) keep their types; the scenario context is reset whether collection
 succeeds or fails. An eager output is returned unchanged.
 `Pipeline.to_graph()` converts the same live objects into a React-Flow-shaped plain `dict`,
@@ -504,7 +504,10 @@ it on the reading node instead of aborting the walk, and every other run propaga
   'x' must be zero or more; it is -1 for source 'nb_batch'.`. The render request
   (`PolarsStepsRenderRequest`) takes optional `global_constants`; given them, the first failing
   reference is the response's step problem.
-- `Pipeline.run` takes a keyword-only `source` (default `"batch"`); it and `Pipeline.score`
+- `Pipeline.run` takes a keyword-only `source`, which it requires: without one it raises
+  `TypeError` from `Pipeline._missing_source_message`, which names the sources of the
+  `.haute.json` sidecar beside the first node's file (read by
+  `src/haute/_sidecar.py::read_sidecar_state`; `live` when there is none). It and `Pipeline.score`
   (which uses `live`) set `_scenario_ctx` to that source for the run and build the table with
   `Pipeline._run_constants`, which loads a declared file through
   `src/haute/parser.py::load_declared_global_constants` from the pipeline directory that

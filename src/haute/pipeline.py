@@ -6,6 +6,7 @@ import functools
 import inspect
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Self, cast
 
 import polars as pl
@@ -566,7 +567,7 @@ class Pipeline(NodeRegistry):
         def result(transform): ...
 
         pipeline.connect("read_data", "transform").connect("transform", "result")
-        result = pipeline.run()
+        result = pipeline.run(source="live")
     """
 
     def __init__(
@@ -658,6 +659,25 @@ class Pipeline(NodeRegistry):
             terminals=[n.name for n in leaves],
         )
 
+    def _missing_source_message(self) -> str:
+        """Why ``run()`` needs a source, naming the sources the pipeline's sidecar lists."""
+        message = (
+            'pipeline.run() needs the source to run under, such as pipeline.run(source="live")'
+        )
+        file = getattr(self._nodes[0].fn, "__globals__", {}).get("__file__")
+        if not isinstance(file, str) or not file:
+            return f"{message}; the pipeline's sources are listed in its .haute.json sidecar."
+        from haute._sidecar import SidecarModel, read_sidecar_state
+
+        sidecar = read_sidecar_state(Path(file))
+        if sidecar.state == "absent":
+            sources = SidecarModel().sources
+        elif sidecar.data is not None:
+            sources = sidecar.data.sources
+        else:
+            return f"{message}; its sidecar {sidecar.path.name} could not be read for its sources."
+        return f"{message}. This pipeline's sources are {', '.join(sources)}."
+
     def _run_constants(self, source: str) -> GlobalConstantsNamespace:
         """The run's global constants for *source*, from the file the constructor names.
 
@@ -723,16 +743,20 @@ class Pipeline(NodeRegistry):
         ]
         outputs[n.name] = n._invoke(tuple(input_dfs), constants)
 
-    def run(self, *, source: str = "batch") -> pl.DataFrame:
+    def run(self, *, source: str | None = None) -> pl.DataFrame:
         """Execute the full pipeline under *source*, following edges for data flow.
 
-        *source* is what Source Switches route on and which value each global
-        constant takes.
+        *source* is required: it is what Source Switches route on, which value
+        each global constant takes, and (anything but ``"live"``) selects
+        batched model scoring. A run without it is refused, naming the
+        pipeline's sources, rather than guessing one.
         """
         from haute._model_scorer import _scenario_ctx
 
         if not self._nodes:
             raise ValueError("Pipeline has no nodes")
+        if source is None:
+            raise TypeError(self._missing_source_message())
 
         _token = _scenario_ctx.set(source)
         try:

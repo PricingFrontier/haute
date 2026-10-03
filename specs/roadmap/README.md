@@ -19,7 +19,7 @@ or maintenance issue; `P3` opportunistic work.
 |---|---|---|
 | [Assistant](assistant.md) | Blocking data findings, structured step authoring, typed banding and rating, item-level edits and per-model qualification (all deferred) | — |
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup, one worker primitive | `ROAD-WORKER-05` |
-| [Bugs](bugs.md) | Defects found outside component work: rating misses in the editor, dead optimiser settings, Load File pickles, editor pickers, labels and controls that disagree with the engine, statements a save drops, code boxes that see different names in the editor, standalone and deployed, and a bare `pipeline.run()` | `BUG-01` |
+| [Bugs](bugs.md) | Defects found outside component work: statements a save drops, and standalone runs of a pipeline with a submodel | `BUG-12` |
 | [Caching](caching.md) | Planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache identity | `CACHE-S17` |
 | [Engineering quality](engineering-quality.md) | Model-training test cost, order- and load-sensitive tests, compatibility shard balance, dead code, test organisation | `ENGQ-CI03` |
 | [Explore and EDA](explore-eda.md) | Advanced pivot and PivotChart parity | — |

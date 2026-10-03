@@ -158,11 +158,11 @@ before calling the node regardless of whether `instanceOf` or `inputMapping` is 
 codegen may resolve an instance into a concrete generated function; the live registry may not
 silently treat an unresolved instance as an ordinary Polars node.
 
-> NOTE: `run()` runs under the scenario `"batch"`, a source no pipeline has unless the analyst
-> adds one, so a Source Switch mapped to the pipeline's own sources fails a bare `run()` with
-> `LiveSwitchScenarioError`.
-> [BUG-15](../roadmap/bugs.md#bug-15--a-bare-pipelinerun-routes-a-source-the-pipeline-has)
-> decides which source a bare `run()` routes.
+`run()` takes the source to run under as the keyword `source`, which it requires: a bare
+`run()` raises `TypeError` before any node runs, naming the sources the pipeline's
+`.haute.json` sidecar lists (`live` alone when there is no sidecar), because no default source
+is right for every pipeline. The source is what Source Switches route on, which value each
+global constant takes, and (anything but `live`) selects batched model scoring.
 
 **Project & discovery.** A Haute project is a directory containing `haute.toml` that also
 sits inside a git repository. Every surface that binds one pipeline, including `run`, `lint`,
@@ -472,8 +472,8 @@ Source Switches route on:
 - the optimiser, and a Data Output write started under `live`, use the graph's batch scenario
   (its Source Switches' one non-live source, or `"batch"`), as they do today;
 - deployed scoring uses `live`;
-- `pipeline.run(source=...)` uses the source it is given (by default `"batch"`, the scenario a
-  standalone run uses today), and `pipeline.score()` and `haute run` use `live`.
+- `pipeline.run(source=...)` uses the source it is given, which it requires, and
+  `pipeline.score()` and `haute run` use `live`.
 
 A run binds concrete values, never a lookup that depends on the calling thread, so a lazy
 Polars callback that reads a constant during collection reads the run's value on whichever

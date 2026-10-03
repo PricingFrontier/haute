@@ -217,7 +217,7 @@ def test_one_frame_api_input_run_matches_executor_by_frame_label(
     )
 
     module = _write_and_import(graph, isolated_project)
-    standalone = _collect(module.pipeline.run())
+    standalone = _collect(module.pipeline.run(source="batch"))
     reference = _executor_frame(graph, "transform", source="batch")
 
     assert standalone["double_id"].to_list() == [14, 22]
@@ -249,7 +249,7 @@ def test_uncached_api_input_generated_run_matches_executor_after_snapshot_build(
     )
     module = _write_and_import(graph, isolated_project)
 
-    standalone_direct = _collect(module.pipeline.run())
+    standalone_direct = _collect(module.pipeline.run(source="batch"))
 
     api_config = graph.nodes[0].data.config
     data_path = Path(api_config["path"])
@@ -257,7 +257,7 @@ def test_uncached_api_input_generated_run_matches_executor_after_snapshot_build(
 
     build_test_api_input_snapshots(data_path, api_config)
 
-    standalone_cached = _collect(module.pipeline.run())
+    standalone_cached = _collect(module.pipeline.run(source="batch"))
     executor_cached = _executor_frame(graph, "transform", source="batch")
     assert_frame_equal(standalone_cached, executor_cached)
     assert_frame_equal(standalone_direct, standalone_cached)
@@ -297,7 +297,7 @@ def test_multi_frame_api_input_run_matches_executor_by_each_frame_label(
     )
 
     module = _write_and_import(graph, isolated_project)
-    standalone = _collect(module.pipeline.run())
+    standalone = _collect(module.pipeline.run(source="batch"))
     reference = _executor_frame(graph, "transform", source="batch")
 
     assert standalone.to_dicts() == [
@@ -330,7 +330,7 @@ def test_scenario_expander_run_matches_executor_batch(tmp_path):
     graph = PipelineGraph(nodes=[src, expander], edges=[_edge("c", "exp")])
 
     module = _write_and_import(graph, tmp_path)
-    standalone = _collect(module.pipeline.run())
+    standalone = _collect(module.pipeline.run(source="batch"))
     reference = _executor_frame(graph, "exp", source="batch")
 
     # The generated body genuinely expanded (not a passthrough of the 1-row src).
@@ -349,7 +349,7 @@ def test_scenario_expander_saved_file_is_not_a_passthrough(tmp_path):
     )
     graph = PipelineGraph(nodes=[src, expander], edges=[_edge("c", "exp")])
     module = _write_and_import(graph, tmp_path)
-    result = _collect(module.pipeline.run())
+    result = _collect(module.pipeline.run(source="batch"))
     assert result.height == 7  # 1 row × 7 steps, not a 1-row passthrough
     assert "scenario_index" in result.columns
 
@@ -399,7 +399,7 @@ def test_optimiser_apply_run_matches_executor_batch(tmp_path, _widen_sandbox_roo
     graph = PipelineGraph(nodes=[src, apply], edges=[_edge("rb", "apply")])
 
     module = _write_and_import(graph, tmp_path)
-    standalone = _collect(module.pipeline.run())
+    standalone = _collect(module.pipeline.run(source="batch"))
     reference = _executor_frame(graph, "apply", source="batch")
 
     # The generated body genuinely applied the artifact (not a passthrough).
@@ -431,12 +431,12 @@ def _live_switch_graph() -> tuple[PipelineGraph, GraphNode]:
 
 
 def test_live_switch_batch_run_routes_batch_branch(tmp_path):
-    """pipeline.run() (source=batch) must route the BATCH input — the exact
+    """pipeline.run(source="batch") (source=batch) must route the BATCH input — the exact
     divergence F000 reported (standalone hard-wired the live branch)."""
     graph, _ = _live_switch_graph()
     module = _write_and_import(graph, tmp_path)
 
-    standalone = _collect(module.pipeline.run())  # run() -> _scenario_ctx="batch"
+    standalone = _collect(module.pipeline.run(source="batch"))  # run() -> _scenario_ctx="batch"
     reference = _executor_frame(graph, "sw", source="batch")
 
     assert standalone["v"].to_list() == [2]  # batch_src, not the live branch
@@ -495,7 +495,7 @@ def test_modelling_shared_first_input_semantics_match_executor_batch(tmp_path):
     )
 
     module = _write_and_import(graph, tmp_path)
-    standalone = _collect(module.pipeline.run())
+    standalone = _collect(module.pipeline.run(source="batch"))
     reference = _executor_frame(graph, "m", source="batch")
     assert_frame_equal(standalone, reference)
     assert standalone["x"].to_list() == [3]
@@ -521,7 +521,7 @@ def test_edge_join_run_matches_executor_batch(tmp_path):
     )
 
     module = _write_and_import(graph, tmp_path)
-    standalone = _collect(module.pipeline.run())
+    standalone = _collect(module.pipeline.run(source="batch"))
     reference = _executor_frame(graph, "j", source="batch")
 
     assert standalone.to_dicts() == [{"key": 1, "premium": 100, "region": "north"}]
@@ -537,7 +537,7 @@ def test_constant_run_matches_executor_batch(tmp_path):
     )
 
     module = _write_and_import(graph, tmp_path)
-    standalone = _collect(module.pipeline.run())
+    standalone = _collect(module.pipeline.run(source="batch"))
     reference = _executor_frame(graph, "c", source="batch")
 
     assert standalone.to_dicts() == [{"rate": 0.05, "cap": 1000}]
@@ -568,7 +568,7 @@ def test_banding_run_matches_executor_batch(tmp_path):
     graph = PipelineGraph(nodes=[src, band], edges=[_edge("c", "band")])
 
     module = _write_and_import(graph, tmp_path)
-    standalone = _collect(module.pipeline.run())
+    standalone = _collect(module.pipeline.run(source="batch"))
     reference = _executor_frame(graph, "band", source="batch")
 
     # The decorator genuinely banded (not a passthrough of the source row).
@@ -602,7 +602,7 @@ def test_rating_step_run_matches_executor_batch(tmp_path):
     graph = PipelineGraph(nodes=[src, rate], edges=[_edge("c", "rate")])
 
     module = _write_and_import(graph, tmp_path)
-    standalone = _collect(module.pipeline.run())
+    standalone = _collect(module.pipeline.run(source="batch"))
     reference = _executor_frame(graph, "rate", source="batch")
 
     assert standalone["region_factor"].to_list() == [1.1]
@@ -658,7 +658,7 @@ def test_model_score_run_matches_executor_batch(tmp_path, code):
 
     module = _write_and_import(graph, tmp_path)
     with patch("haute._mlflow_io.load_mlflow_model", return_value=_stub_scoring_model()):
-        standalone = _collect(module.pipeline.run())
+        standalone = _collect(module.pipeline.run(source="batch"))
         reference = _executor_frame(graph, "score", source="batch")
 
     assert standalone["prediction"].to_list() == [0.5]
@@ -682,7 +682,7 @@ def test_explore_hook_run_matches_executor_batch(tmp_path):
     graph = _explore_graph("df = df.with_columns(doubled=pl.col('premium') * 2)")
 
     module = _write_and_import(graph, tmp_path)
-    standalone = _collect(module.pipeline.run())
+    standalone = _collect(module.pipeline.run(source="batch"))
     reference = _executor_frame(graph, "ex", source="batch")
 
     assert standalone["doubled"].to_list() == [200.0]
@@ -695,7 +695,7 @@ def test_explore_code_naming_its_input_fails_on_both_surfaces(tmp_path):
 
     module = _write_and_import(graph, tmp_path)
     with pytest.raises(AttributeError):
-        module.pipeline.run()
+        module.pipeline.run(source="batch")
     with pytest.raises(NameError, match="rows"):
         _executor_frame(graph, "ex", source="batch")
 
@@ -721,7 +721,7 @@ def test_model_score_code_naming_its_input_fails_on_both_surfaces(tmp_path):
     module = _write_and_import(graph, tmp_path)
     with patch("haute._mlflow_io.load_mlflow_model", return_value=_stub_scoring_model()):
         with pytest.raises(AttributeError):
-            module.pipeline.run()
+            module.pipeline.run(source="batch")
         with pytest.raises(NameError, match="features"):
             _executor_frame(graph, "score", source="batch")
 
@@ -747,7 +747,7 @@ def test_data_input_hook_run_matches_executor_batch(isolated_project: Path) -> N
     graph = PipelineGraph(nodes=[source], edges=[])
 
     module = _write_and_import(graph, isolated_project)
-    standalone = _collect(module.pipeline.run())
+    standalone = _collect(module.pipeline.run(source="batch"))
     reference = _executor_frame(graph, "src", source="batch")
 
     assert standalone["policy_id"].to_list() == [2, 3]
@@ -770,7 +770,7 @@ def test_external_file_hook_run_matches_executor_batch(isolated_project: Path) -
     graph = PipelineGraph(nodes=[source, external], edges=[_edge("source", "external")])
 
     module = _write_and_import(graph, isolated_project)
-    standalone = _collect(module.pipeline.run())
+    standalone = _collect(module.pipeline.run(source="batch"))
     reference = _executor_frame(graph, "external", source="batch")
 
     assert standalone["scaled"].to_list() == [6]
@@ -818,7 +818,7 @@ def test_output_run_matches_executor_batch(tmp_path):
     graph = _output_graph()
     module = _write_and_import(graph, tmp_path)
 
-    standalone = _collect(module.pipeline.run())
+    standalone = _collect(module.pipeline.run(source="batch"))
     reference = _executor_frame(graph, "out", source="batch")
 
     # The generated body genuinely assembled (nested doc, not raw columns).
@@ -892,7 +892,7 @@ def test_output_late_nested_fields_survive_full_document_schema_inference(
     )
 
     module = _write_and_import(graph, isolated_project)
-    standalone = _collect(module.pipeline.run())
+    standalone = _collect(module.pipeline.run(source="batch"))
     reference = _executor_frame(graph, "out", source="batch")
 
     assert standalone.height == 102
@@ -925,14 +925,14 @@ def test_generated_api_input_observes_sidecar_only_path_edit(
     graph = PipelineGraph(nodes=[api], edges=[])
     module = _write_and_import(graph, isolated_project)
 
-    assert _collect(module.pipeline.run())["value"].to_list() == [1]
+    assert _collect(module.pipeline.run(source="batch"))["value"].to_list() == [1]
 
     sidecar = isolated_project / config_path_for_node(NodeType.API_INPUT, "quotes")
     sidecar.write_text(
         json.dumps({"path": "second.parquet", "contract": "opaque"}),
         encoding="utf-8",
     )
-    assert _collect(module.pipeline.run())["value"].to_list() == [2]
+    assert _collect(module.pipeline.run(source="batch"))["value"].to_list() == [2]
 
 
 def test_generated_and_canvas_inputs_share_project_anchor_outside_cwd(
@@ -970,7 +970,7 @@ def test_generated_and_canvas_inputs_share_project_anchor_outside_cwd(
         module = _write_and_import(graph, pipeline_dir)
         monkeypatch.chdir(unrelated)
 
-        generated = _collect(module.pipeline.run())
+        generated = _collect(module.pipeline.run(source="batch"))
         canvas = _executor_frame(graph, "api", source="batch")
     finally:
         set_project_root(original_root)
@@ -1001,18 +1001,18 @@ def test_generated_external_file_observes_sidecar_loader_edits_and_rejects_malfo
     )
     module = _write_and_import(graph, isolated_project)
 
-    assert _collect(module.pipeline.run())["factor"].to_list() == [2]
+    assert _collect(module.pipeline.run(source="batch"))["factor"].to_list() == [2]
 
     sidecar = isolated_project / config_path_for_node(NodeType.EXTERNAL_FILE, "lookup")
     sidecar.write_text(
         json.dumps({"path": "second.pkl", "fileType": "pickle"}),
         encoding="utf-8",
     )
-    assert _collect(module.pipeline.run())["factor"].to_list() == [5]
+    assert _collect(module.pipeline.run(source="batch"))["factor"].to_list() == [5]
 
     sidecar.write_text(json.dumps({"path": "second.pkl"}), encoding="utf-8")
     with pytest.raises(ValueError, match="fileType"):
-        module.pipeline.run()
+        module.pipeline.run(source="batch")
 
 
 def test_generated_retained_input_fails_on_malformed_sidecar(
@@ -1036,4 +1036,4 @@ def test_generated_retained_input_fails_on_malformed_sidecar(
     sidecar.write_text("[]", encoding="utf-8")
 
     with pytest.raises(ValueError, match="must contain an object"):
-        module.pipeline.run()
+        module.pipeline.run(source="batch")

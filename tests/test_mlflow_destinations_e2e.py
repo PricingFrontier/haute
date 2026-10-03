@@ -653,7 +653,7 @@ _SERVER = TrackingConfig("server", {server_uri!r}, "http://stub.invalid:5000", "
 _mlflow_settings._resolve_server = lambda stored=None: _SERVER
 
 namespace = runpy.run_path("pipeline.py", run_name="haute_generated_pipeline")
-result = namespace["pipeline"].run()
+result = namespace["pipeline"].run(source="batch")
 if isinstance(result, pl.LazyFrame):
     result = result.collect()
 result.write_parquet("pipeline_output.parquet")
