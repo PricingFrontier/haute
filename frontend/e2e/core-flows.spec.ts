@@ -292,7 +292,6 @@ test.describe("core browser flows", () => {
     await expect(
       page.getByRole("table", { name: "Interaction surface for channel & mileage" }),
     ).toBeVisible()
-    await expect(page.getByText("Additive term scores on the model", { exact: false })).toBeVisible()
   })
 
   test("persists node edits through save and reload", async ({ page }) => {

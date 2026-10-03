@@ -1652,21 +1652,22 @@ class TestLaunchBackgroundWorker:
 
     def test_success_path_runs_progress_iteration_and_completes(self, tmp_path):
         """A TrainingJob whose run() invokes progress + on_iteration (past the
-        loss-history cap) drives the success closures and the truncation arm
-        (1075-1076); the job ends completed and the temp parquet is unlinked."""
+        loss-history cap) drives the success closures and the thinning arm;
+        the job ends completed and the temp parquet is unlinked."""
         from haute.routes import _training_lifecycle as _train_service
+        from haute.routes import _training_worker
 
         store, service, job_id = self._service_and_job()
         context = _training_execution_context()
         tmp_parquet = str(tmp_path / "train.parquet")
         Path(tmp_parquet).write_text("x", encoding="utf-8")
 
-        cap = _train_service._max_train_loss_history()
+        cap = _training_worker._max_train_loss_history()
 
         class FakeJob(_SuccessfulTrainingJob):
             def run(self, progress, on_iteration, **kwargs):
                 progress("working", 0.5)
-                # Push more iterations than the cap so 1075-1076 truncates.
+                # Push more iterations than the cap so the live history thins.
                 for i in range(cap + 3):
                     on_iteration(
                         i, cap + 3, {"RMSE": float(i)}, {"iteration": float(i), "train_RMSE": i}
@@ -1696,13 +1697,10 @@ class TestLaunchBackgroundWorker:
 
         job = store.require_job(job_id)
         assert job["status"] == "completed"
-        # The loss history keeps the engine's prefixed rows, capped and flagged truncated;
-        # the readout keeps the engine's own metric name.
-        assert job["train_loss_history_truncated"] is True
-        pushed = [{"iteration": float(i), "train_RMSE": i} for i in range(cap + 3)]
-        # The base fake's run adds its own row last.
-        own = {"iteration": 1.0, "train_rmse": 0.5}
-        assert job["train_loss_history"] == [*pushed, own][-cap:]
+        # The base fake's run adds its own row last: iteration 1 again, so it is a
+        # new fit whose live history starts afresh, untruncated.
+        assert job["train_loss_history"] == [{"iteration": 1.0, "train_rmse": 0.5}]
+        assert job["train_loss_history_truncated"] is False
         # Temp parquet removed in the worker finally (1229->exit true side).
         assert not Path(tmp_parquet).exists()
 

@@ -50,8 +50,9 @@ the workspace. Related charts stack when their container is narrow.
 - Residual distribution and actual/predicted scatter use aligned responsive
   layouts, numeric residual ticks and explicit reference lines. Existing weighting,
   sampling disclosure and diagnostic statistics are preserved.
-- Feature importance offers search and Top 20/All controls, explains each available
-  importance method, and distinguishes signed values spatially around zero.
+- Feature importance offers search and Top 20/All controls, a button per available
+  importance method (the docs explain each), and distinguishes signed values spatially
+  around zero.
 - AvE and PDP share the selected feature and feature search while switching panes.
   A selection unavailable in a pane shows a clear unavailable message rather than
   silently selecting another feature. A new node or training result resets this
@@ -440,8 +441,8 @@ evaluation/tuning artifacts.
 
 Live tuning progress is monotonic over planning, trial/fold fits, final fit and
 publication and exposes phase, one-based trial/fold indices and counts,
-completed/total fits, and best objective so far. Only the final fit contributes model
-loss history. Live training and exported scripts use the same config builder and
+completed/total fits, and best objective so far. Every trial fit draws its own live
+loss curve, but only the final fit contributes model loss history. Live training and exported scripts use the same config builder and
 produce equivalent evaluation plans, fit bounds and result artifacts.
 
 ## Design rationale

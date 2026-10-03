@@ -212,15 +212,13 @@ function PdpChart({ data }: { data: PdpFeatureRow }) {
       </ResponsiveChart>
       {data.type === "numeric" && (
         <div className="validation-bin-detail" role="status" aria-live="polite">
-          {selected ? (
+          {selected && (
             <>
               <strong>
                 {data.feature}: {levelLabel(selected.value)}
               </strong>
               <span>Average prediction: {selected.avg_prediction}</span>
             </>
-          ) : (
-            <span>Hover or focus a point to inspect its prediction.</span>
           )}
         </div>
       )}

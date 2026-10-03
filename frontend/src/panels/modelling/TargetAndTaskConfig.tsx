@@ -202,25 +202,26 @@ export function TargetAndTaskConfig({
                   >
                     Variance power <FailoverHelp label={TWEEDIE_HELP} />
                   </label>
-                  {validVariancePower && (
-                    <input
-                      aria-label="Adjust variance power"
-                      type="range"
-                      min={1.01}
-                      max={1.99}
-                      step={0.01}
-                      value={variancePower}
-                      aria-valuetext={String(variancePower)}
-                      onChange={(event) =>
-                        onUpdate(
-                          "variance_power",
-                          parseFloat(event.target.value),
-                        )
-                      }
-                      className="mt-0.5 w-full accent-[var(--model-accent)]"
-                    />
-                  )}
-                  <div className="mt-1 flex items-center gap-2">
+                  {/* A rejected draft's message wraps onto its own line. */}
+                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2 [&>[role=alert]]:basis-full">
+                    {validVariancePower && (
+                      <input
+                        aria-label="Adjust variance power"
+                        type="range"
+                        min={1.01}
+                        max={1.99}
+                        step={0.01}
+                        value={variancePower}
+                        aria-valuetext={String(variancePower)}
+                        onChange={(event) =>
+                          onUpdate(
+                            "variance_power",
+                            parseFloat(event.target.value),
+                          )
+                        }
+                        className="min-w-0 flex-1 accent-[var(--model-accent)]"
+                      />
+                    )}
                     <NumberField
                       label="Variance power"
                       value={variancePower}
@@ -231,17 +232,11 @@ export function TargetAndTaskConfig({
                       integer={false}
                       required
                       step="any"
+                      className="h-7 w-14 shrink-0 rounded px-1.5 py-1 font-mono text-xs [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                       onCommit={(value) =>
                         onUpdate("variance_power", value ?? null)
                       }
                     />
-                    <span
-                      className="text-[12px]"
-                      style={{ color: "var(--text-muted)" }}
-                    >
-                      Choose a value greater than 1 and less than 2. Poisson and
-                      Gamma are the limiting cases.
-                    </span>
                   </div>
                   {variancePower !== undefined &&
                     !(variancePower > 1 && variancePower < 2) && (

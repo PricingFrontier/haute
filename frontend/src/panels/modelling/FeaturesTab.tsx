@@ -18,14 +18,6 @@ interface FeaturesTabProps {
 
 type ImportanceType = "prediction" | "loss" | "shap" | "beeswarm"
 
-const descriptions: Record<ImportanceType, string> = {
-  prediction: "Relative feature importance reported by the fitted model.",
-  loss: "Signed loss-based feature importance. Features are ranked by absolute magnitude.",
-  shap: "SHAP importance is mean absolute SHAP value.",
-  beeswarm:
-    "Each dot is one sampled row: placed by the feature's SHAP value for that row, coloured by the row's feature value.",
-}
-
 export function FeaturesTab({ result }: FeaturesTabProps) {
   const [importanceType, setImportanceType] = useState<ImportanceType>("prediction")
   const [search, setSearch] = useState("")
@@ -123,9 +115,6 @@ export function FeaturesTab({ result }: FeaturesTabProps) {
           </label>
         )}
       </div>
-      <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>
-        {descriptions[importanceType]}
-      </p>
       {beeswarm ? (
         <>
           <p className="text-[12px]" style={{ color: "var(--text-muted)" }}>

@@ -106,10 +106,8 @@ describe("SummaryTab", () => {
       Node.DOCUMENT_POSITION_FOLLOWING,
     )
     expect(within(finalMetrics).getByText("0.4567")).toBeInTheDocument()
-    expect(within(finalMetrics).getByText("Performance on the untouched test set.")).toBeInTheDocument()
     expect(within(finalMetrics).queryByText("0.1234")).not.toBeInTheDocument()
     expect(within(diagnostics).getByText("0.1234")).toBeInTheDocument()
-    expect(within(diagnostics).getByText("Diagnostics on the fitted training data; these are in-sample metrics.")).toBeInTheDocument()
     expect(within(diagnostics).queryByText("0.4567")).not.toBeInTheDocument()
   })
 
@@ -131,9 +129,6 @@ describe("SummaryTab", () => {
     const validation = screen.getByRole("region", { name: "Validation, 2,000 rows" })
     expect(within(validation).getByText("0.4500")).toBeInTheDocument()
     expect(within(validation).getByText("0.1200")).toBeInTheDocument()
-    expect(
-      within(validation).getByText("Out-of-sample performance of the validation fit, used to select the model."),
-    ).toBeInTheDocument()
     expect(within(validation).queryByText("0.8963")).not.toBeInTheDocument()
   })
 
@@ -157,9 +152,6 @@ describe("SummaryTab", () => {
 
     const validation = screen.getByRole("region", { name: "Validation (5-fold mean), 8,000 rows" })
     expect(within(validation).getByText("0.4100")).toBeInTheDocument()
-    expect(
-      within(validation).getByText("Out-of-sample performance of the validation fits, used to select the model."),
-    ).toBeInTheDocument()
   })
 
   it("keeps test metrics first, and no validation card, when a test set was reserved", () => {
@@ -182,7 +174,7 @@ describe("SummaryTab", () => {
 
     expect(screen.queryByText("Test metrics")).not.toBeInTheDocument()
     expect(screen.getByText("Training diagnostics")).toBeInTheDocument()
-    expect(screen.getByText("No test set was reserved for this run.")).toBeInTheDocument()
+    expect(screen.queryByText("Test rows")).not.toBeInTheDocument()
   })
 
   it("keeps a zero-valued cross-validated penalty and its fold settings available", () => {

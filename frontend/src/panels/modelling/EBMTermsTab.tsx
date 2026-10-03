@@ -28,10 +28,6 @@ import {
 } from "../../utils/chartHelpers"
 import { FeatureBrowser } from "./FeatureBrowser"
 
-const SCORE_NOTE =
-  "Additive term scores on the model's link scale (log for Poisson, Gamma and Tweedie; " +
-  "log-odds for Logloss). The prediction is the intercept plus every term's score."
-
 export function EBMTermsTab({ result }: { result: TrainResult }) {
   const terms = result.ebm_terms ?? []
   const [selected, setSelected] = useState<string | null>(null)
@@ -57,7 +53,6 @@ export function EBMTermsTab({ result }: { result: TrainResult }) {
             </p>
           </div>
         </div>
-        <p className="mb-2 text-xs" style={{ color: TEXT }}>{SCORE_NOTE}</p>
         {active.kind === "interaction" ? (
           <InteractionSurface key={active.term} term={active} />
         ) : active.axes[0].type === "nominal" ? (
@@ -187,9 +182,7 @@ function ContinuousShape({ term }: { term: EbmTerm }) {
         }}
       </ResponsiveChart>
       <div className="validation-bin-detail" role="status" aria-live="polite">
-        {active === null ? (
-          <span>Hover a bin to inspect its score.</span>
-        ) : (
+        {active !== null && (
           <>
             <strong>
               {term.term}: {labels[active]}

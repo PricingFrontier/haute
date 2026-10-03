@@ -68,7 +68,7 @@ XGBoost, LightGBM and EBM it has three sections; the GLM's version is described 
 |---|---|
 | **Target column** | The column the model predicts. Pick it from the searchable list (**Select target…** until you do). Training is blocked with **Select a target column.** until it is set. |
 | **Objective** | The training loss, one button per loss the family supports (see the table above). Choosing a loss also sets the task (regression or classification) and switches on that loss's usual metrics; clicking the selected loss again clears it. Training is blocked until a loss is chosen, because an unset loss would silently train under the library default. MAE is not offered for an EBM. |
-| **Variance power** | Shown for the **Tweedie** loss: a slider and a number between 1 (Poisson) and 2 (Gamma), exclusive. A new Tweedie selection starts at 1.5. A saved value outside that range shows **Saved variance power must be greater than 1 and less than 2.** |
+| **Variance power** | Shown for the **Tweedie** loss: a slider with a number box beside it, between 1 (Poisson) and 2 (Gamma), exclusive. A new Tweedie selection starts at 1.5. A saved value outside that range shows **Saved variance power must be greater than 1 and less than 2.** |
 | **Positive class** | Shown for a classification loss when the target is not Boolean: the label the model predicts the probability of. Predictions above 0.5 are labelled with it. For a numeric target the label reads **Positive class (only if the labels are not 0/1)**; for text labels it is required and shows **Choose which label is the positive class.** until set. |
 
 Binary classification needs exactly two target classes. A Boolean or 0/1 target is
@@ -477,8 +477,12 @@ selecting the CPU or reducing rows or features.
   progress message. If anything blocks training, a **Complete before training** list names
   each problem with a **Go to …** link to the pane that fixes it.
 - **Cancel training** stops a run in progress.
-- While a CatBoost, XGBoost or LightGBM model trains, the pane draws its loss curve live;
-  a tuned run also shows the trial and fold it is on and the best objective so far.
+- While a CatBoost, XGBoost or LightGBM model trains, the pane draws its loss curve live,
+  for every fit in the run: each validation fit, cross-validation fold and tuning trial,
+  then the final fit. Each fit starts a fresh chart whose axes are set from its first round:
+  rounds from 0 to the fit's round budget, and loss from 0 to a little over the starting
+  loss, so the curve fills in as the fit trains. A tuned run also shows the trial and fold
+  it is on and the best objective so far.
 - **Config changed since last training** appears when you change a training setting after
   training, with **Re-train** to train again.
 
@@ -550,7 +554,7 @@ appears only when the result has something to show in it:
 - **Residuals**: prediction errors and actual against predicted.
 - **Features**: feature importance, with a button per measure. **Prediction** is the
   model's own importance; **Loss** (CatBoost) is how much the loss worsens without each
-  feature; **SHAP** (CatBoost, XGBoost, LightGBM) is each feature's mean absolute SHAP
+  feature, which can be negative, and features are ranked by its size; **SHAP** (CatBoost, XGBoost, LightGBM) is each feature's mean absolute SHAP
   value. **SHAP beeswarm** shows the top 20 of those features, one dot per sampled row:
   how far right or left a dot sits is how much that row's value pushed its prediction up
   or down (on the model's link scale), and its colour runs from blue for a low value to
@@ -566,6 +570,11 @@ appears only when the result has something to show in it:
   curve reads as a relativity around 1.0, like a GLM's relativities; for other losses it
   shows the average SHAP value around 0. Unlike PDP, which sets every row to the same
   value, it only uses the values the rows really have.
+
+In the **AvE**, **PDP**, **SHAP curves** and **SHAP beeswarm** charts, point at a bin, point,
+band, level or dot, or move to it with the Tab key, and the line under the chart shows its
+exact values; a closed table under each chart lists every value. In **Terms**, point at a
+bin to see its score.
 
 The Summary keeps model-selection evidence distinct from final performance:
 
@@ -586,7 +595,8 @@ The Summary keeps model-selection evidence distinct from final performance:
   node's **Parameters JSON** and turns tuning off, after asking.
 - An EBM's **Terms** view shows each main effect's shape (including the score for
   missing values) and each interaction's score table, as additive scores on the model's
-  link scale. They are the model itself, not SHAP values.
+  link scale (log for Poisson, Gamma and Tweedie; log-odds for Logloss): the prediction is
+  the intercept plus every term's score. They are the model itself, not SHAP values.
 - A GLM shows its fit statistics, the penalty actually applied (with the folds, rule,
   and seed when it was cross-validated), and each automatic spline's effective degrees
   of freedom. Standard errors and p-values are valid only for an unpenalised,

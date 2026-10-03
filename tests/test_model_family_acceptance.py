@@ -18,6 +18,7 @@ from haute._mlflow_io import load_local_model
 from haute._model_explainability import prediction_tolerance
 from haute._model_scorer import score_frame
 from haute.errors import HauteValidationError
+from haute.modelling import _training_job
 from haute.modelling._training_job import TrainingJob, model_contract_filename
 from haute.routes._training_worker import _training_response_payload
 from tests.conftest import make_ram_estimate
@@ -350,9 +351,11 @@ def test_a_native_fit_stops_at_the_first_progress_report_after_cancellation(
 @pytest.mark.parametrize("family", ["catboost", "lightgbm", "xgboost"])
 @pytest.mark.parametrize("refit", [False, True], ids=["validation-fit", "final-refit"])
 def test_a_boosted_fit_reports_its_loss_history_rows_as_it_trains(
-    tmp_path: Path, family: str, refit: bool
+    tmp_path: Path, family: str, refit: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The live chart reads the same prefixed rows the Loss tab does (MDL-02)."""
+    # Unpaced, so every round of every fit reaches the callback.
+    monkeypatch.setattr(_training_job, "_LIVE_ROUND_SECONDS", 0.0)
     readouts: list[dict[str, float]] = []
     rows: list[dict[str, float] | None] = []
 
@@ -376,17 +379,24 @@ def test_a_boosted_fit_reports_its_loss_history_rows_as_it_trains(
         feature_columns=["region", "age"],
     ).run(on_iteration=record)
 
-    # A refit trains the validation fit's weighted round count, not the configured 20.
-    assert len(rows) > 1
-    for number, row in enumerate(rows, start=1):
-        assert row is not None
-        assert row["iteration"] == number
-        assert any(key.startswith("train_") for key in row)
-        # Only a fit with an evaluation set (the kept validation fit) has eval rows.
-        assert any(key.startswith("eval_") for key in row) is not refit
+    # The validation fit streams its rows first; a refit then streams its own,
+    # restarting at iteration 1 for the validation fit's weighted round count.
+    assert all(row is not None for row in rows)
+    starts = [index for index, row in enumerate(rows) if row is not None and row["iteration"] == 1]
+    assert starts == ([0, starts[-1]] if refit else [0])
+    split = starts[-1] if refit else len(rows)
+    validation_rows, final_rows = rows[:split], rows[split:] if refit else rows
+    for fit_rows, has_eval in ((validation_rows, True), (final_rows, not refit)):
+        assert len(fit_rows) > 1
+        for number, row in enumerate(fit_rows, start=1):
+            assert row is not None
+            assert row["iteration"] == number
+            assert any(key.startswith("train_") for key in row)
+            # Only a fit with an evaluation set (a validation fit) has eval rows.
+            assert any(key.startswith("eval_") for key in row) is has_eval
     # The readout keeps each engine's own metric names; only the rows are prefixed.
     assert not any(key.startswith(("train_", "eval_")) for key in readouts[-1])
-    assert result.loss_history == rows
+    assert result.loss_history == final_rows
 
 
 @pytest.mark.parametrize("refit", [True, False], ids=["refit", "no-refit"])
