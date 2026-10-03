@@ -21,7 +21,6 @@ Current rating behaviour is specified in
 | BUG-01 | Planned | P1 | Editing a Rating Step in the editor keeps each table's `onMissing` setting. |
 | BUG-02 | Decision | P1 | A rating table built in the editor no longer prices an unmatched level at 1.0 without saying so. |
 | BUG-04 | Planned | P2 | A pickled XGBoost or LightGBM model loads in a Load File node, or is refused by name. |
-| BUG-05 | Planned | P3 | The Data Input editor describes the Databricks query field as the SELECT clause it is. |
 | BUG-06 | Planned | P2 | A Delta table folder can be chosen as a Lakehouse Data Input in the editor. |
 | BUG-08 | Planned | P3 | A table added to a Quote Input by hand starts with a valid label. |
 | BUG-10 | Planned | P2 | A CSV Data Input's detected schema is read with the node's reader arguments. |
@@ -120,25 +119,6 @@ or both are refused naming their own class; the Load File page matches.
 
 **Evidence:** `src/haute/_sandbox.py` (`_ALLOWED_PICKLE_CLASSES`,
 `safe_unpickle`); `docs/building-models/nodes/external-file.md`.
-
-### BUG-05 — The Databricks query field says what it accepts
-**Why:** For a Databricks Data Input, `query` is only a SELECT clause: Haute
-appends `FROM <table>`, and a query with `FROM`, a semicolon, a comment or a
-write keyword is refused. The editor's hint calls the field an "Optional
-projection/filter clause", but a filter (`WHERE`) cannot work there, because
-it would come before the `FROM` Haute appends.
-
-**Plan:** Reword the hint to say the field takes a `SELECT` list of columns and
-Haute adds `FROM` and the table.
-
-**Acceptance:** The hint names a SELECT clause without FROM; the Data Input
-editor's test pins the wording.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/editors/DataInputEditor.tsx` (the
-Databricks query hint); `src/haute/_databricks_io.py` (the SELECT validation);
-`docs/building-models/nodes/data-input.md`.
 
 ### BUG-06 — A Delta table folder can be chosen as a Data Input
 **Why:** A Delta table is read from its folder. The Data Input's path browser

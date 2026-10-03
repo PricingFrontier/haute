@@ -579,6 +579,23 @@ describe("DataInputEditor", () => {
     })
   })
 
+  it("describes the Databricks query as a SELECT clause Haute completes with FROM", async () => {
+    renderEditor({
+      inputType: "databricks",
+      http_path: "/sql/1.0/warehouses/abc",
+      table: "catalog.schema.quotes",
+      arguments: {},
+      code: "df",
+    })
+
+    await screen.findByLabelText("SELECT clause")
+    expect(
+      screen.getByText(
+        "Optional. A SELECT list without FROM, such as SELECT policy_id, premium. Haute adds FROM and the chosen table.",
+      ),
+    ).toBeInTheDocument()
+  })
+
   it("validates inline records and commits one parsed update on blur", async () => {
     const { onUpdate } = renderEditor({
       inputType: "inline",

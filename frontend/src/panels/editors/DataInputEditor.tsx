@@ -198,7 +198,7 @@ export default function DataInputEditor({
               style={INPUT_STYLE}
             />
             <p className="mt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
-              Optional projection/filter clause. Haute supplies the validated table.
+              Optional. A SELECT list without FROM, such as SELECT policy_id, premium. Haute adds FROM and the chosen table.
             </p>
           </div>
           <IoArgumentsEditor

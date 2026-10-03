@@ -46,7 +46,7 @@ For a **CSV** file, the tab also shows the columns and types Haute detects in th
 |---|---|
 | **SQL WAREHOUSE** | The SQL warehouse's HTTP path, such as `/sql/1.0/warehouses/abc123`; your Databricks administrator can provide it. Type it, or click **Browse** to list the workspace's warehouses (each with its state and size) and pick one. |
 | **TABLE** | The table to read, chosen in three lists: **Select catalog...**, then **Select schema...**, then **Select table...**. The full name, `catalog.schema.table`, shows underneath. |
-| **SELECT CLAUSE** | Optional. A `SELECT` clause without `FROM`, such as `SELECT policy_id, premium`; Haute appends `FROM` and the chosen table ("Optional projection/filter clause. Haute supplies the validated table."). It must start with `SELECT` and must not contain `FROM`, semicolons, SQL comments or write keywords. Leave it empty to read every column. |
+| **SELECT CLAUSE** | Optional. A `SELECT` clause without `FROM`, such as `SELECT policy_id, premium`; Haute appends `FROM` and the chosen table ("Optional. A SELECT list without FROM, such as SELECT policy_id, premium. Haute adds FROM and the chosen table."). It must start with `SELECT` and must not contain `FROM`, semicolons, SQL comments or write keywords. Leave it empty to read every column. |
 
 A Databricks input has no format.
 
