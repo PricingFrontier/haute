@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from haute._global_constants import module_binding_lines
@@ -687,15 +689,25 @@ def _slice_without_module_preserve_spans(
     return [lines[index] for index in range(start, stop) if index not in excluded]
 
 
-def _extract_preamble_from_ast(
-    source: str,
+@dataclass(frozen=True)
+class _ModuleBoundaries:
+    """Where a pipeline or submodel module's authored and generated regions meet."""
+
+    #: Last line of the ``haute``/``polars`` imports; 0 when the module has none.
+    last_standard_line: int
+    #: First line codegen owns: the constructor, or the first node decorator.
+    generated_start_line: int
+    is_constructor: Callable[[ast.expr], bool]
+    is_node_decorator: Callable[[ast.expr], bool]
+
+
+def _module_boundaries(
     tree: ast.Module,
     *,
+    line_count: int,
     receiver: str,
     constructor_name: str,
-) -> str:
-    """Extract a valid module's preamble from AST source boundaries."""
-    lines = source.splitlines()
+) -> _ModuleBoundaries:
     haute_module_aliases: set[str] = {"haute"}
     constructor_aliases: set[str] = set()
     last_standard_line = 0
@@ -722,9 +734,6 @@ def _extract_preamble_from_ast(
                     statement.end_lineno or statement.lineno,
                 )
 
-    if last_standard_line == 0:
-        return ""
-
     def is_constructor(expr: ast.expr) -> bool:
         if not isinstance(expr, ast.Call):
             return False
@@ -738,28 +747,14 @@ def _extract_preamble_from_ast(
             and func.value.id in haute_module_aliases
         )
 
-    generated_start_line = len(lines) + 1
+    generated_start_line = line_count + 1
     is_node_decorator = (
         _is_pipeline_authored_decorator
         if receiver == "pipeline"
         else _is_submodel_authored_decorator
     )
     for statement in tree.body:
-        value: ast.expr | None = None
-        target_is_receiver = False
-        if isinstance(statement, ast.Assign):
-            target_is_receiver = any(
-                isinstance(target, ast.Name) and target.id == receiver
-                for target in statement.targets
-            )
-            value = statement.value
-        elif isinstance(statement, ast.AnnAssign):
-            target_is_receiver = (
-                isinstance(statement.target, ast.Name) and statement.target.id == receiver
-            )
-            value = statement.value
-
-        if target_is_receiver and value is not None and is_constructor(value):
+        if _is_receiver_construction(statement, receiver, is_constructor):
             generated_start_line = min(generated_start_line, statement.lineno)
             continue
 
@@ -772,17 +767,136 @@ def _extract_preamble_from_ast(
                 if is_node_decorator(decorator)
             ]
             generated_start_line = min(generated_start_line, *decorator_lines)
+    return _ModuleBoundaries(
+        last_standard_line=last_standard_line,
+        generated_start_line=generated_start_line,
+        is_constructor=is_constructor,
+        is_node_decorator=is_node_decorator,
+    )
+
+
+def _is_receiver_construction(
+    statement: ast.stmt, receiver: str, is_constructor: Callable[[ast.expr], bool]
+) -> bool:
+    value: ast.expr | None = None
+    target_is_receiver = False
+    if isinstance(statement, ast.Assign):
+        target_is_receiver = any(
+            isinstance(target, ast.Name) and target.id == receiver for target in statement.targets
+        )
+        value = statement.value
+    elif isinstance(statement, ast.AnnAssign):
+        target_is_receiver = (
+            isinstance(statement.target, ast.Name) and statement.target.id == receiver
+        )
+        value = statement.value
+    return target_is_receiver and value is not None and is_constructor(value)
+
+
+def _extract_preamble_from_ast(
+    source: str,
+    tree: ast.Module,
+    *,
+    receiver: str,
+    constructor_name: str,
+) -> str:
+    """Extract a valid module's preamble from AST source boundaries."""
+    lines = source.splitlines()
+    boundaries = _module_boundaries(
+        tree, line_count=len(lines), receiver=receiver, constructor_name=constructor_name
+    )
+    if boundaries.last_standard_line == 0:
+        return ""
 
     preamble_lines = _slice_without_module_preserve_spans(
         lines,
-        last_standard_line,
-        generated_start_line - 1,
+        boundaries.last_standard_line,
+        boundaries.generated_start_line - 1,
     )
     while preamble_lines and not preamble_lines[0].strip():
         preamble_lines.pop(0)
     while preamble_lines and not preamble_lines[-1].strip():
         preamble_lines.pop()
     return "\n".join(preamble_lines)
+
+
+def _is_generated_call(statement: ast.stmt, receiver: str) -> bool:
+    """``<receiver>.connect(...)`` chains, and ``pipeline.submodel(...)`` registrations."""
+    if not isinstance(statement, ast.Expr) or not isinstance(statement.value, ast.Call):
+        return False
+    methods: list[str] = []
+    expr: ast.expr = statement.value
+    while isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute):
+        methods.append(expr.func.attr)
+        expr = expr.func.value
+    if not isinstance(expr, ast.Name) or expr.id != receiver or not methods:
+        return False
+    if receiver == "pipeline" and methods == ["submodel"]:
+        return True
+    return all(method == "connect" for method in methods)
+
+
+def _is_global_constants_binding(statement: ast.stmt, receiver: str) -> bool:
+    """``global_constants = <receiver>.global_constants``, which codegen writes."""
+    return (
+        isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+        and statement.targets[0].id == GLOBAL_CONSTANTS_NAME
+        and isinstance(statement.value, ast.Attribute)
+        and statement.value.attr == GLOBAL_CONSTANTS_NAME
+        and isinstance(statement.value.value, ast.Name)
+        and statement.value.value.id == receiver
+    )
+
+
+def unkept_module_statements(
+    source: str,
+    tree: ast.Module | None = None,
+    *,
+    receiver: str = "pipeline",
+    constructor_name: str = "Pipeline",
+) -> list[tuple[int, int]]:
+    """One-based, inclusive line spans of module statements a save would drop.
+
+    Codegen regenerates a module from the constructor (or its first node
+    function) on, re-emitting only the constructor, the ``global_constants``
+    binding, preserved blocks, node functions, submodel registrations and
+    ``connect`` chains. Any other statement there (a constant, a helper
+    function, trailing code) is reported; above the constructor it is
+    preamble, and inside preserve markers it is a preserved block, so both
+    are kept.
+    """
+    if tree is None:
+        tree = ast.parse(source)
+    lines = source.splitlines()
+    boundaries = _module_boundaries(
+        tree, line_count=len(lines), receiver=receiver, constructor_name=constructor_name
+    )
+    if boundaries.last_standard_line == 0:
+        return []
+    preserved = _module_preserve_spans(lines)
+    spans: list[tuple[int, int]] = []
+    for statement in tree.body:
+        if statement.lineno < boundaries.generated_start_line:
+            continue
+        decorators = getattr(statement, "decorator_list", [])
+        start = min([statement.lineno, *(decorator.lineno for decorator in decorators)])
+        end = statement.end_lineno or statement.lineno
+        if any(first <= start - 1 and end - 1 <= last for first, last in preserved):
+            continue
+        if (
+            _is_receiver_construction(statement, receiver, boundaries.is_constructor)
+            or _is_global_constants_binding(statement, receiver)
+            or _is_generated_call(statement, receiver)
+            or (
+                isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and any(boundaries.is_node_decorator(decorator) for decorator in decorators)
+            )
+        ):
+            continue
+        spans.append((start, end))
+    return spans
 
 
 def _extract_preamble(

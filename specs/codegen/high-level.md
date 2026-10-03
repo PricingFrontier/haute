@@ -307,11 +307,14 @@ Out of scope (owned by neighbouring components):
   blank lines inside a completed module block are stripped, and unmatched
   module-level starts are ignored.
 
-  > NOTE: Any other module-level statement after the constructor (a constant, a helper
-  > function, trailing code) is neither preamble nor a preserved block, so regeneration drops
-  > it without a diagnostic while keeping the node code that uses it.
-  > [BUG-12](../roadmap/bugs.md#bug-12--a-save-keeps-the-statements-written-after-the-pipeline-constructor)
-  > makes the parser report it and save wait for it to move.
+  Any other module-level statement from the constructor on (a constant, a helper function,
+  trailing code) is neither preamble nor a preserved block, so regeneration would drop it.
+  `_ast_helpers.unkept_module_statements` finds each one: everything except the constructor,
+  the `global_constants` binding, preserved blocks, node functions, `pipeline.submodel(...)`
+  registrations and `connect` chains. The editor document reports each as an
+  `unkept_module_statement` diagnostic naming its lines and the two fixes (move it above the
+  constructor, or wrap it in preserve markers), which degrades the document, so the file is
+  never regenerated without it.
 - **Global constants.** When the graph has global constants, or its declared constants file
   failed to load, the pipeline constructor gets `global_constants="config/global_constants.json"`
   after `description`, and every generated file, pipeline and submodel alike, binds

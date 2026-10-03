@@ -2912,3 +2912,75 @@ def test_an_editor_document_carries_the_constants_and_the_load_error(
     assert broken.global_constants == []
     assert broken.global_constants_error is not None
     assert "constant 1 ('rate')" in broken.global_constants_error
+
+
+_UNKEPT_STATEMENTS_SOURCE = """\
+import haute
+
+pipeline = haute.Pipeline("kept")
+RATE = 1.05
+
+@pipeline.polars
+def source():
+    return None
+
+THRESHOLD = 10
+
+def helper(x):
+    return x
+
+@pipeline.polars
+def transform(source):
+    return helper(source)
+
+print("trailing")
+"""
+
+
+def test_statements_after_the_constructor_degrade_the_document_line_by_line(
+    tmp_path: Path,
+) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    pipeline_file = _write(tmp_path / "main.py", _UNKEPT_STATEMENTS_SOURCE)
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    unkept = [d for d in document.diagnostics if d.code == "unkept_module_statement"]
+    assert document.load_status == "degraded"
+    assert document.capabilities.can_save is False
+    assert [
+        (d.source_span.start_line, d.source_span.end_line) for d in unkept if d.source_span
+    ] == [
+        (4, 4),
+        (10, 10),
+        (12, 13),
+        (19, 19),
+    ]
+    assert all(d.remediation and "preserve-start" in d.remediation for d in unkept)
+
+
+def test_saving_over_statements_a_save_would_drop_is_refused_naming_them(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline_file = _write(tmp_path / "main.py", _UNKEPT_STATEMENTS_SOURCE)
+    monkeypatch.chdir(tmp_path)
+    before = pipeline_file.read_bytes()
+
+    response = client.post(
+        "/api/pipeline/save",
+        json={
+            "name": "kept",
+            "source_file": "main.py",
+            "base_revision": "posted-ready-revision",
+            "graph": {"nodes": [], "edges": []},
+        },
+    )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert "main.py:4" in detail and "main.py:19" in detail
+    assert "preserve-start" in detail
+    assert pipeline_file.read_bytes() == before
