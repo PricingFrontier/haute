@@ -22,7 +22,7 @@ Skipped types (complex edge cases):
 from __future__ import annotations
 
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import hypothesis.strategies as st
@@ -368,6 +368,10 @@ def _pipeline_graph(draw: st.DrawFn) -> PipelineGraph:
         ntype = draw(st.sampled_from(downstream_types))
         config = draw(_CONFIG_STRATEGY[ntype])
         func_name = _sanitize_func_name(labels[i])
+        if ntype == NodeType.DATA_OUTPUT:
+            # Two Data Outputs may not write one destination.
+            stem = PurePosixPath(config["path"])
+            config = {**config, "path": str(stem.with_stem(f"{stem.stem}_{func_name}"))}
         nodes.append(
             GraphNode(
                 id=func_name,

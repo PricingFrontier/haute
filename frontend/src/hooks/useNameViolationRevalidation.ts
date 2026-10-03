@@ -11,7 +11,7 @@ import type { EditorIdentityBatchRequest } from "../api/types"
  * Revalidate a document loaded with name violations after each edit.
  *
  * While the document is fenced by its names, every change to the nodes,
- * edges or submodels that could change a name sends the whole graph, as
+ * edges, submodels or preamble that could change a name sends the whole graph, as
  * save receives it, to the editor identity request; the server answers with
  * the violations that remain, which the banner and the save/run fence follow.
  * A newer edit supersedes an answer still in flight. Positions are left out
@@ -21,11 +21,14 @@ export function useNameViolationRevalidation({
   nodes,
   edges,
   submodels,
+  preamble,
   buildContextGraph,
 }: {
   nodes: readonly Node[]
   edges: readonly Edge[]
   submodels: unknown
+  /** The root preamble: removing a colliding helper or import clears a violation. */
+  preamble: string
   /** A stable builder of the graph save would receive. */
   buildContextGraph: () => NonNullable<EditorIdentityBatchRequest["graph"]>
 }): void {
@@ -38,8 +41,9 @@ export function useNameViolationRevalidation({
       nodes.map((node) => [node.id, node.data?.label, node.data?.config]),
       edges.map((edge) => [edge.source, edge.target, edge.sourceHandle, edge.targetHandle]),
       submodels,
+      preamble,
     ])
-  }, [fenced, nodes, edges, submodels])
+  }, [fenced, nodes, edges, submodels, preamble])
 
   useEffect(() => {
     if (changeKey === null) return

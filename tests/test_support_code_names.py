@@ -207,6 +207,52 @@ def test_the_support_code_rule(
     assert _violations(graph, **modules) == expected
 
 
+@pytest.mark.parametrize(
+    ("preamble", "name"),
+    [
+        pytest.param("for rate_lookup in range(3):\n    pass\n", "rate_lookup", id="loop-target"),
+        pytest.param("with open('x') as rate_lookup:\n    pass\n", "rate_lookup", id="with-target"),
+    ],
+)
+def test_block_targets_in_a_preamble_are_bindings(preamble: str, name: str) -> None:
+    graph = PipelineGraph(nodes=[_node(name)], edges=[], preamble=preamble)
+
+    assert _violations(graph) == [("support_collision", name)]
+
+
+def test_a_mutated_all_in_a_utility_cannot_be_checked() -> None:
+    graph = PipelineGraph(nodes=[], edges=[], preamble="from utility.rates import *\n")
+    rates = "__all__ = []\n__all__.append('helper')\n\ndef helper():\n    pass\n"
+
+    assert _violations(graph, rates=rates) == [("support_unsupported", "")]
+
+
+def test_a_utility_that_does_not_parse_is_reported_not_raised() -> None:
+    graph = PipelineGraph(nodes=[], edges=[], preamble="from utility.rates import *\n")
+
+    violations = support_code_violations(graph, _utilities(rates="def broken(:\n"))
+
+    assert [v.message() for v in violations] == ["utility/rates.py is not valid Python (line 1)."]
+
+
+def test_a_submodel_preserved_block_is_support_code() -> None:
+    definition = SubmodelDefinition(
+        definitionId="rates",
+        file="modules/rates.py",
+        graph=PipelineGraph(
+            nodes=[_node("child")], edges=[], preserved_blocks=["def rate_lookup():\n    pass\n"]
+        ),
+        inputPorts=[],
+        outputPorts=[],
+    )
+    occurrence = _node("rates_1", "submodel", definitionId="rates", alias="rates_1")
+    graph = PipelineGraph(
+        nodes=[occurrence, _node("rate_lookup")], edges=[], submodels={"rates": definition}
+    )
+
+    assert _violations(graph) == [("support_collision", "rate_lookup")]
+
+
 def test_messages_name_the_statement_or_the_node() -> None:
     star = support_code_violations(
         PipelineGraph(nodes=[], edges=[], preamble="from math import *\n"), _utilities()
@@ -301,3 +347,46 @@ def test_saving_a_utility_that_adds_an_unrelated_helper_is_accepted(
     response = client.put("/api/utility/rates", json={"content": "def band(x):\n    return x\n"})
 
     assert response.status_code == 200, response.text
+
+
+def test_saving_a_utility_imported_only_by_a_submodel_is_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("haute.routes.utility.pipeline_dir", lambda: tmp_path)
+    (tmp_path / "utility").mkdir()
+    (tmp_path / "utility" / "rates.py").write_text("import polars as pl\n", encoding="utf-8")
+    (tmp_path / "modules").mkdir()
+    (tmp_path / "modules" / "rates.py").write_text(
+        textwrap.dedent(
+            """\
+            import haute
+            import polars as pl
+            from utility.rates import *
+
+            submodel = haute.Submodel(
+                "rates",
+                definition_id="rates",
+                input_ports=[],
+                output_ports=[],
+                pipeline_dir="..",
+            )
+
+
+            @submodel.polars
+            def rate_lookup() -> pl.LazyFrame:
+                return pl.LazyFrame({"x": [1]})
+            """
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "main.py").write_text(
+        'import haute\n\npipeline = haute.Pipeline("main")\n'
+        'pipeline.submodel("modules/rates.py", "rates_1")\n',
+        encoding="utf-8",
+    )
+
+    response = client.put("/api/utility/rates", json={"content": _RATE_LOOKUP})
+
+    assert response.status_code == 400, response.text
+    assert "Node 'rate_lookup' (submodel 'rates')" in response.json()["detail"]

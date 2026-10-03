@@ -22,11 +22,9 @@ Save, codegen, the strict parse, the assistant and the standalone
 from __future__ import annotations
 
 import builtins
-import posixpath
 import sys
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
-from pathlib import PurePosixPath
 from typing import Any, Literal
 
 from haute._graph_utils import _sanitize_func_name, edge_input_name
@@ -293,42 +291,44 @@ def input_binding_violations(graph: PipelineGraph) -> list[NameViolation]:
     return violations
 
 
-def data_output_destination(config: Mapping[str, Any]) -> str | None:
-    """The destination a Data Output writes, as one comparable string, or ``None``.
+def data_output_destination(
+    graph: PipelineGraph, config: Mapping[str, Any]
+) -> tuple[str, str] | None:
+    """Where a Data Output writes, as ``(identity, display)``, or ``None``.
 
-    A file or lakehouse target is its path as the writer resolves it (a bare
-    file name under ``outputs/``, the format's default extension added),
-    compared ignoring case on Windows and macOS, whose file systems do. A
-    database target is its connection (or URI) and its table. A destination
-    missing a required part has none: it is a draft, saved and compared with
-    nothing, and its completeness is required only when it runs.
+    A file or lakehouse target is the path the writer resolves
+    (``executor.resolve_data_output_path``: a bare file name under
+    ``outputs/``, the format's default extension added, relative paths
+    anchored as the writer anchors them), compared ignoring case on Windows
+    and macOS, whose file systems do. A database target is its connection (or
+    URI) and its table. A destination missing a required part has none: it is
+    a draft, saved and compared with nothing, and its completeness is required
+    only when it runs. A destination the writer refuses (outside the project)
+    has none either; the writer's own refusal reports it.
     """
+    from haute._path_resolution import RuntimePathError
     from haute._polars_io_registry import (
         PolarsIoConfigError,
         data_output_completeness,
-        default_output_extension,
         format_for_config,
         format_group,
     )
+    from haute.executor import resolve_data_output_path
 
     try:
         if data_output_completeness(config):
             return None
         fmt = format_for_config(config)
-    except (PolarsIoConfigError, ValueError):
-        # An invalid config is refused by its own validation.
+        if format_group(fmt) == "database":
+            locator = config.get("connection") or config.get("uri")
+            described = f"table {config.get('table')!r} of {locator!r}"
+            return described, described
+        resolved, display = resolve_data_output_path(graph, config)
+    except (PolarsIoConfigError, RuntimePathError, ValueError):
+        # An invalid config or path is refused by its own validation.
         return None
-    if format_group(fmt) == "database":
-        locator = config.get("connection") or config.get("uri")
-        return f"table {config.get('table')!r} of {locator!r}"
-    path = str(config.get("path", "")).replace("\\", "/")
-    if "/" not in path:
-        path = f"outputs/{path}"
-    extension = default_output_extension(fmt)
-    if extension is not None and not PurePosixPath(path).suffix:
-        path = f"{path}{extension}"
-    path = posixpath.normpath(path)
-    return path.casefold() if sys.platform in ("win32", "darwin") else path
+    identity = str(resolved)
+    return (identity.casefold() if sys.platform in ("win32", "darwin") else identity), display
 
 
 def data_output_violations(graph: PipelineGraph) -> list[NameViolation]:
@@ -338,12 +338,15 @@ def data_output_violations(graph: PipelineGraph) -> list[NameViolation]:
     a definition used twice writes its destination twice.
     """
     writers: dict[str, list[NameParty]] = {}
+    displays: dict[str, str] = {}
 
     def record(node: GraphNode, module: str) -> None:
-        destination = data_output_destination(node.data.config)
+        destination = data_output_destination(graph, node.data.config)
         if destination is not None:
+            identity, display = destination
+            displays.setdefault(identity, display)
             party = NameParty(node_id=node.id, label=node.data.label, module=module)
-            writers.setdefault(destination, []).append(party)
+            writers.setdefault(identity, []).append(party)
 
     definitions = graph.submodels or {}
     for node in graph.nodes:
@@ -358,8 +361,8 @@ def data_output_violations(graph: PipelineGraph) -> list[NameViolation]:
                 if child.data.nodeType == NodeType.DATA_OUTPUT:
                     record(child, str(definition_id))
     return [
-        NameViolation(kind="output_destination", name=destination, parties=tuple(parties))
-        for destination, parties in writers.items()
+        NameViolation(kind="output_destination", name=displays[identity], parties=tuple(parties))
+        for identity, parties in writers.items()
         if len(parties) > 1
     ]
 

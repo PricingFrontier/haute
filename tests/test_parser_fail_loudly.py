@@ -1280,17 +1280,22 @@ class TestGlobalConstantsDeclarationAndReservedName:
                 "",
                 id="rebinding-after-the-generated-line",
             ),
-            pytest.param(
-                "\n@pipeline.polars\ndef global_constants(src):\n    return src\n",
-                "",
-                id="node-function",
-            ),
         ],
     )
     def test_any_other_module_level_binding_is_refused(self, tail: str, preamble: str) -> None:
         source = self._pipeline('pipeline = haute.Pipeline("p")', tail=tail, preamble=preamble)
 
         with pytest.raises(ParseError, match="'global_constants' is reserved"):
+            parse_pipeline_source(source)
+
+    def test_a_node_function_named_global_constants_is_a_name_violation(self) -> None:
+        """Refused by the naming rule, which the editor reports as renameable."""
+        source = self._pipeline(
+            'pipeline = haute.Pipeline("p")',
+            tail="\n@pipeline.polars\ndef global_constants(src):\n    return src\n",
+        )
+
+        with pytest.raises(ParseError, match="takes the name `global_constants`"):
             parse_pipeline_source(source)
 
     def test_the_generated_binding_parses_as_generated_code(self) -> None:

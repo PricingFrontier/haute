@@ -23,6 +23,7 @@ function controllerOptions(node: Node, resolveNodeIdentities: (nodes: readonly N
     reservedApiInputFrameLabels: new Set<string>(),
     resolveNodeIdentities,
     resolveRenameIdentities: resolveNodeIdentities,
+    readNamingContextKey: () => "naming context",
     commitGraph: vi.fn(),
     setSelectedNode: vi.fn(),
     addToast: vi.fn(),

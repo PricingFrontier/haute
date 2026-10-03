@@ -288,12 +288,15 @@ candidate, with the error toast.
 - **Names are allocated on create and checked on rename.** Every node-creating
   gesture (palette drop, edge-drop, edge-join insertion, Duplicate, paste, Create
   Instance) sends its new nodes, with the whole document as save would receive it
-  as naming context, to the editor identity request with `allocate`; each node takes
+  (preserved blocks included; inside a drilled submodel, the live child graph in place of its
+  definition's, and every node scoped to that definition) as naming context, to the editor
+  identity request with `allocate`; each node takes
   the label the server allocates, the first free one in request order (`X copy`,
   then `X copy 2`; a default such as `Transform 7` gains a suffix when taken), and a
   submodel occurrence the first free alias (`rates`, then `rates_2`), which is also
   its label. The batch is applied together or not at all behind the existing
-  stale-request fences. A rename sends the same context without `allocate`; a name
+  stale-request fences. A rename sends the same context without `allocate`, and is judged
+  again when any other name or the preamble changed while the server judged it; a name
   the naming rule refuses (another node's name ignoring case, a reserved or built-in
   name, a support-code helper) comes back as a collision whose message the rename
   surface shows inline, and nothing is applied. The Rename dialog and the node
@@ -581,7 +584,7 @@ candidate, with the error toast.
   persistent banner listing each violation's message; clicking one selects its nodes (a
   submodel child by the occurrences of its definition) and opens the first. Save, run and
   preview are fenced while the list is non-empty. After each edit that could change a name
-  (positions excepted) the browser sends the whole graph, as save would, to the editor
+  (positions excepted; preamble edits included) the browser sends the whole graph, as save would, to the editor
   identity request and adopts the violations it returns, a newer edit superseding an answer
   in flight; the banner shrinks as renames fix them, and when the list is empty the fence
   lifts to the ready document's own capabilities (preview still needing a trusted source

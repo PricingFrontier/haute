@@ -113,6 +113,8 @@ function requestNode(
 export interface EditorNamingContext {
   graph: NonNullable<EditorIdentityBatchRequest["graph"]>
   allocate: boolean
+  /** The submodel definition the nodes belong to (a drilled view), or null at the root. */
+  scope: string | null
 }
 
 /** A name the naming rule refuses; nothing was applied. */
@@ -136,11 +138,10 @@ export function buildEditorIdentityRequest(
     throw new Error("Cannot resolve editor identities: node ids are duplicated")
   }
   return {
-    nodes: nodes.map((node) => requestNode(
-      node,
-      submodels,
-      reservedApiInputFrameLabels,
-    )),
+    nodes: nodes.map((node) => {
+      const request = requestNode(node, submodels, reservedApiInputFrameLabels)
+      return naming?.scope ? { ...request, submodel: naming.scope } : request
+    }),
     ...(naming ? { graph: naming.graph, allocate: naming.allocate } : {}),
   }
 }

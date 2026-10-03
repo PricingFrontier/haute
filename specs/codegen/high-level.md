@@ -129,8 +129,9 @@ Out of scope (owned by neighbouring components):
   import of `utility.<module>`, resolved by parsing that file (from the pipeline directory,
   then the project root, as the executor imports it) under the same forms, recursively with
   cycle detection; a utility exports its literal `__all__` or, without one, its top-level
-  names without a leading underscore. A preamble block (`if`, `try`) contributes whatever its
-  branches bind. Refused, with the rest of the naming rule's violations:
+  names without a leading underscore. Support code includes each submodel definition's
+  preserved blocks. A preamble block (`if`, `try`, `for`, `with`) contributes whatever its
+  branches bind, a loop's target and a `with` item's name included. Refused, with the rest of the naming rule's violations:
   - a node function name or input binding equal to a support-code binding (an input named
     after a node is that node's collision);
   - one name bound by two support-code sources to different provenance; re-importing one
@@ -138,8 +139,9 @@ Out of scope (owned by neighbouring components):
     twice is one provenance;
   - a support-code binding of a reserved name, apart from `import haute` and
     `import polars as pl`;
-  - whatever keeps the inventory incomplete, naming the statement: a computed `__all__` or
-    one naming what the module does not bind, a binding inside a block at module level in a
+  - whatever keeps the inventory incomplete, naming the statement: a computed `__all__`, one
+    changed after it is defined (`__all__.append(...)`), or one naming what the module does not
+    bind, a utility file that is not valid Python, a binding inside a block at module level in a
     star-imported utility, a star import of a module outside `utility`, a star import of a
     utility file that does not exist, or a cycle of utility star imports.
 

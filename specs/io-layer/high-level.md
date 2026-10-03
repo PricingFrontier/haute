@@ -267,9 +267,11 @@ When `overwrite=false`, an existing data-output destination raises
 than treating it as an I/O failure or replacing the destination.
 
 Two Data Output nodes cannot target one destination. A destination's identity
-(`_executable_names.data_output_destination`) is, for a file or lakehouse target, its path as
-the writer resolves it (a bare file name under `outputs/`, the format's default extension
-added), compared ignoring case on Windows and macOS; for a database target, its connection (or
+(`_executable_names.data_output_destination`) is, for a file or lakehouse target, the path the
+writer resolves (`resolve_data_output_path`: a bare file name under `outputs/`, the format's
+default extension added, a relative path anchored as the writer anchors it, so a relative and
+an absolute spelling of one file are one destination), compared ignoring case on Windows and
+macOS; for a database target, its connection (or
 URI) and its table as written, so one table name in two schemas is two destinations. A
 destination missing a required part (a new Data Output starts with an empty path) has no
 identity: it is not compared, stays an editable, saveable draft, and its completeness is

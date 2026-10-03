@@ -103,6 +103,7 @@ describe("the document's name violations", () => {
 
 describe("useNameViolationRevalidation", () => {
   const edges: Edge[] = []
+  const preamble = ""
   const buildContextGraph = () => ({ nodes: [], edges: [], submodels: undefined, preamble: undefined })
 
   it("sends the graph after each edit and follows the server's answer", async () => {
@@ -110,7 +111,7 @@ describe("useNameViolationRevalidation", () => {
     resolveEditorNodeIdentities.mockResolvedValue({ identities: [], violations: [DUPLICATE] })
 
     const { rerender } = renderHook(
-      ({ nodes }) => useNameViolationRevalidation({ nodes, edges, submodels: {}, buildContextGraph }),
+      ({ nodes }) => useNameViolationRevalidation({ nodes, edges, submodels: {}, preamble, buildContextGraph }),
       { initialProps: { nodes: [node("pl", "pl")] } },
     )
     await waitFor(() => expect(useDocumentStatusStore.getState().nameViolations).toEqual([DUPLICATE]))
@@ -129,7 +130,7 @@ describe("useNameViolationRevalidation", () => {
       .mockResolvedValueOnce({ identities: [], violations: [RESERVED] })
 
     const { rerender } = renderHook(
-      ({ nodes }) => useNameViolationRevalidation({ nodes, edges, submodels: {}, buildContextGraph }),
+      ({ nodes }) => useNameViolationRevalidation({ nodes, edges, submodels: {}, preamble, buildContextGraph }),
       { initialProps: { nodes: [node("pl", "pl")] } },
     )
     rerender({ nodes: [node("pl", "pl"), node("transform", "root transform")] })
@@ -139,10 +140,29 @@ describe("useNameViolationRevalidation", () => {
     expect(useDocumentStatusStore.getState().nameViolations).toEqual([RESERVED])
   })
 
+  it("rechecks after a preamble edit, which can remove a colliding helper", async () => {
+    useDocumentStatusStore.getState().loadDocumentStatus(fencedDocument())
+    resolveEditorNodeIdentities.mockResolvedValue({ identities: [], violations: [RESERVED] })
+    const nodes = [node("pl", "pl")]
+
+    const { rerender } = renderHook(
+      ({ code }) => useNameViolationRevalidation({
+        nodes, edges, submodels: {}, preamble: code, buildContextGraph,
+      }),
+      { initialProps: { code: "def pl():\n    pass" } },
+    )
+    await waitFor(() => expect(resolveEditorNodeIdentities).toHaveBeenCalledTimes(1))
+    resolveEditorNodeIdentities.mockResolvedValue({ identities: [], violations: [] })
+    rerender({ code: "" })
+
+    await waitFor(() => expect(resolveEditorNodeIdentities).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(useDocumentStatusStore.getState().nameViolations).toEqual([]))
+  })
+
   it("asks nothing of a document loaded without violations", () => {
     useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument())
     renderHook(() => useNameViolationRevalidation({
-      nodes: [node("pl", "pl")], edges, submodels: {}, buildContextGraph,
+      nodes: [node("pl", "pl")], edges, submodels: {}, preamble, buildContextGraph,
     }))
     expect(resolveEditorNodeIdentities).not.toHaveBeenCalled()
   })

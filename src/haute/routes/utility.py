@@ -117,7 +117,7 @@ def _format_syntax_error(err_msg: str | None, err_line: int | None) -> str:
 def _refuse_new_name_violations(module: str, content: str) -> None:
     """Refuse a utility edit that would make a project pipeline's names collide.
 
-    Each project pipeline is parsed with its support code read twice, as it
+    Every project pipeline is parsed with its support code read twice, as it
     is and with *module* holding *content*; only violations the edit adds are
     refused, naming the pipeline and the colliding node. A pipeline that does
     not parse is skipped: it fails on its own, whatever this file holds.
@@ -134,9 +134,9 @@ def _refuse_new_name_violations(module: str, content: str) -> None:
 
     problems: list[str] = []
     for pipeline_file in discover_pipelines():
+        # A registered submodel may star-import the module though the root
+        # file never names it, so every pipeline is parsed.
         source = read_user_text(pipeline_file)
-        if "utility" not in source:
-            continue
         try:
             violations = [
                 {

@@ -213,3 +213,38 @@ def test_the_identity_endpoint_and_save_agree(
     assert (saved is None) == (body["violations"] == [])
     for violation in body["violations"]:
         assert saved is not None and violation["message"] in saved
+
+
+def test_a_candidate_is_judged_in_the_definition_it_names(
+    project: Path, client: TestClient
+) -> None:
+    """A root node and a submodel child may share an id; the scope says which is renamed."""
+    definition = SubmodelDefinition(
+        definitionId="rates",
+        file="modules/rates.py",
+        graph=PipelineGraph(nodes=[_node("x", "child")], edges=[]),
+        inputPorts=[],
+        outputPorts=[],
+    )
+    graph = PipelineGraph(
+        nodes=[_node("x", "renamed_root"), _occurrence("rates_1", "rates_1")],
+        edges=[],
+        submodels={"rates": definition},
+    )
+    candidate = {**_candidate("x", "renamed_root"), "submodel": "rates"}
+
+    body = _post(client, graph, [candidate], allocate=False)
+
+    assert "take one name, `renamed_root`" in body["identities"][0]["collision"]
+
+
+def test_a_scope_outside_the_naming_context_is_refused(project: Path, client: TestClient) -> None:
+    response = client.post(
+        "/api/pipeline/editor-identities",
+        json={
+            "nodes": [{**_candidate("x", "x"), "submodel": "missing"}],
+            "graph": PipelineGraph(nodes=[], edges=[]).model_dump(mode="json", by_alias=True),
+        },
+    )
+
+    assert response.status_code == 422

@@ -239,3 +239,44 @@ def test_a_structural_collision_still_loads_into_recovery(tmp_path: Path, source
     assert len(colliding) == 2
     assert len({node.authored_id for node in colliding}) == 1
     assert len({node.recovery_id for node in colliding}) == 2
+
+
+def test_a_flattened_parse_checks_names_before_copying_occurrences(tmp_path: Path) -> None:
+    _write(tmp_path / "modules" / "rates.py", _CHILD)
+    source = textwrap.dedent(
+        """
+        import haute
+        pipeline = haute.Pipeline("twice")
+
+        pipeline.submodel("modules/rates.py", "rates_1")
+        pipeline.submodel("modules/rates.py", "rates_2", instance_of="rates_1")
+        """
+    )
+
+    graph, violations = parse_pipeline_source_with_name_violations(
+        source, source_file=str(tmp_path / "main.py"), flatten=True, _base_dir=tmp_path
+    )
+
+    assert violations == []
+    assert not graph.submodels
+
+
+def test_a_node_named_global_constants_loads_renameable(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        pipeline = haute.Pipeline("constants")
+
+        @pipeline.polars
+        def global_constants():
+            return None
+        """,
+    )
+
+    document = load_pipeline_editor_document(path, project_root=tmp_path)
+
+    assert document.load_status == "ready"
+    assert [(v.kind, v.name) for v in document.name_violations] == [
+        ("reserved", "global_constants")
+    ]

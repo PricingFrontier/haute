@@ -39,6 +39,9 @@ export type UseGraphCommitControllerOptions = {
   /** Resolves a renamed node against the whole document, throwing
    *  `EditorNameCollisionError` for a name the naming rule refuses. */
   resolveRenameIdentities: (candidateNodes: readonly Node[]) => Promise<Node[]>
+  /** A key of everything a rename's verdict depends on (every name, the support
+   *  code); a rename resolved against an older key is resolved again. */
+  readNamingContextKey: () => string
   commitGraph: (
     nodes: Node[],
     edges: Edge[],
@@ -67,6 +70,7 @@ export default function useGraphCommitController({
   reservedApiInputFrameLabels,
   resolveNodeIdentities,
   resolveRenameIdentities,
+  readNamingContextKey,
   commitGraph,
   setSelectedNode,
   addToast,
@@ -271,6 +275,7 @@ export default function useGraphCommitController({
           if (!currentNode) return { ok: false, error: `Cannot rename missing node "${nodeId}".` }
           const isSubmodel = isOccurrence(currentNode)
           const request = beginRequest(nodeId)
+          const namingKey = readNamingContextKey()
           const resolved = await resolveRenameIdentities([candidateFor(currentNode)])
           if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
             throw new Error("identity resolver returned an invalid node")
@@ -282,6 +287,9 @@ export default function useGraphCommitController({
             }
           }
           if (requestIsStale(request)) continue
+          // Another node's name or the support code changed while the server
+          // judged this one: its verdict no longer holds.
+          if (readNamingContextKey() !== namingKey) continue
           if (isSubmodel) {
             const resolvedFn = resolved[0].data?._functionName
             if (resolvedFn !== label) {
@@ -311,7 +319,7 @@ export default function useGraphCommitController({
     })()
     registerPendingCommit(pending)
     return pending
-  }, [beginRequest, commit, graphRef, prepare, registerPendingCommit, requestIsStale, requestInvalidated, resolveRenameIdentities])
+  }, [beginRequest, commit, graphRef, prepare, readNamingContextKey, registerPendingCommit, requestIsStale, requestInvalidated, resolveRenameIdentities])
 
   return { onUpdateNode, onRenameNode, waitForPendingCommits }
 }

@@ -297,7 +297,7 @@ describe("naming against the document", () => {
       edges: [],
       submodels: { rates: definition },
       reservedApiInputFrameLabels: RESERVED,
-      naming: { graph: context, allocate: true },
+      naming: { graph: context, allocate: true, scope: null },
       resolve,
     })
 
@@ -319,8 +319,22 @@ describe("naming against the document", () => {
       edges: [],
       submodels: {},
       reservedApiInputFrameLabels: RESERVED,
-      naming: { graph: context, allocate: false },
+      naming: { graph: context, allocate: false, scope: null },
       resolve,
     })).rejects.toEqual(new EditorNameCollisionError("first", message))
+  })
+})
+
+describe("naming inside a drilled submodel", () => {
+  it("scopes every node to the definition being edited", () => {
+    const request = buildEditorIdentityRequest(
+      [node("child", "rate child", "polars")],
+      {},
+      RESERVED,
+      { graph: { nodes: [], edges: [], submodels: undefined, preamble: undefined }, allocate: true, scope: "rates" },
+    )
+
+    expect(request.nodes[0]).toMatchObject({ node_id: "child", submodel: "rates" })
+    expect(request.allocate).toBe(true)
   })
 })

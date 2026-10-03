@@ -121,6 +121,27 @@ def _binds_anything(stmt: ast.stmt) -> bool:
     return False
 
 
+def _block_target_names(stmt: ast.stmt) -> Iterator[str]:
+    """Names a block statement itself binds: a loop's target, a ``with`` item's ``as``."""
+    if isinstance(stmt, ast.For | ast.AsyncFor):
+        yield from _target_names(stmt.target)
+    elif isinstance(stmt, ast.With | ast.AsyncWith):
+        for item in stmt.items:
+            if item.optional_vars is not None:
+                yield from _target_names(item.optional_vars)
+
+
+def _mutates_all(stmt: ast.stmt) -> bool:
+    """Whether *stmt* calls a method on ``__all__`` (``append``, ``extend``, ...)."""
+    return (
+        isinstance(stmt, ast.Expr)
+        and isinstance(stmt.value, ast.Call)
+        and isinstance(stmt.value.func, ast.Attribute)
+        and isinstance(stmt.value.func.value, ast.Name)
+        and stmt.value.func.value.id == "__all__"
+    )
+
+
 def _literal_all(value: ast.expr) -> list[str] | None:
     if not isinstance(value, ast.List | ast.Tuple):
         return None
@@ -137,13 +158,18 @@ class _Inventory:
         self._exports: dict[str, list[SupportBinding]] = {}
         self._resolving: list[str] = []
 
-    def source(self, text: str, label: str, *, utility: bool = False) -> list[SupportBinding]:
-        """Inventory one source's bindings; *utility* applies a utility file's stricter rules."""
+    def parse(self, text: str, label: str) -> ast.Module | None:
+        """*text* parsed, or ``None`` (reported) when it is not valid Python."""
         try:
-            tree = ast.parse(text)
+            return ast.parse(text)
         except SyntaxError as exc:
             self.result.unsupported.append(f"{label} is not valid Python (line {exc.lineno}).")
-            return []
+            return None
+
+    def source(
+        self, tree: ast.Module, label: str, *, utility: bool = False
+    ) -> list[SupportBinding]:
+        """Inventory one source's bindings; *utility* applies a utility file's stricter rules."""
         bindings: list[SupportBinding] = []
         for stmt in tree.body:
             bindings.extend(self._statement(stmt, label, utility=utility))
@@ -162,6 +188,11 @@ class _Inventory:
                 yield bound(name, provenance)
         elif isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
             yield bound(stmt.name, ("define", ast.dump(stmt)))
+        elif utility and _mutates_all(stmt):
+            self.result.unsupported.append(
+                f"{label} line {line} changes `__all__` after defining it; write it as one "
+                "literal list or tuple of names so they can be checked."
+            )
         elif isinstance(stmt, ast.Assign | ast.AnnAssign | ast.AugAssign):
             targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
             for target in targets:
@@ -183,7 +214,10 @@ class _Inventory:
                     "cannot be checked; define them at the top level."
                 )
             else:
-                # A preamble's block binds whatever either branch binds.
+                # A preamble's block binds whatever either branch binds,
+                # loop and ``with`` targets included.
+                for name in _block_target_names(stmt):
+                    yield bound(name, ("define", ast.dump(stmt)))
                 for inner in ast.iter_child_nodes(stmt):
                     if isinstance(inner, ast.stmt):
                         yield from self._statement(inner, label, utility=utility)
@@ -217,21 +251,25 @@ class _Inventory:
             )
             self._exports[module] = []
             return []
+        tree = self.parse(text, source_label)
+        if tree is None:
+            self._exports[module] = []
+            return []
         self._resolving.append(module)
         try:
-            bindings = self.source(text, source_label, utility=True)
+            bindings = self.source(tree, source_label, utility=True)
         finally:
             self._resolving.pop()
         # Only what the module exports reaches the importing namespace.
-        exports = self._exported(text, bindings, source_label)
+        exports = self._exported(tree, bindings, source_label)
         self._exports[module] = exports
         return exports
 
     def _exported(
-        self, text: str, bindings: list[SupportBinding], label: str
+        self, tree: ast.Module, bindings: list[SupportBinding], label: str
     ) -> list[SupportBinding]:
         declared: list[str] | None = None
-        for stmt in ast.parse(text).body:
+        for stmt in tree.body:
             if isinstance(stmt, ast.Assign | ast.AnnAssign) and stmt.value is not None:
                 targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
                 if any(isinstance(t, ast.Name) and t.id == "__all__" for t in targets):
@@ -262,9 +300,15 @@ def support_code_inventory(graph: PipelineGraph, read_utility: UtilityReader) ->
         (block, f"preserved block {index + 1}")
         for index, block in enumerate(graph.preserved_blocks or [])
     )
+    sources.extend(
+        (block, f"submodel {definition_id!r}'s preserved block {index + 1}")
+        for definition_id, definition in (graph.submodels or {}).items()
+        for index, block in enumerate(definition.graph.preserved_blocks or [])
+    )
     for text, label in sources:
-        if text.strip():
-            inventory.result.bindings.extend(inventory.source(text, label))
+        tree = inventory.parse(text, label) if text.strip() else None
+        if tree is not None:
+            inventory.result.bindings.extend(inventory.source(tree, label))
     return inventory.result
 
 

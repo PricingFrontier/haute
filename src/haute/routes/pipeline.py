@@ -275,7 +275,11 @@ async def resolve_pipeline_editor_identities(
     try:
         candidates = [
             NamingCandidate(
-                node_id=node.node_id, label=node.label, node_type=node.node_type, alias=node.alias
+                node_id=node.node_id,
+                label=node.label,
+                node_type=node.node_type,
+                alias=node.alias,
+                submodel=node.submodel,
             )
             for node in body.nodes
         ]

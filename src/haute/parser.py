@@ -31,6 +31,7 @@ from haute._executable_names import (
     executable_name_violations,
     format_name_violations,
 )
+from haute._flatten import flatten_graph
 from haute._graph_builders import (
     _build_edges,
     _build_rf_nodes,
@@ -418,12 +419,15 @@ def parse_pipeline_source_with_name_violations(
 
         submodel_occurrence_paths = list(submodel_paths)
         submodel_names = {registration.name for registration in registrations}
+        # Names are checked on the hierarchical graph, where each node is one
+        # authored definition; flattening (below) copies a definition's
+        # children once per occurrence.
         graph = _merge_submodels(
             graph,
             submodel_graphs,
             submodel_files,
             explicit_connects,
-            flatten=flatten,
+            flatten=False,
             registrations=registrations,
             registration_definitions=registration_definitions,
         )
@@ -454,6 +458,9 @@ def parse_pipeline_source_with_name_violations(
         _read_utility_source = utility_reader(*utility_dirs)
     if _read_utility_source is not None:
         name_violations += support_code_violations(graph, _read_utility_source)
+    if flatten and graph.submodels:
+        graph = flatten_graph(graph)
+        graph._parser_global_constants_declared = declares_global_constants
 
     logger.info(
         "pipeline_parsed",

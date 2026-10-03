@@ -226,3 +226,21 @@ def test_a_strict_parse_refuses_one_destination_and_keeps_drafts(
     else:
         graph = parse_pipeline_file(main)
         assert [node.data.config["path"] for node in graph.nodes[1:]] == ["", ""]
+
+
+def test_a_relative_and_an_absolute_path_to_one_file_are_one_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute._sandbox import set_project_root
+
+    monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)
+    graph = PipelineGraph(
+        nodes=[
+            _file_output("first", "out/result.parquet"),
+            _file_output("second", (tmp_path / "out" / "result.parquet").as_posix()),
+        ],
+        edges=[],
+    )
+
+    assert [v.kind for v in executable_name_violations(graph)] == ["output_destination"]

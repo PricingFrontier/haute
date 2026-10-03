@@ -884,6 +884,9 @@ class EditorIdentityRequestNode(BaseModel):
     label: str = Field(min_length=1, max_length=2048)
     node_type: NodeType
     alias: Annotated[str, Field(min_length=1, max_length=512)] | None = Field(default=None)
+    # The submodel definition the node belongs to in the naming context, or
+    # ``None`` for the pipeline itself. Ids are unique only within one graph.
+    submodel: Annotated[str, Field(min_length=1, max_length=512)] | None = None
     source_handles: list[Annotated[str, Field(min_length=1, max_length=512)]] = Field(
         default_factory=list,
         max_length=1024,

@@ -117,6 +117,8 @@ class NamingCandidate:
     label: str
     node_type: NodeType
     alias: str | None
+    #: The definition holding the node, or ``None`` for the pipeline itself.
+    submodel: str | None = None
 
 
 @dataclass(frozen=True)
@@ -135,14 +137,13 @@ _NAME_KINDS = frozenset({"duplicate", "reserved", "builtin", "support_collision"
 _MAX_ALLOCATION_ATTEMPTS = 10_000
 
 
-def _located(graph: PipelineGraph, node_id: str) -> str:
-    """The module holding *node_id*: the root, else the first definition holding it."""
-    if node_id in graph.node_map:
+def _located(graph: PipelineGraph, candidate: NamingCandidate) -> str:
+    """The module a candidate belongs to: the pipeline, or the definition it names."""
+    if candidate.submodel is None:
         return ROOT_MODULE
-    for definition_id, definition in (graph.submodels or {}).items():
-        if node_id in definition.graph.node_map:
-            return definition_id
-    return ROOT_MODULE
+    if candidate.submodel not in (graph.submodels or {}):
+        raise ValueError(f"Submodel {candidate.submodel!r} is not in the naming context.")
+    return candidate.submodel
 
 
 def _with_name(graph: PipelineGraph, candidate: NamingCandidate, label: str) -> PipelineGraph:
@@ -156,7 +157,7 @@ def _with_name(graph: PipelineGraph, candidate: NamingCandidate, label: str) -> 
         data = node.data.model_copy(update={"label": label, "config": config})
         return node.model_copy(update={"data": data})
 
-    module = _located(graph, candidate.node_id)
+    module = _located(graph, candidate)
     scoped = graph if module == ROOT_MODULE else (graph.submodels or {})[module].graph
     if candidate.node_id in scoped.node_map:
         nodes = [renamed(n) if n.id == candidate.node_id else n for n in scoped.nodes]
@@ -178,7 +179,7 @@ def _with_name(graph: PipelineGraph, candidate: NamingCandidate, label: str) -> 
 def _name_problem(
     graph: PipelineGraph, candidate: NamingCandidate, read_utility: UtilityReader
 ) -> str | None:
-    module = _located(graph, candidate.node_id)
+    module = _located(graph, candidate)
     for violation in name_violations(graph, read_utility):
         if violation.kind in _NAME_KINDS and any(
             party.node_id == candidate.node_id and party.module == module

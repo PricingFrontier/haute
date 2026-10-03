@@ -185,9 +185,10 @@ and handle rules; API-input handles must already be non-keyword ASCII identifier
 while submodel outputs use `out__<port_id>`. `EditorIdentitiesResponse` returns one exact-order identity per
 request node with non-empty function/default/handle identities and an optional
 config reference. The request's optional `graph` is the editor document's naming context (a
-`PipelineGraph`, as save receives it). The request's nodes are applied to it by id through
-`_editor_identities.name_candidates` (a node found in the root or a definition graph is
-renamed there, any other is added to the root), in request order. With `allocate` (which
+`PipelineGraph`, as save receives it, its preserved blocks included). The request's nodes
+are applied to it by id through `_editor_identities.name_candidates`, each in the graph its
+optional `submodel` names (the root without one; a definition the context lacks is HTTP 422),
+renamed there when present and added otherwise, in request order. With `allocate` (which
 requires `graph`) each takes the first name the naming rule allows, trying its label and
 then `<label> 2`, `<label> 3`, … (an occurrence its alias, then `<alias>_2`, …), counting
 the names earlier nodes took; without it each keeps its name and gets as `collision` the

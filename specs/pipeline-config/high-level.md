@@ -621,4 +621,6 @@ a bad or duplicate name, a value that does not fit its type, both or neither of 
 `by_source`) is a load error naming the file and the entry: the pipeline still parses, with a
 graph warning, and no save rewrites or deletes the file. A constructor keyword naming any other
 path, a submodel constructor that names one, and any other binding of `global_constants` are
-parse errors naming the line.
+parse errors naming the line, apart from a node function of that name: it breaks the codegen
+naming rule like a node named `pl`, which the strict parse refuses and the editor load reports
+as a renameable name violation.

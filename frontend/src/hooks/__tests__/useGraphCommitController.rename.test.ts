@@ -27,6 +27,7 @@ function createController(
       reservedApiInputFrameLabels: new Set<string>(),
       resolveNodeIdentities,
       resolveRenameIdentities: resolveNodeIdentities,
+      readNamingContextKey: () => "naming context",
       commitGraph,
       setSelectedNode,
       addToast,
@@ -55,7 +56,7 @@ describe("useGraphCommitController submodel occurrence rename", () => {
     const hook = renderHook(() => useGraphCommitController({
       graphRef, submodelsRef: { current: {} },
       readDocumentIdentity: () => context.document, readOnly: context.readOnly,
-      reservedApiInputFrameLabels: new Set(), resolveNodeIdentities, resolveRenameIdentities: resolveNodeIdentities,
+      reservedApiInputFrameLabels: new Set(), resolveNodeIdentities, resolveRenameIdentities: resolveNodeIdentities, readNamingContextKey: () => "naming context",
       commitGraph, setSelectedNode: vi.fn(), addToast: vi.fn(),
     }))
     let pending!: ReturnType<typeof hook.result.current.onRenameNode>
@@ -213,6 +214,39 @@ describe("useGraphCommitController submodel occurrence rename", () => {
       error: 'Occurrence names must be identifiers; use "pricing_2".',
     })
     expect(commitGraph).not.toHaveBeenCalled()
+  })
+
+  it("judges a rename again when another name changed while the server judged it", async () => {
+    const first = makeNode("first", "polars", { data: { label: "first", nodeType: "polars" } })
+    const second = makeNode("second", "polars", { data: { label: "second", nodeType: "polars" } })
+    const graphRef = { current: { nodes: [first, second], edges: [] as Edge[] } }
+    let namingKey = "before"
+    const resolveRenameIdentities = vi.fn(async (candidateNodes: readonly Node[]) => {
+      // The other node is renamed while the first verdict is on its way.
+      if (resolveRenameIdentities.mock.calls.length === 1) namingKey = "after"
+      return candidateNodes.map((n) => ({ ...n, data: { ...n.data, _functionName: String(n.data.label) } }))
+    })
+    const commitGraph = vi.fn()
+    const { result } = renderHook(() => useGraphCommitController({
+      graphRef,
+      submodelsRef: { current: {} },
+      readDocumentIdentity: () => "doc-1",
+      readOnly: false,
+      reservedApiInputFrameLabels: new Set<string>(),
+      resolveNodeIdentities: resolveRenameIdentities,
+      resolveRenameIdentities,
+      readNamingContextKey: () => namingKey,
+      commitGraph,
+      setSelectedNode: vi.fn(),
+      addToast: vi.fn(),
+    }))
+
+    await act(async () => {
+      await result.current.onRenameNode("first", "renamed")
+    })
+
+    expect(resolveRenameIdentities).toHaveBeenCalledTimes(2)
+    expect(commitGraph).toHaveBeenCalledOnce()
   })
 
   it("refuses a rename the server names a collision for, applying nothing", async () => {
