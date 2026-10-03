@@ -661,10 +661,15 @@ def my_step() -> pl.DataFrame:
     return pl.DataFrame()
 '''
         p = _write_pipeline(tmp_path, code)
-        graph = parse_pipeline_file(p)
+        from haute.parser import parse_pipeline_source_with_name_violations
 
-        # The decorator checker looks for @pipeline.<type> on FunctionDefs.
-        # Even without a proper Pipeline() constructor, nodes should parse.
+        graph, violations = parse_pipeline_source_with_name_violations(
+            p.read_text(encoding="utf-8"), str(p), _base_dir=tmp_path
+        )
+
+        # The preamble's own ``pipeline`` binding is a name violation (NAME-03),
+        # which the strict parse refuses; the decorators still parse.
+        assert [(v.kind, v.name) for v in violations] == [("support_reserved", "pipeline")]
         assert len(graph.nodes) == 1
         assert graph.nodes[0].id == "my_step"
         # Pipeline name defaults to "main" when no haute.Pipeline() found.

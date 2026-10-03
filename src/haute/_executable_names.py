@@ -49,7 +49,17 @@ ROOT_MODULE = "the pipeline"
 
 _STRUCTURAL_TYPES = (NodeType.SUBMODEL_PORT,)
 
-ViolationKind = Literal["duplicate", "reserved", "builtin", "reserved_input"]
+ViolationKind = Literal[
+    "duplicate",
+    "reserved",
+    "builtin",
+    "reserved_input",
+    "support_collision",
+    "support_input",
+    "support_conflict",
+    "support_reserved",
+    "support_unsupported",
+]
 
 
 @dataclass(frozen=True)
@@ -84,6 +94,8 @@ class NameViolation:
         return tuple(party.node_id for party in self.parties)
 
     def message(self) -> str:
+        if self.kind.startswith("support_"):
+            return self._support_message()
         if self.kind == "duplicate":
             nodes = " and ".join(party.describe() for party in self.parties)
             return (
@@ -104,6 +116,32 @@ class NameViolation:
         return (
             f"Node {party.describe()} receives an input named `{self.name}` "
             f"({self.origin}), which its code binds to {RESERVED_NAMES[self.name]}."
+        )
+
+    def _support_message(self) -> str:
+        # ``origin`` says where the support code binds the name (NAME-03).
+        if self.kind == "support_unsupported":
+            return self.origin
+        if self.kind == "support_conflict":
+            return (
+                f"`{self.name}` is bound by {self.origin}; only the last would be seen. "
+                "Remove or rename one."
+            )
+        if self.kind == "support_reserved":
+            return (
+                f"{self.origin} binds `{self.name}`, which the generated module binds to "
+                f"{RESERVED_NAMES[self.name]}. Rename it."
+            )
+        party = self.parties[0]
+        if self.kind == "support_collision":
+            return (
+                f"Node {party.describe()} takes the name `{self.name}`, which {self.origin} "
+                "binds; the node would replace it for every other node. Rename the node or "
+                "the helper."
+            )
+        return (
+            f"Node {party.describe()} receives an input named `{self.name}`, which "
+            f"{self.origin} binds. Rename the input or the helper."
         )
 
 

@@ -32,17 +32,17 @@ export default function NameViolationsBanner({ onSelectViolation }: NameViolatio
       <div className="flex items-center gap-2">
         <AlertTriangle size={14} aria-hidden="true" />
         <span className="flex-1">
-          Rename {violations.length === 1 ? "this name" : `these ${violations.length} names`} before
-          saving or running the pipeline.
+          Resolve {violations.length === 1 ? "this name issue" : `these ${violations.length} name issues`}{" "}
+          before saving or running the pipeline.
         </span>
       </div>
       <ol className="mt-1 max-h-40 overflow-auto space-y-1" aria-label="Name violations">
         {violations.map((violation) => (
-          <li key={`${violation.kind}:${violation.name}:${violation.parties.map((p) => p.node_id).join(",")}`}>
+          <li key={`${violation.kind}:${violation.name}:${violation.message}`}>
             <button
               type="button"
               className="w-full rounded px-2 py-1 text-left hover-chrome-solid disabled:cursor-default"
-              disabled={onSelectViolation === undefined}
+              disabled={onSelectViolation === undefined || violation.parties.length === 0}
               onClick={() => onSelectViolation?.(violation)}
             >
               {violation.message}

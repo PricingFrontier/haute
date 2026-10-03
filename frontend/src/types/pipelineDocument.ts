@@ -146,9 +146,23 @@ export interface PipelineNameViolationParty {
   submodel: string | null
 }
 
-/** One executable-name violation (codegen's naming rule) with the server's message. */
+const NAME_VIOLATION_KINDS = [
+  "duplicate",
+  "reserved",
+  "builtin",
+  "reserved_input",
+  "support_collision",
+  "support_input",
+  "support_conflict",
+  "support_reserved",
+  "support_unsupported",
+] as const
+
+/** One name violation (codegen's naming rule, or support code's) with the server's message;
+ *  one involving no node (two helpers, an unreadable statement) has no parties. */
 export interface PipelineNameViolation {
-  kind: "duplicate" | "reserved" | "builtin" | "reserved_input"
+  kind: (typeof NAME_VIOLATION_KINDS)[number]
+  /** Empty for a support-code statement the server cannot read. */
   name: string
   message: string
   parties: PipelineNameViolationParty[]
@@ -626,8 +640,6 @@ export function parseNodeCompleteness(value: unknown, field: string): PipelineNo
   }
 }
 
-const NAME_VIOLATION_KINDS = ["duplicate", "reserved", "builtin", "reserved_input"] as const
-
 /** Parse a list of name violations: a document's, or an identity response's. */
 export function parseNameViolations(value: unknown, field: string): PipelineNameViolation[] {
   return expectArray(PARSER, value, field).map((item, index) => {
@@ -644,10 +656,9 @@ export function parseNameViolations(value: unknown, field: string): PipelineName
         submodel: nullableString(partyObject, "submodel", partyAt),
       }
     })
-    if (parties.length === 0) throw new Error(`${PARSER}: ${at}.parties must not be empty`)
     return {
       kind: expectStringLiteral(PARSER, object.kind, `${at}.kind`, NAME_VIOLATION_KINDS),
-      name: expectNonBlankString(PARSER, object.name, `${at}.name`),
+      name: expectString(PARSER, object.name, `${at}.name`),
       message: expectNonBlankString(PARSER, object.message, `${at}.message`),
       parties,
     }

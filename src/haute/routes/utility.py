@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException
 from haute._io import read_user_text
 from haute._logging import get_logger
 from haute._sandbox import contained_path
-from haute.routes._helpers import pipeline_dir
+from haute.routes._helpers import discover_pipelines, pipeline_dir
 from haute.schemas import (
     UtilityCreateRequest,
     UtilityDeleteResponse,
@@ -75,6 +75,59 @@ def _format_syntax_error(err_msg: str | None, err_line: int | None) -> str:
     if err_line is None:
         return f"Syntax error: {msg}"
     return f"Syntax error on line {err_line}: {msg}"
+
+
+def _refuse_new_name_violations(module: str, content: str) -> None:
+    """Refuse a utility edit that would make a project pipeline's names collide.
+
+    Each project pipeline is parsed with its support code read twice, as it
+    is and with *module* holding *content*; only violations the edit adds are
+    refused, naming the pipeline and the colliding node. A pipeline that does
+    not parse is skipped: it fails on its own, whatever this file holds.
+    """
+    from haute._support_code_names import utility_reader
+    from haute.errors import HauteError
+    from haute.parser import parse_pipeline_source_with_name_violations
+
+    base = pipeline_dir()
+    current = utility_reader(base, Path.cwd().resolve())
+
+    def edited(name: str) -> str | None:
+        return content if name == module else current(name)
+
+    problems: list[str] = []
+    for pipeline_file in discover_pipelines():
+        source = read_user_text(pipeline_file)
+        if "utility" not in source:
+            continue
+        try:
+            violations = [
+                {
+                    violation.message()
+                    for violation in parse_pipeline_source_with_name_violations(
+                        source,
+                        source_file=str(pipeline_file),
+                        _base_dir=pipeline_file.parent,
+                        _read_utility_source=reader,
+                    )[1]
+                }
+                for reader in (current, edited)
+            ]
+        except (HauteError, OSError, UnicodeError) as exc:
+            logger.info("utility_check_pipeline_skipped", path=str(pipeline_file), error=str(exc))
+            continue
+        before, after = violations
+        added = sorted(after - before)
+        if added:
+            problems.append(f"Pipeline {pipeline_file.name!r}: " + " ".join(added))
+    if problems:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Saving utility/{module}.py would break names in a pipeline that imports it. "
+                "Nothing was saved. " + " ".join(problems)
+            ),
+        )
 
 
 def _ensure_init(utility_dir: Path) -> None:
@@ -145,6 +198,7 @@ async def create_utility_file(body: UtilityCreateRequest) -> UtilityWriteRespons
             detail=_format_syntax_error(err_msg, err_line),
         )
 
+    _refuse_new_name_violations(body.name, content)
     target.write_text(content, encoding="utf-8")
     import_line = f"from utility.{body.name} import *"
     logger.info("utility_file_created", module=body.name)
@@ -179,6 +233,7 @@ async def update_utility_file(module: str, body: UtilityWriteRequest) -> Utility
             detail=_format_syntax_error(err_msg, err_line),
         )
 
+    _refuse_new_name_violations(module, body.content)
     target.write_text(body.content, encoding="utf-8")
     logger.info("utility_file_updated", module=module)
 

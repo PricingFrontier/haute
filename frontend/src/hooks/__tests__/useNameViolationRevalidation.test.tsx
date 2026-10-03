@@ -92,7 +92,7 @@ describe("the document's name violations", () => {
     const onSelect = vi.fn()
     render(<NameViolationsBanner onSelectViolation={onSelect} />)
 
-    expect(screen.getByTestId("name-violations-banner")).toHaveTextContent("these 2 names")
+    expect(screen.getByTestId("name-violations-banner")).toHaveTextContent("these 2 name issues before saving")
     fireEvent.click(screen.getByText(DUPLICATE.message))
     expect(onSelect).toHaveBeenCalledWith(DUPLICATE)
 

@@ -175,9 +175,14 @@ nodes use the bounded, side-effect-free `POST /api/pipeline/editor-identities`
 contract. Submodel and drilled Input requests carry an exact handle-to-public-label
 map so the server, rather than the browser, derives their executable names. The
 response preserves request order and never reads or writes project state. The request may
-also carry the document's naming context: the whole graph, in the representation save
-receives, with the request's nodes applied. The response then lists the executable-name
-violations that remain in it (`violations`), as the document carries them.
+also carry the document's naming context, and it then stops being pure: its verdict is a
+function of the request and of the project's saved utility files, which it reads (and only
+those) to resolve `utility.<module>` star imports, from where the executor imports them. The
+naming context is the whole graph, in the representation save receives, with the request's
+nodes applied. The response then lists the name violations (executable names and support
+code) that remain in it (`violations`), as the document carries them. Utility files reach the
+disk only through the utility routes, and save, preview and the deployed scorer read the same
+files, so the editor and save judge one set of utility contents.
 
 A file whose names break the codegen specification's executable-name rule in a way the
 parser can build a graph from (anything but a structural collision; expression-parsing)
@@ -276,7 +281,12 @@ disconnects.
 **Utility scripts.** `GET/POST/PUT/DELETE /api/utility[/{module}]` manage Python files under
 the project's `utility/` directory — reusable helpers a pipeline's preamble imports via
 `from utility.<module> import *`. Every write is AST-syntax-checked before landing on disk;
-a syntax error is rejected with a line-numbered message, never written half-valid.
+a syntax error is rejected with a line-numbered message, never written half-valid. Create and
+update also parse every project pipeline that mentions `utility` twice, with its support code
+read as it is and with the module holding the new content, and refuse (HTTP 400, nothing
+written) any name violation the edit adds (codegen "Names cannot collide with support code"),
+naming the pipeline and the colliding node; a pipeline that does not parse is skipped, since
+it fails on its own.
 
 **OUTPUT assembly dry-run.** `POST /api/output-assemble/dry-run` lets the OUTPUT node editor
 preview the assembled JSON response from an *in-progress, unsaved* field→path mapping: it

@@ -54,6 +54,7 @@ from haute._parser_submodels import merge_submodels as _merge_submodels
 from haute._parser_submodels import parse_submodel_source as _parse_submodel_source
 from haute._project import get_project_root
 from haute._submodel_paths import resolve_submodel_reference
+from haute._support_code_names import UtilityReader, support_code_violations, utility_reader
 from haute._types import GLOBAL_CONSTANTS_FILE, GlobalConstant
 from haute.errors import ConfigError, ParseError
 from haute.graph_utils import PipelineGraph
@@ -236,6 +237,7 @@ def parse_pipeline_source_with_name_violations(
     _submodel_base_dir: Path | None = None,
     _read_submodel_source: Callable[[Path], str] | None = None,
     _read_global_constants_bytes: Callable[[Path], bytes] | None = None,
+    _read_utility_source: UtilityReader | None = None,
 ) -> tuple[PipelineGraph, list[NameViolation]]:
     """Parse pipeline source code and return a PipelineGraph with its name violations.
 
@@ -443,6 +445,15 @@ def parse_pipeline_source_with_name_violations(
         graph_label=graph.pipeline_name or source_file or "pipeline",
     )
     name_violations = executable_name_violations(graph)
+    if _read_utility_source is None and _base_dir is not None:
+        # Support code is checked against the utility files the executor would
+        # import: the pipeline directory's, then the project's.
+        utility_dirs = [_base_dir]
+        if _submodel_base_dir is not None and _submodel_base_dir != _base_dir:
+            utility_dirs.append(_submodel_base_dir)
+        _read_utility_source = utility_reader(*utility_dirs)
+    if _read_utility_source is not None:
+        name_violations += support_code_violations(graph, _read_utility_source)
 
     logger.info(
         "pipeline_parsed",

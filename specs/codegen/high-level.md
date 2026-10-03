@@ -120,6 +120,33 @@ Out of scope (owned by neighbouring components):
   the file is imported or run with `pipeline.run()`, while the canvas, which runs each body
   against the preamble namespace alone, kept working. Every violation is listed in one
   message naming each node, its module and the name.
+- **Names cannot collide with support code.** Support code is what the module runs before
+  its node functions: the root preamble, each submodel preamble (appended to the parent's
+  when instances expand), the preserved blocks, and the `utility.<module>` files they
+  star-import. `haute._support_code_names` inventories the names it binds statically, with
+  provenance (what each binds), importing nothing. Supported forms are `import` and
+  `from … import` (with aliases), top-level `def`, `class` and assignment targets, and a star
+  import of `utility.<module>`, resolved by parsing that file (from the pipeline directory,
+  then the project root, as the executor imports it) under the same forms, recursively with
+  cycle detection; a utility exports its literal `__all__` or, without one, its top-level
+  names without a leading underscore. A preamble block (`if`, `try`) contributes whatever its
+  branches bind. Refused, with the rest of the naming rule's violations:
+  - a node function name or input binding equal to a support-code binding (an input named
+    after a node is that node's collision);
+  - one name bound by two support-code sources to different provenance; re-importing one
+    object (`import polars as pl` in a utility and the preamble) or writing one definition
+    twice is one provenance;
+  - a support-code binding of a reserved name, apart from `import haute` and
+    `import polars as pl`;
+  - whatever keeps the inventory incomplete, naming the statement: a computed `__all__` or
+    one naming what the module does not bind, a binding inside a block at module level in a
+    star-imported utility, a star import of a module outside `utility`, a star import of a
+    utility file that does not exist, or a cycle of utility star imports.
+
+  Save, the strict parse (so `haute run` and deploy), the editor load (expression-parsing
+  and server-api) and the editor identity request apply it, and saving a utility file checks
+  every project pipeline against the edit (server-api). Canvas execution does not: it runs
+  each body against the preamble, where the helper wins.
 - **Function parameters are the listed input names, 1:1.** Each parameter of a
   generated node function is the *input name* of one incoming edge, derived by
   `haute._graph_utils.edge_input_name` in edge order: an `apiInput`-frame edge

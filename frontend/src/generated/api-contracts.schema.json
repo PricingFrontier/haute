@@ -11012,14 +11012,19 @@
     },
     "PipelineNameViolation": {
       "additionalProperties": false,
-      "description": "One executable-name violation (codegen's naming rule), with its message.",
+      "description": "One name violation (codegen's naming rule, or support code's), with its message.\n\nA support-code violation that involves no node (two helpers binding one\nname, a statement the inventory cannot read) has no parties, and an\nunreadable statement has no name.",
       "properties": {
         "kind": {
           "enum": [
             "duplicate",
             "reserved",
             "builtin",
-            "reserved_input"
+            "reserved_input",
+            "support_collision",
+            "support_input",
+            "support_conflict",
+            "support_reserved",
+            "support_unsupported"
           ],
           "title": "Kind",
           "type": "string"
@@ -11030,7 +11035,6 @@
           "type": "string"
         },
         "name": {
-          "minLength": 1,
           "title": "Name",
           "type": "string"
         },
@@ -11038,7 +11042,6 @@
           "items": {
             "$ref": "#/$defs/PipelineNameViolationParty"
           },
-          "minItems": 1,
           "title": "Parties",
           "type": "array"
         }

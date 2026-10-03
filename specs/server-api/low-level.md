@@ -33,7 +33,7 @@
 | `src/haute/routes/_rating_levels.py` | Reads those levels over the node's shared data point under `run_synchronous_analysis`, keyed by the rating lookup's own key expression. |
 | `src/haute/routes/_node_data_service.py` | `NodeDataService`: consumer point responses, delegation, explicit node-output build jobs in isolated workers, the data-profile job, supersession, cancellation, and clear. `points_for_graph` resolves every node of a graph against one resolver for the per-node cache report, returning each node's input-snapshot identity digest alongside its point. |
 | `src/haute/routes/_synchronous_analysis.py` | Request-time analyses of a leased point: admitted execution, memoisation by data version, and client-disconnect cancellation. |
-| `src/haute/routes/utility.py` | `/api/utility` CRUD (list/read/create/update/delete) for `utility/*.py` helper modules, with AST syntax validation on every write. |
+| `src/haute/routes/utility.py` | `/api/utility` CRUD (list/read/create/update/delete) for `utility/*.py` helper modules, with AST syntax validation on every write; create and update first run `_refuse_new_name_violations`, which parses each discovered pipeline mentioning `utility` with the current and the edited utility reader and refuses the support-code violations only the edit adds. |
 | `src/haute/routes/_save_pipeline.py` | `SavePipelineService` — the transactional save orchestrator: singleton/name-collision/load-error validation, codegen invocation, config-file + sidecar writes, stale-config cleanup, and rollback. Global constants: save takes the constants load state from the file on disk (`_adopt_disk_global_constants_state`), `validate_graph` refuses what would shadow the reserved name or read an undefined constant (`_validate_global_constants`), and the constants file is written with the node configs, retired with the stale ones, and left untouched while it fails to load. |
 | `src/haute/routes/_supersession.py` | `SupersessionCoordinator` / `_SupersessionState` — generation-counted "run latest, cancel/skip the rest" concurrency primitive used by preview, trace and the free-code column resolution. |
 | `src/haute/routes/output_assemble.py` | `POST /api/output-assemble/dry-run` — validates an unsaved `outputMapping`, swaps it into the target node's in-memory config, executes up to that node, returns the rendered document. |
@@ -186,8 +186,12 @@ while submodel outputs use `out__<port_id>`. `EditorIdentitiesResponse` returns 
 request node with non-empty function/default/handle identities and an optional
 config reference. The request's optional `graph` is the editor document's naming context (a
 `PipelineGraph`, as save receives it); with it the response's `violations` is
-`name_violations_payload(executable_name_violations(graph))`, and without it `null`.
-Resolution is pure and performs no project I/O.
+`name_violations_payload(name_violations(graph, utility_reader(pipeline_dir(), cwd)))`, the
+executable-name and support-code violations, and without it `null`. Resolution without a
+naming context is pure and performs no project I/O; with one it reads the utility files the
+graph's support code star-imports and nothing else. Save's `validate_graph` runs
+`_validate_support_code_names` (the same check, reading from the pipeline root, then the
+project root) after the executable-name check.
 
 **`SidecarModel`** (`haute/_sidecar.py`, re-exported by `routes/_helpers.py`) is the typed `.haute.json` schema: `positions:
 dict[str, dict[str, float]]` (written in key order, so re-saving a graph reloaded in its source file's node order leaves the file unchanged), `sources: list[str]` (defaults to `["live"]`), `active_source:

@@ -225,7 +225,9 @@ submodel constructor that declares constants are `ParseError`s naming the line.
   occurrence named like a root node. Such a file goes to editor recovery. Every other
   violation of the codegen specification's executable-name rule (`haute._executable_names`:
   names equal ignoring case across the root and submodel graphs, a reserved or built-in node
-  name, a reserved node input) is *semantic*: it is collected after the graph is built,
+  name, a reserved node input, and, when the parse has a base directory to read utility files
+  from, the support-code collisions of the codegen specification) is *semantic*: it is
+  collected after the graph is built,
   without discarding the graph. `parse_pipeline_source_with_name_violations` returns the
   graph with its violations; `parse_pipeline_source` and `parse_pipeline_file` (the strict
   form `haute run`, deploy and codegen's post-save parse use) raise one `ParseError` listing

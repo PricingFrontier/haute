@@ -814,14 +814,29 @@ class PipelineNameViolationParty(BaseModel):
 
 
 class PipelineNameViolation(BaseModel):
-    """One executable-name violation (codegen's naming rule), with its message."""
+    """One name violation (codegen's naming rule, or support code's), with its message.
+
+    A support-code violation that involves no node (two helpers binding one
+    name, a statement the inventory cannot read) has no parties, and an
+    unreadable statement has no name.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["duplicate", "reserved", "builtin", "reserved_input"]
-    name: str = Field(min_length=1)
+    kind: Literal[
+        "duplicate",
+        "reserved",
+        "builtin",
+        "reserved_input",
+        "support_collision",
+        "support_input",
+        "support_conflict",
+        "support_reserved",
+        "support_unsupported",
+    ]
+    name: str
     message: str = Field(min_length=1)
-    parties: list[PipelineNameViolationParty] = Field(min_length=1)
+    parties: list[PipelineNameViolationParty]
 
 
 class PipelineEditorDocument(BaseModel):

@@ -601,8 +601,8 @@ class SavePipelineService:
         drift onto separate structural validators.
         """
 
-        # Names first: flattening refuses a violation without the save wording.
         self._validate_executable_names(graph)
+        self._validate_support_code_names(graph)
         flattened = flatten_graph(graph)
         self._validate_singletons(flattened)
         self._validate_nothing_leaves_a_sink(flattened)
@@ -970,6 +970,19 @@ class SavePipelineService:
             for source in sources
             if source not in constant.by_source
         ]
+
+    def _validate_support_code_names(self, graph: PipelineGraph) -> None:
+        """Refuse names that collide with support code, or support code with itself.
+
+        The utility files are read where the executor imports them from: the
+        pipeline directory, then the project root.
+        """
+        from haute._executable_names import format_name_violations
+        from haute._support_code_names import support_code_violations, utility_reader
+
+        violations = support_code_violations(graph, utility_reader(self._pipeline_root, self._root))
+        if violations:
+            raise HTTPException(status_code=400, detail=format_name_violations(violations))
 
     @staticmethod
     def _validate_executable_names(graph: PipelineGraph) -> None:

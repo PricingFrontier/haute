@@ -228,15 +228,25 @@ export interface EditorIdentityResponseNode {
   };
 }
 /**
- * One executable-name violation (codegen's naming rule), with its message.
+ * One name violation (codegen's naming rule, or support code's), with its message.
+ *
+ * A support-code violation that involves no node (two helpers binding one
+ * name, a statement the inventory cannot read) has no parties, and an
+ * unreadable statement has no name.
  */
 export interface PipelineNameViolation {
-  kind: 'duplicate' | 'reserved' | 'builtin' | 'reserved_input';
+  kind:
+    | 'duplicate'
+    | 'reserved'
+    | 'builtin'
+    | 'reserved_input'
+    | 'support_collision'
+    | 'support_input'
+    | 'support_conflict'
+    | 'support_reserved'
+    | 'support_unsupported';
   message: string;
   name: string;
-  /**
-   * @minItems 1
-   */
   parties: PipelineNameViolationParty[];
 }
 /**

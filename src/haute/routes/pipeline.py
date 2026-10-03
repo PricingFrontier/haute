@@ -21,7 +21,6 @@ from fastapi.responses import JSONResponse
 from haute._cache import GraphFingerprintMemo, canonical_json
 from haute._editor_identities import resolve_editor_identity
 from haute._env import int_env
-from haute._executable_names import executable_name_violations
 from haute._execution_admission import (
     ExecutionAdmissionError,
     IsolatedExecutionBudget,
@@ -107,6 +106,7 @@ from haute._step_progress import (
     current_job_progress_reporter,
 )
 from haute._submodel_instances import qualified_runtime_node_id, resolve_submodel_instances
+from haute._support_code_names import name_violations, utility_reader
 from haute._topo import ancestors
 from haute._types import GlobalConstant, GraphEdge, GraphNode, NodeData, SubmodelDefinition
 from haute._worker_isolation import (
@@ -284,11 +284,12 @@ async def resolve_pipeline_editor_identities(
             )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    violations = (
-        None
-        if body.graph is None
-        else name_violations_payload(executable_name_violations(body.graph))
-    )
+    violations = None
+    if body.graph is not None:
+        # The one project state this reads: the utility files the graph's
+        # support code star-imports, as save and the executor read them.
+        read_utility = utility_reader(pipeline_dir(), Path.cwd().resolve())
+        violations = name_violations_payload(name_violations(body.graph, read_utility))
     return EditorIdentitiesResponse(identities=identities, violations=violations)
 
 
