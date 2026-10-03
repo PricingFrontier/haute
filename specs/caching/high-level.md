@@ -28,6 +28,12 @@ defined by their checked consumer contract. Presentation-only fields are explici
 classified and excluded. `lineage_cache_key()` is the common preview/trace factory; callers
 do not key directly from `graph_fingerprint()` alone.
 
+Every identity that covers a node's result signs the global constants that node's lineage
+reads, so editing a constant re-runs only the nodes that read it and their descendants. Preview
+and trace keys sign the value for their source, so editing one source's value leaves other
+sources' previews cached; graph fingerprints (and the snapshots, seed plans and data points
+built on them) sign every value of each read constant.
+
 Eight maintained consumers — graph structure, graph execution, preview/trace,
 runtime graph input, deploy schema, model contract, input snapshot, and
 node-snapshot signature — each declare one complete versioned field set.

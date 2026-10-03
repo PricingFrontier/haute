@@ -42,7 +42,6 @@ import PipelineLoadFailureView from "./components/PipelineLoadFailureView"
 import PipelineRecoveryBanner from "./components/PipelineRecoveryBanner"
 import type { PipelineRepairTarget } from "./components/PipelineRepairDialog"
 import SourceRecoveryView from "./components/SourceRecoveryView"
-import ImportsPanel from "./panels/ImportsPanel"
 import type { ComparisonInspect } from "./components/ComparisonView"
 import EdgeJoinInsertionFeedback from "./components/EdgeJoinInsertionFeedback"
 import { withEdgeJoinInsertionCandidate } from "./utils/edgeJoinInsertionFeedback"
@@ -115,6 +114,7 @@ const PipelineRepairDialog = lazy(() => import("./components/PipelineRepairDialo
 const ConnectionDropMenu = lazy(() => import("./components/ConnectionDropMenu"))
 const GitPanel = lazy(() => import("./panels/GitPanel"))
 const UtilityPanel = lazy(() => import("./panels/UtilityPanel"))
+const GlobalConstantsPanel = lazy(() => import("./panels/GlobalConstantsPanel"))
 const AssistantPanel = lazy(() => import("./panels/assistant/AssistantPanel"))
 const ComparisonView = lazy(() => import("./components/ComparisonView"))
 const ComparisonInspector = lazy(() => import("./components/ComparisonInspector"))
@@ -511,11 +511,11 @@ function FlowEditorOverlays({
 type NodePropertiesPanelProps = {
   gitOpen: boolean
   utilityOpen: boolean
-  importsOpen: boolean
+  constantsOpen: boolean
   assistantOpen: boolean
   onCloseGit: () => void
   onCloseUtility: () => void
-  onCloseImports: () => void
+  onCloseConstants: () => void
   onSave: () => Promise<boolean>
   preamble: string
   onImportAdded: (importLine: string) => void
@@ -552,11 +552,11 @@ type NodePropertiesPanelProps = {
 function NodePropertiesPanel({
   gitOpen,
   utilityOpen,
-  importsOpen,
+  constantsOpen,
   assistantOpen,
   onCloseGit,
   onCloseUtility,
-  onCloseImports,
+  onCloseConstants,
   onSave,
   preamble,
   onImportAdded,
@@ -602,16 +602,19 @@ function NodePropertiesPanel({
   } else if (utilityOpen) {
     content = (
       <Suspense fallback={null}>
-        <UtilityPanel onClose={onCloseUtility} onImportAdded={onImportAdded} />
+        <UtilityPanel
+          onClose={onCloseUtility}
+          onImportAdded={onImportAdded}
+          preamble={preamble}
+          onPreambleChange={onPreambleChange}
+        />
       </Suspense>
     )
-  } else if (importsOpen) {
+  } else if (constantsOpen) {
     content = (
-      <ImportsPanel
-        preamble={preamble}
-        onPreambleChange={onPreambleChange}
-        onClose={onCloseImports}
-      />
+      <Suspense fallback={null}>
+        <GlobalConstantsPanel onClose={onCloseConstants} readOnly={documentEditingReadOnly} />
+      </Suspense>
     )
   } else if (assistantOpen) {
     content = (
@@ -718,8 +721,8 @@ function FlowEditor() {
   const setPaletteOpen = useUIStore((s) => s.setPaletteOpen)
   const utilityOpen = useUIStore((s) => s.utilityOpen)
   const setUtilityOpen = useUIStore((s) => s.setUtilityOpen)
-  const importsOpen = useUIStore((s) => s.importsOpen)
-  const setImportsOpen = useUIStore((s) => s.setImportsOpen)
+  const constantsOpen = useUIStore((s) => s.constantsOpen)
+  const setConstantsOpen = useUIStore((s) => s.setConstantsOpen)
   const gitOpen = useUIStore((s) => s.gitOpen)
   const setGitOpen = useUIStore((s) => s.setGitOpen)
   const assistantOpen = useUIStore((s) => s.assistantOpen)
@@ -804,9 +807,9 @@ function FlowEditor() {
     setLastSelectedId(null)
     setPreviewDataRef.current(null)
     setUtilityOpen(false)
-    setImportsOpen(false)
+    setConstantsOpen(false)
     setGitOpen(false)
-  }, [setUtilityOpen, setImportsOpen, setGitOpen])
+  }, [setUtilityOpen, setConstantsOpen, setGitOpen])
 
   // Node results store — background jobs + cached results
   const getOptimiserPreview = useNodeResultsStore((s) => s.getOptimiserPreview)
@@ -1498,9 +1501,9 @@ function FlowEditor() {
     setLastSelectedId(node.id)
     lastSelectedNodeRef.current = node
     setUtilityOpen(false)
-    setImportsOpen(false)
+    setConstantsOpen(false)
     setGitOpen(false)
-  }, [setGitOpen, setImportsOpen, setUtilityOpen])
+  }, [setGitOpen, setConstantsOpen, setUtilityOpen])
 
   const handleNodeSearchSelect = useCallback((nodeId: string) => {
     const node = graphRef.current.nodes.find((candidate) => candidate.id === nodeId) ?? null
@@ -1509,10 +1512,10 @@ function FlowEditor() {
     setLastSelectedId(node.id)
     lastSelectedNodeRef.current = node
     setUtilityOpen(false)
-    setImportsOpen(false)
+    setConstantsOpen(false)
     setGitOpen(false)
     centreNode(node.id, NODE_SEARCH_FOCUS_ZOOM)
-  }, [centreNode, setGitOpen, setImportsOpen, setUtilityOpen])
+  }, [centreNode, setGitOpen, setConstantsOpen, setUtilityOpen])
 
   // Point the assistant at a failing node: select it alone, as a click would,
   // and open the panel with its preview error on the next message.
@@ -1640,7 +1643,7 @@ function FlowEditor() {
         onZoomIn={() => zoomIn()}
         onZoomOut={() => zoomOut()}
         onOpenUtility={() => { setUtilityOpen(true); setSelectedNode(null); setLastSelectedId(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
-        onOpenImports={() => { setImportsOpen(true); setSelectedNode(null); setLastSelectedId(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
+        onOpenConstants={() => { setConstantsOpen(true); setSelectedNode(null); setLastSelectedId(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
         submodelAction={selectedSubmodelId === null ? "create" : "dissolve"}
         canRunSubmodelAction={canRunSubmodelAction}
         onSubmodelAction={handleToolbarSubmodelAction}
@@ -1781,14 +1784,14 @@ function FlowEditor() {
                 onMoveStart={handleActiveNodeMoveStart}
                 onNodeMouseEnter={(_event, node) => setHoveredNodeId(node.id)}
                 onNodeMouseLeave={() => setHoveredNodeId(null)}
-                onNodeClick={(event, node) => { setUtilityOpen(false); setImportsOpen(false); setGitOpen(false); setHoveredNodeId(null); onNodeClick(event, node) }}
+                onNodeClick={(event, node) => { setUtilityOpen(false); setConstantsOpen(false); setGitOpen(false); setHoveredNodeId(null); onNodeClick(event, node) }}
                 onNodeContextMenu={editingReadOnly ? undefined : onNodeContextMenu}
                 onNodeDoubleClick={(_event, node) => {
                   if (nodeData(node).nodeType === NODE_TYPES.SUBMODEL) {
                     const config = nodeData(node).config
                     if (isSubmodelInstanceConfig(config) && config.instanceOf !== undefined) {
                       setUtilityOpen(false)
-                      setImportsOpen(false)
+                      setConstantsOpen(false)
                       setAssistantOpen(false)
                       setContextMenu(null)
                       setRenameDialog(null)
@@ -1841,11 +1844,11 @@ function FlowEditor() {
         <NodePropertiesPanel
           gitOpen={gitOpen}
           utilityOpen={utilityOpen}
-          importsOpen={importsOpen}
+          constantsOpen={constantsOpen}
           assistantOpen={assistantOpen}
           onCloseGit={() => setGitOpen(false)}
           onCloseUtility={() => setUtilityOpen(false)}
-          onCloseImports={() => setImportsOpen(false)}
+          onCloseConstants={() => setConstantsOpen(false)}
           onSave={saveWithPendingCommits}
           preamble={preamble}
           onImportAdded={handleImportAdded}

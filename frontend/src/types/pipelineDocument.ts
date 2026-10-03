@@ -20,6 +20,11 @@ import {
   expectString,
   expectStringLiteral,
 } from "./guards"
+import {
+  GLOBAL_CONSTANT_TYPES,
+  type GlobalConstant,
+  type GlobalConstantValue,
+} from "../utils/globalConstants"
 
 const PARSER = "parsePipelineEditorDocument"
 const AVAILABILITY = ["ready", "unavailable", "blocked"] as const
@@ -152,6 +157,8 @@ export interface PipelineEditorDocument extends RecoveryGraph {
   pipeline_description: string | null
   preamble: string | null
   preserved_blocks: string[]
+  global_constants: GlobalConstant[]
+  global_constants_error: string | null
   source_file: string
   source_revision: string | null
   source_text: string
@@ -172,6 +179,30 @@ function exactKeys(
   expected: string[],
 ): void {
   expectExactKeys(PARSER, object, field, expected)
+}
+
+function constantValue(value: unknown, field: string): GlobalConstantValue {
+  if (typeof value === "string" || typeof value === "boolean") return value
+  return expectNumber(PARSER, value, field)
+}
+
+function parseGlobalConstant(value: unknown, field: string): GlobalConstant {
+  const object = expectPlainObject(PARSER, value, field)
+  const type = expectStringLiteral(PARSER, object.type, `${field}.type`, GLOBAL_CONSTANT_TYPES)
+  const constant: GlobalConstant = { name: expectString(PARSER, object.name, `${field}.name`), type }
+  if (object.value !== null && object.value !== undefined) {
+    constant.value = constantValue(object.value, `${field}.value`)
+  }
+  if (object.by_source !== null && object.by_source !== undefined) {
+    const bySource = expectPlainObject(PARSER, object.by_source, `${field}.by_source`)
+    constant.by_source = Object.fromEntries(
+      Object.entries(bySource).map(([source, item]) => [
+        source,
+        constantValue(item, `${field}.by_source.${source}`),
+      ]),
+    )
+  }
+  return constant
 }
 
 function stringArray(value: unknown, field: string): string[] {
@@ -589,6 +620,8 @@ export function parsePipelineEditorDocument(value: unknown): PipelineEditorDocum
     "pipeline_description",
     "preamble",
     "preserved_blocks",
+    "global_constants",
+    "global_constants_error",
     "source_file",
     "source_revision",
     "source_text",
@@ -686,6 +719,10 @@ export function parsePipelineEditorDocument(value: unknown): PipelineEditorDocum
     pipeline_description: nullableString(object, "pipeline_description", "document"),
     preamble: nullableString(object, "preamble", "document"),
     preserved_blocks: stringArray(object.preserved_blocks, "document.preserved_blocks"),
+    global_constants: expectArray(PARSER, object.global_constants, "document.global_constants").map(
+      (item, index) => parseGlobalConstant(item, `document.global_constants[${index}]`),
+    ),
+    global_constants_error: nullableString(object, "global_constants_error", "document"),
     source_file: expectString(PARSER, object.source_file, "document.source_file"),
     source_revision: nullableString(object, "source_revision", "document"),
     source_text: expectString(PARSER, object.source_text, "document.source_text"),

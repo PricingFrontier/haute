@@ -279,6 +279,8 @@ describe("useGraphStore - consolidation", () => {
         edges: [makeEdge("a", "b", { id: "dirty-edge" })],
         preamble: "import dirty",
         submodels: { sub: {} },
+        globalConstants: [{ name: "rate", type: "float", split: false, value: "1", bySource: {} }],
+        globalConstantsError: "dirty load error",
         lastSavedSnapshot: dirtySnapshot,
         undoStack: [dirtySnapshot],
         redoStack: [dirtySnapshot],

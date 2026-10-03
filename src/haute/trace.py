@@ -56,6 +56,7 @@ from haute._expression_parser import (
     parse_expression,
     parse_expression_chain,
 )
+from haute._global_constants import node_code_globals
 from haute._graph_utils import edge_input_name
 from haute._graph_walker import CollectPolicy, walk_graph
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
@@ -1323,10 +1324,14 @@ def _execute_trace_core(
     def _enrichment_plans() -> dict[str, Any]:
         return {**above_seed_plans, **_lineage_plans()}
 
-    formula_names = {
-        **_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph)),
-        **(preamble_ns or {}),
-    }
+    formula_names = node_code_globals(
+        {
+            **_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph)),
+            **(preamble_ns or {}),
+        },
+        graph,
+        source,
+    )
     _enrich_steps(
         steps,
         node_map,

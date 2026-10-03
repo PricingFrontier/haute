@@ -24,7 +24,7 @@ function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
     onZoomIn: vi.fn(),
     onZoomOut: vi.fn(),
     onOpenUtility: vi.fn(),
-    onOpenImports: vi.fn(),
+    onOpenConstants: vi.fn(),
     submodelAction: "create" as const,
     canRunSubmodelAction: true,
     onSubmodelAction: vi.fn(),

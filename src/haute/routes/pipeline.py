@@ -34,6 +34,7 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
+from haute._global_constants import reference_problem
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._graph_utils import upstream_node_ids
 from haute._hashing import content_hash_bytes
@@ -104,7 +105,7 @@ from haute._step_progress import (
 )
 from haute._submodel_instances import qualified_runtime_node_id, resolve_submodel_instances
 from haute._topo import ancestors
-from haute._types import GraphEdge, GraphNode, NodeData, SubmodelDefinition
+from haute._types import GlobalConstant, GraphEdge, GraphNode, NodeData, SubmodelDefinition
 from haute._worker_isolation import (
     IsolatedWorkerCrashedError,
     IsolatedWorkerMemoryLimitExceededError,
@@ -293,6 +294,14 @@ async def render_polars_steps_endpoint(
         rendered = render_polars_steps(body.steps, body.input_names, start=body.start)
     except PolarsStepError as exc:
         return PolarsStepsRenderResponse(ok=False, step_index=exc.step_index, message=exc.message)
+    if body.global_constants is not None:
+        constants = {constant.name: constant for constant in body.global_constants}
+        for reference in rendered.constant_references:
+            problem = reference_problem(reference, constants)
+            if problem is not None:
+                return PolarsStepsRenderResponse(
+                    ok=False, step_index=reference.step_index, message=problem
+                )
     return PolarsStepsRenderResponse(
         ok=True,
         code=rendered.code,
@@ -357,6 +366,9 @@ async def _resolve_free_code_columns_isolated(
             for name, columns in body.input_columns.items()
         },
         frame_columns=[(c.name, c.dtype) for c in body.frame_columns],
+        global_constants=body.global_constants,
+        global_constants_error=body.global_constants_error,
+        source=body.source,
     )
     try:
         context = create_admitted_execution_context(
@@ -1836,6 +1848,8 @@ def _canonical_snapshot_graph(
     pipeline_description: str | None = None,
     preamble: str | None = None,
     preserved_blocks: list[str] | None = None,
+    global_constants: list[GlobalConstant] | None = None,
+    global_constants_error: str | None = None,
     source_file: str = "",
 ) -> PipelineGraph:
     """Build a fresh canonical graph from already-validated ready elements."""
@@ -1916,6 +1930,8 @@ def _canonical_snapshot_graph(
         pipeline_description=pipeline_description,
         preamble=preamble,
         preserved_blocks=list(preserved_blocks or []),
+        global_constants=list(global_constants or []),
+        global_constants_error=global_constants_error,
         source_file=source_file,
     )
 
@@ -1999,6 +2015,8 @@ def _plan_recovery_preview(
         pipeline_description=document.pipeline_description,
         preamble=document.preamble,
         preserved_blocks=document.preserved_blocks,
+        global_constants=document.global_constants,
+        global_constants_error=document.global_constants_error,
         source_file=document.source_file,
     )
     validate_pipeline_graph_shape_contracts(

@@ -83,6 +83,7 @@ def test_option_lists_match_the_renderer(name: str, expected: tuple[str, ...]) -
         ("JOIN_HOW", steps.JOIN_HOW),
         ("JOIN_VALIDATED_HOW", steps.JOIN_VALIDATED_HOW),
         ("FILL_STRATEGIES", steps.FILL_STRATEGIES),
+        ("OPERAND_KINDS", steps.OPERAND_KINDS),
     ],
 )
 def test_plain_lists_match_the_renderer(name: str, expected: tuple[str, ...]) -> None:

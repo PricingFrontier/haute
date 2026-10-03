@@ -220,8 +220,11 @@
 **Validation (`_validators.py::validate_deploy`)** — called by `deploy()` after
 `resolve_config()`, before dispatch. Runs seven structural checks (output, inputs,
 source-ness, artefact existence, canonical Data Input direct readability or snapshot readiness, and non-empty input/output
-schemas), adds every `project_modules` import message (a project-local import the bundle
-does not carry), rechecks the projected output-field invariant, then — if
+schemas), refuses a pruned graph that reads a global constant with no `live` value, an
+undefined constant, or any constant while the constants file failed to load
+(`_global_constant_errors`, naming the constant or the file; a constant read only on a pruned
+branch needs no `live` value), adds every `project_modules` import message (a project-local
+import the bundle does not carry), rechecks the projected output-field invariant, then — if
 `config.test_quotes_dir` is configured — requires an existing directory containing at
 least one `*.json` file and pre-checks every quote's rows
 against the required input-schema columns (catching a missing column before scoring even

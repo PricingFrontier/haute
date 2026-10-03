@@ -45,6 +45,8 @@ from haute._submodel_instances import ResolvedSubmodelInstance, resolve_submodel
 from haute._submodel_paths import definition_pipeline_dir
 from haute._topo import topo_sort_ids
 from haute._types import (
+    GLOBAL_CONSTANTS_FILE,
+    GLOBAL_CONSTANTS_NAME,
     GraphEdge,
     GraphNode,
     NodeType,
@@ -728,6 +730,15 @@ def _node_functions(
     return functions
 
 
+def declares_global_constants(graph: PipelineGraph) -> bool:
+    """Whether *graph*'s files name the global constants file and bind the reserved name.
+
+    A file that failed to load is still declared: its keyword and bindings stay
+    so the file is neither orphaned nor overwritten.
+    """
+    return bool(graph.global_constants) or graph.global_constants_error is not None
+
+
 def _render_module(
     *,
     kind: Literal["pipeline", "submodel"],
@@ -740,6 +751,7 @@ def _render_module(
     registrations: list[str] | None = None,
     constructor_keywords: Sequence[tuple[str, object]] = (),
     dedup_connects: bool = False,
+    declares_global_constants: bool = False,
 ) -> str:
     """Assemble a pipeline or submodel file, laid out as ``ruff format`` would.
 
@@ -747,7 +759,9 @@ def _render_module(
     construction, preserved blocks, one function per node, submodel
     registrations and the connect calls, separated by ruff's blank lines.
     ``import polars as pl`` is emitted only when the rest of the module
-    refers to ``pl``.
+    refers to ``pl``. When the pipeline declares global constants, its
+    constructor names their file and every file binds ``global_constants``
+    directly after its constructor, so node code reads a defined name.
     """
     obj_name = "pipeline" if kind == "pipeline" else "submodel"
     title = "Pipeline" if kind == "pipeline" else "Submodel"
@@ -757,12 +771,17 @@ def _render_module(
     constructor: list[Doc] = [quote_string(name)]
     if description:
         constructor.append(_keyword("description", description))
+    if declares_global_constants and kind == "pipeline":
+        constructor.append(_keyword(GLOBAL_CONSTANTS_NAME, GLOBAL_CONSTANTS_FILE))
     constructor.extend(_keyword(key, value) for key, value in constructor_keywords)
 
     body: list[_Block] = []
     if preamble.strip():
         body.append(_authored_block(preamble.strip("\n").rstrip()))
-    body.append(_Block(_call(f"{obj_name} = haute.{title}", constructor)))
+    construction = _call(f"{obj_name} = haute.{title}", constructor)
+    if declares_global_constants:
+        construction += f"\n{GLOBAL_CONSTANTS_NAME} = {obj_name}.{GLOBAL_CONSTANTS_NAME}"
+    body.append(_Block(construction))
     for block in preserved_blocks or []:
         shape = _authored_block(block)
         body.append(_Block(_emit_preserved_block(block), shape.starts_def, shape.ends_def))
@@ -1067,6 +1086,7 @@ def _graph_to_code_multi_instances(
             connect_pairs=child_connect_pairs,
             preserved_blocks=child_graph.preserved_blocks or None,
             constructor_keywords=constructor_keywords,
+            declares_global_constants=declares_global_constants(graph),
         )
 
     node_map = {node.id: node for node in graph.nodes}
@@ -1218,6 +1238,7 @@ def _graph_to_code_multi_instances(
         ),
         registrations=registrations,
         dedup_connects=True,
+        declares_global_constants=declares_global_constants(graph),
     )
     logger.info(
         "code_generated",
@@ -1289,6 +1310,7 @@ def graph_to_code_multi(
         ),
         connect_pairs=connect_pairs,
         preserved_blocks=all_preserved or None,
+        declares_global_constants=declares_global_constants(graph),
     )
     logger.info(
         "code_generated",

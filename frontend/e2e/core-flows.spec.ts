@@ -14,6 +14,14 @@ const gitMainPath = resolve(ratingDir, "main.py")
 const browserSubmodelPath = resolve(e2eProjectRoot, "rating", "modules", "browser_group.py")
 const selectAll = process.platform === "darwin" ? "Meta+A" : "Control+A"
 
+/** Open the Utility pane on its fixed Imports entry, which edits the preamble. */
+async function openImports(page: Page): Promise<void> {
+  await page.getByRole("button", { name: /^Utility$/i }).click()
+  await page.getByTestId("utility-file-selector").click()
+  await page.getByTestId("utility-imports-entry").click()
+  await expect(page.getByTestId("utility-imports")).toBeVisible()
+}
+
 async function connectHandles(page: Page, source: Locator, target: Locator): Promise<void> {
   const collapsePalette = page.getByTitle("Collapse palette")
   if (await collapsePalette.isVisible()) await collapsePalette.click()
@@ -378,10 +386,9 @@ test.describe("core browser flows", () => {
   test("persists pipeline imports through save and reload", async ({ page }) => {
     await page.goto("/")
 
-    await page.getByRole("button", { name: /^Imports$/i }).click()
-    await expect(page.getByText("Pipeline Imports")).toBeVisible()
+    await openImports(page)
 
-    const editor = page.getByTestId("code-editor-wrapper").locator(".cm-content")
+    const editor = page.getByTestId("utility-imports").getByTestId("code-editor-wrapper").locator(".cm-content")
     await editor.click()
     await page.keyboard.press(selectAll)
     await page.keyboard.insertText("import math")
@@ -391,22 +398,20 @@ test.describe("core browser flows", () => {
     await expect.poll(() => readFileSync(gitMainPath, "utf8")).toContain("import math")
 
     await page.reload()
-    await page.getByRole("button", { name: /^Imports$/i }).click()
-    await expect(page.getByText("Pipeline Imports")).toBeVisible()
-    await expect(page.getByTestId("code-editor-wrapper").locator(".cm-content")).toContainText(
+    await openImports(page)
+    await expect(page.getByTestId("utility-imports").getByTestId("code-editor-wrapper").locator(".cm-content")).toContainText(
       "import math",
     )
   })
 
-  test("refreshes the imports panel from websocket file sync", async ({ page }) => {
+  test("refreshes the imports entry from websocket file sync", async ({ page }) => {
     await page.goto("/")
 
-    await page.getByRole("button", { name: /^Imports$/i }).click()
-    await expect(page.getByText("Pipeline Imports")).toBeVisible()
+    await openImports(page)
 
     const original = readFileSync(gitMainPath, "utf8")
     const syncProbeImport = "import statistics as websocket_sync_probe"
-    const editor = page.getByTestId("code-editor-wrapper").locator(".cm-content")
+    const editor = page.getByTestId("utility-imports").getByTestId("code-editor-wrapper").locator(".cm-content")
     const constructorAnchor = original.match(/^pipeline\s*=\s*haute\.Pipeline\(.+$/m)?.[0]
     if (!constructorAnchor) throw new Error("E2E pipeline fixture has no pipeline constructor")
     const updated = original.replace(
@@ -424,6 +429,59 @@ test.describe("core browser flows", () => {
     }
 
     await expect(editor).not.toContainText("websocket_sync_probe")
+  })
+
+  test("defines a split global constant and previews each source's value", async ({ page }) => {
+    const original = readFileSync(gitMainPath, "utf8")
+    const reads = original.replace(
+      'value_doubled=pl.col("value") * 2)',
+      'value_doubled=pl.col("value") * 2, rate=pl.lit(global_constants.rate))',
+    )
+    if (reads === original) throw new Error("E2E pipeline fixture has no enriched transform to edit")
+    writeFileSync(gitMainPath, reads, "utf8")
+    await page.goto("/")
+
+    await page.getByTitle("Data source").click()
+    await page.getByRole("button", { name: /Add source/i }).click()
+    const sourceInput = page.getByPlaceholder("name")
+    await sourceInput.fill("nb_batch")
+    await sourceInput.press("Enter")
+    await expect(page.getByTitle("Data source")).toContainText("nb_batch")
+
+    await page.getByTestId("toolbar-constants").click()
+    await page.getByRole("button", { name: "Add constant" }).click()
+    const name = page.getByTestId("constant-name-0")
+    await name.fill("rate")
+    await name.press("Enter")
+    await page.getByTestId("constant-split-0").click()
+    await page.getByTestId("constant-value-0-live").fill("1.5")
+    await page.getByTestId("constant-value-0-nb_batch").fill("2.5")
+    await expect(page.getByTestId("constant-readers-0")).toHaveAttribute("title", "Read by enriched")
+
+    await page.getByRole("button", { name: /enriched/i }).click()
+    await page.getByRole("button", { name: "Refresh" }).click()
+    const previewTable = page.getByRole("table").first()
+    await expect(previewTable.getByText("rate", { exact: true })).toBeVisible()
+    await expect(previewTable.getByRole("cell", { name: "2.5", exact: true }).first()).toBeVisible()
+
+    await page.getByTitle("Data source").click()
+    await page.getByRole("button", { name: "live", exact: true }).last().click()
+    await page.getByRole("button", { name: "Refresh" }).click()
+    await expect(previewTable.getByRole("cell", { name: "1.5", exact: true }).first()).toBeVisible()
+
+    await page.getByRole("button", { name: "Save", exact: true }).click()
+    await expect(page.getByRole("alert").filter({ hasText: /Saved/ })).toBeVisible()
+    await expect
+      .poll(() => {
+        const path = resolve(ratingDir, "config", "global_constants.json")
+        return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : null
+      })
+      .toEqual({
+        constants: [{ name: "rate", type: "float", by_source: { live: 1.5, nb_batch: 2.5 } }],
+      })
+    await expect.poll(() => readFileSync(gitMainPath, "utf8")).toContain(
+      'global_constants="config/global_constants.json"',
+    )
   })
 
   test("does not re-send the document it just loaded when live sync connects", async ({ page }) => {

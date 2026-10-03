@@ -59,23 +59,27 @@ missing and unknown names before hashing:
 | Consumer | Version | Complete field set |
 |---|---:|---|
 | `graph_structure` | 2 | `nodes`, `edges` |
-| `graph_execution` | 8 | `base_fingerprint`, `preamble_fingerprint`, `source_file`, `extra_keys` |
-| `preview_trace` | 3 | `preamble`, `source_file`, `nodes`, `edges`, `target_node_id`, `source`, `requested_columns`, `initial_column_limit`, `row_limit`, `port_label`, `contract_fingerprint`, `selected_live_switch_path`, `runtime_input_fingerprint`, `execution_semantics_version` |
+| `graph_execution` | 9 | `base_fingerprint`, `preamble_fingerprint`, `global_constants`, `source_file`, `extra_keys` |
+| `preview_trace` | 4 | `preamble`, `global_constants`, `source_file`, `nodes`, `edges`, `target_node_id`, `source`, `requested_columns`, `initial_column_limit`, `row_limit`, `port_label`, `contract_fingerprint`, `selected_live_switch_path`, `runtime_input_fingerprint`, `execution_semantics_version` |
 | `runtime_graph_input` | 4 | `source`, `sources`, `preamble_fingerprint`, `extra` |
-| `deploy_schema` | 1 | `graph_fingerprint`, `runtime_input_fingerprint`, `artifact_fingerprint`, `output_node_id`, `input_node_ids`, `source`, `row_limit`, `execution_policy` |
+| `deploy_schema` | 2 | `graph_fingerprint`, `runtime_input_fingerprint`, `artifact_fingerprint`, `output_node_id`, `input_node_ids`, `source`, `row_limit`, `execution_policy` |
 | `model_contract` | 1 | `feature_names`, `categorical_features`, `offset_column` |
 | `input_snapshot` | 1 | `schema_version`, `provider`, `descriptor` |
-| `node_snapshot_signature` | 1 | `lineage_fingerprint`, `runtime_input_fingerprint`, `source`, `semantics_class`, `enforce_contracts`, `preamble_supplied`, `execution_semantics_version` |
+| `node_snapshot_signature` | 2 | `lineage_fingerprint`, `runtime_input_fingerprint`, `source`, `semantics_class`, `enforce_contracts`, `preamble_supplied`, `execution_semantics_version` |
 
 The repeated records inside those payloads are separately closed and versioned:
 `graph_node` v1 is `id`, `label`, `nodeType`, `config`; `graph_edge` v1 is
 `source`, `sourceHandle`, `target`, `targetHandle`; `runtime_input_entry` v1
-is `node_id`, `node_type`, `config`, `files`; and
-`live_switch_selection` v1 is `switch_id`, `incoming_edges`.
+is `node_id`, `node_type`, `config`, `files`;
+`live_switch_selection` v1 is `switch_id`, `incoming_edges`; `global_constant` v1 is
+`name`, `type`, `value`, `by_source` (a read constant as declared, every value included, or
+`None` throughout for a name the pipeline does not define); and `global_constant_value` v1 is
+`name`, `type`, `value`, `state` (a read constant resolved for one source, with `state` `set`,
+`missing` or `undefined`).
 
-Each consumer also classifies all ten logical input classes — node config,
+Each consumer also classifies all eleven logical input classes — node config,
 upstream lineage, edge wiring, user code, source selection, row limit,
-runtime files, artifacts, request shape, and execution policy — as either
+runtime files, artifacts, request shape, execution policy, and global constants — as either
 consumed by named payload fields or deliberately excluded with a non-empty
 rationale. A payload field that is not assigned to a class, or an input class
 that is neither consumed nor explained, makes contract construction fail.
@@ -516,6 +520,18 @@ key (`lineage_runtime_input_identity`) reads its runtime inputs from the same gr
 request shape (column demand) and row limits are excluded with rationales.
 Generation layout, integrity, publication, lease, and concurrency rules are owned
 and tested by the [IO layer](../io-layer/low-level.md).
+
+**Global constants.** `graph_fingerprint()` signs, under `global_constants`, the declared
+records of the constants the graph's nodes read (`PipelineGraph._haute_global_constant_reads`,
+memoised per instance and cleared by `model_copy`), every constant when any node reads every
+constant, and the load error once anything is read; a graph that reads none signs `None`.
+`lineage_cache_key()` signs, under the same name, the read constants of the lineage's relevant
+nodes resolved for the request's source. The reads come from
+`src/haute/_global_constants.py::graph_constant_reads`, over each node's executed
+configuration (an instance's original). Node snapshots, seed plans and data points sign the
+graph fingerprint of a lineage subgraph, which carries the constants, so each signs exactly its
+lineage's reads; deploy schema keys sign them through the graph fingerprint. Runtime graph
+input, input snapshots, model contracts and graph structure exclude the class.
 
 ## Edge cases and invariants
 

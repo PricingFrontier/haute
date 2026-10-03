@@ -30,7 +30,7 @@ from haute._model_flavors import _SUPPORTED_FLAVORS as _SUPPORTED_MODEL_FLAVORS
 from haute._model_flavors import NATIVE_WRAPPER_FLAVORS
 from haute._model_flavors import ModelFlavor as _ModelFlavor
 from haute._polars_utils import bounded_collect_batches
-from haute._types import _Frame
+from haute._types import GLOBAL_CONSTANTS_NAME, _Frame
 from haute.errors import ConfigError
 from haute.errors import FeatureMismatchError as FeatureMismatchError
 
@@ -1346,6 +1346,7 @@ def _run_score_pipeline(
     temporary_paths: list[str] | None = None,
     categorical_levels: _CategoricalLevels = None,
     offset_column: str | None = None,
+    global_constants: Any = None,
 ) -> _Frame:
     """Core scoring logic shared by ``ModelScorer.score()`` and deploy scorer.
 
@@ -1487,7 +1488,11 @@ def _run_score_pipeline(
             code,
             ["df", *(source_names or [])[1:]],
             all_dfs,
-            extra_ns={"model": scoring_model},
+            extra_ns=(
+                {"model": scoring_model}
+                if global_constants is None
+                else {"model": scoring_model, GLOBAL_CONSTANTS_NAME: global_constants}
+            ),
             alias_first_input_as_df=True,
         )
     return result_lf
@@ -1607,9 +1612,12 @@ class ModelScorer:
         mlflow_destination: str = "",
         alias: str = "",
         input_fanout: int = 1,
+        global_constants: Any = None,
     ) -> None:
         from haute.modelling._feature_contract import normalise_categorical_levels
 
+        # The run's constants, bound in the post-processing code beside ``model``.
+        self.global_constants = global_constants
         self.source_type = source_type
         self.alias = alias
         self.run_id = run_id
@@ -1766,6 +1774,7 @@ class ModelScorer:
                 required_output_columns=self.required_output_columns,
                 categorical_levels=categorical_levels,
                 offset_column=offset_column,
+                global_constants=self.global_constants,
             )
         finally:
             _score_input_fanout.reset(fanout_token)

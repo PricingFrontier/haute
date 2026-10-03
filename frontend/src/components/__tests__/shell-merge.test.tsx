@@ -19,7 +19,7 @@
  *   4. Children render unchanged inside the panel.
  *   5. ModalShell's Phase 1 #41 focus trap (Tab wrap, Escape close, never leak
  *      focus outside the dialog) still works.
- *   6. Consumers (ImportsPanel) that used PanelShell + PanelHeader still
+ *   6. Consumers (GlobalConstantsPanel) that used PanelShell + PanelHeader still
  *      render identically after the merge.
  *
  * Separate test files that already cover sub-parts and MUST continue passing:
@@ -42,11 +42,11 @@ import { render, screen, fireEvent, cleanup } from "@testing-library/react"
 import PanelShell from "../../panels/PanelShell"
 import PanelHeader from "../../panels/PanelHeader"
 import ModalShell from "../ModalShell"
-import ImportsPanel from "../../panels/ImportsPanel"
+import GlobalConstantsPanel from "../../panels/GlobalConstantsPanel"
 import useUIStore from "../../stores/useUIStore"
 
-// Mock the heavy CodeMirror-based CodeEditor used by ImportsPanel so the
-// consumer test doesn't load the real editor.
+// Mock the heavy CodeMirror-based CodeEditor so a consumer test never loads
+// the real editor.
 vi.mock("../../panels/editors", () => ({
   CodeEditor: ({
     defaultValue,
@@ -88,7 +88,7 @@ afterEach(() => {
 describe("Phase 2D-3 shell merge - panel surface preserved", () => {
   it("panel with a title string renders the title", () => {
     // A panel built by wrapping PanelHeader inside PanelShell (the current
-    // pattern in ImportsPanel/GitPanel/UtilityPanel) must render its title.
+    // pattern in GlobalConstantsPanel/GitPanel/UtilityPanel) must render its title.
     // After the merge to `ResizablePanel`, the equivalent call — whether a
     // `title` prop, `<PanelHeader>` child, or JSX composition — must still
     // render the title text verbatim.
@@ -229,52 +229,32 @@ describe("Phase 2D-3 shell merge - ModalShell focus trap (#41) preserved", () =>
 })
 
 describe("Phase 2D-3 shell merge - consumer regression guards", () => {
-  it("ImportsPanel still renders its title, description, and close button after any PanelShell/Header merge", () => {
-    // ImportsPanel is the smallest consumer of PanelShell + PanelHeader and
+  it("GlobalConstantsPanel still renders its title, description, and close button after any PanelShell/Header merge", () => {
+    // GlobalConstantsPanel is the smallest consumer of PanelShell + PanelHeader and
     // touches every surface being merged (title, close, subtitle, panel
     // wrapper).  If the dev merges the two into `ResizablePanel` and updates
     // this caller, the rendered output must be identical to a user.
-    render(
-      <ImportsPanel
-        preamble="from utility.features import *"
-        onPreambleChange={vi.fn()}
-        onClose={vi.fn()}
-      />,
-    )
-    expect(screen.getByText("Pipeline Imports")).toBeInTheDocument()
-    expect(
-      screen.getByText(/Import statements for utility modules/),
-    ).toBeInTheDocument()
+    render(<GlobalConstantsPanel onClose={vi.fn()} />)
+    expect(screen.getByText("Global Constants")).toBeInTheDocument()
+    expect(screen.getByText("No constants yet")).toBeInTheDocument()
     expect(screen.getByTitle("Close")).toBeInTheDocument()
   })
 
-  it("ImportsPanel's close button still propagates onClose after any merge", () => {
+  it("GlobalConstantsPanel's close button still propagates onClose after any merge", () => {
     // Proves the close-button wiring survives whatever wrapper-component
     // shape the merged API ends up with.  If this fails, clicking "X" in
     // the real app will no longer close panels.
     const onClose = vi.fn()
-    render(
-      <ImportsPanel
-        preamble=""
-        onPreambleChange={vi.fn()}
-        onClose={onClose}
-      />,
-    )
+    render(<GlobalConstantsPanel onClose={onClose} />)
     fireEvent.click(screen.getByTitle("Close"))
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
-  it("ImportsPanel's outer wrapper still exposes a resize handle", () => {
+  it("GlobalConstantsPanel's outer wrapper still exposes a resize handle", () => {
     // Whether the wrapper is still called PanelShell or has been renamed to
     // ResizablePanel, the rendered DOM must include a drag handle with the
     // cursor-col-resize class so users can resize the panel.
-    const { container } = render(
-      <ImportsPanel
-        preamble=""
-        onPreambleChange={vi.fn()}
-        onClose={vi.fn()}
-      />,
-    )
+    const { container } = render(<GlobalConstantsPanel onClose={vi.fn()} />)
     const handle = container.querySelector(".cursor-col-resize")
     expect(handle).toBeTruthy()
   })

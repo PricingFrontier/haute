@@ -1247,3 +1247,84 @@ class TestHookMarkerIsNotAnInput:
         graph = self._graph(tmp_path, "declaration", "")
 
         assert [(edge.source, edge.target) for edge in graph.edges] == [("df", "band")]
+
+
+class TestGlobalConstantsDeclarationAndReservedName:
+    """The constructor names one constants file and nothing else binds ``global_constants``."""
+
+    HEADER = "import haute\nimport polars as pl\n\n"
+
+    def _pipeline(self, constructor: str, tail: str = "", preamble: str = "") -> str:
+        return (
+            self.HEADER
+            + preamble
+            + constructor
+            + "\n\n@pipeline.polars\ndef src():\n    return pl.LazyFrame({'a': [1]})\n"
+            + tail
+        )
+
+    def test_a_constructor_naming_another_file_is_refused_naming_the_canonical_path(self) -> None:
+        source = self._pipeline('pipeline = haute.Pipeline("p", global_constants="consts.json")')
+
+        with pytest.raises(ParseError, match=r"must be 'config/global_constants.json'"):
+            parse_pipeline_source(source)
+
+    @pytest.mark.parametrize(
+        ("tail", "preamble"),
+        [
+            pytest.param("\nglobal_constants = {'rate': 1}\n", "", id="assignment-after-nodes"),
+            pytest.param("", "global_constants = 1\n", id="preamble-assignment"),
+            pytest.param("", "from os import path as global_constants\n", id="import-alias"),
+            pytest.param(
+                "\nglobal_constants = pipeline.global_constants\nglobal_constants = 2\n",
+                "",
+                id="rebinding-after-the-generated-line",
+            ),
+            pytest.param(
+                "\n@pipeline.polars\ndef global_constants(src):\n    return src\n",
+                "",
+                id="node-function",
+            ),
+        ],
+    )
+    def test_any_other_module_level_binding_is_refused(self, tail: str, preamble: str) -> None:
+        source = self._pipeline('pipeline = haute.Pipeline("p")', tail=tail, preamble=preamble)
+
+        with pytest.raises(ParseError, match="'global_constants' is reserved"):
+            parse_pipeline_source(source)
+
+    def test_the_generated_binding_parses_as_generated_code(self) -> None:
+        source = self._pipeline(
+            'pipeline = haute.Pipeline("p")\nglobal_constants = pipeline.global_constants'
+        )
+
+        graph = parse_pipeline_source(source)
+
+        assert graph.preamble == ""
+        assert graph.preserved_blocks == []
+        assert not graph._parser_global_constants_declared
+
+    def test_a_submodel_constructor_cannot_declare_constants(self) -> None:
+        from haute._parser_submodels import parse_submodel_source
+
+        source = (
+            "import haute\n\n"
+            'submodel = haute.Submodel("sm", definition_id="sm", input_ports=[], '
+            'output_ports=[], global_constants="config/global_constants.json")\n'
+        )
+
+        with pytest.raises(ParseError, match="A submodel does not declare global constants"):
+            parse_submodel_source(source)
+
+    def test_a_submodel_file_refuses_any_binding_but_the_generated_one(self) -> None:
+        from haute._parser_submodels import parse_submodel_source
+
+        constructor = (
+            "import haute\n\n"
+            'submodel = haute.Submodel("sm", definition_id="sm", input_ports=[], '
+            "output_ports=[])\n"
+        )
+
+        parse_submodel_source(constructor + "global_constants = submodel.global_constants\n")
+        with pytest.raises(ParseError, match="'global_constants' is reserved"):
+            parse_submodel_source(constructor + "global_constants = pipeline.global_constants\n")

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react"
+import { useCallback, useEffect, useMemo, useRef } from "react"
 import { useDebouncedCallback } from "../../hooks/useDebouncedCallback"
 import { EditorView, placeholder as cmPlaceholder, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, rectangularSelection } from "@codemirror/view"
 import { EditorState, Compartment, Annotation } from "@codemirror/state"
@@ -10,6 +10,9 @@ import { searchKeymap, highlightSelectionMatches } from "@codemirror/search"
 import { lintGutter, setDiagnostics } from "@codemirror/lint"
 import { tags } from "@lezer/highlight"
 import { SYNTAX_COLORS } from "../../theme/colors"
+import useGraphStore from "../../stores/useGraphStore"
+import useSettingsStore from "../../stores/useSettingsStore"
+import { constantCompletionSource, constantCompletions, type ConstantCompletion } from "./constantCompletion"
 
 const LOCAL_CHANGE_DEBOUNCE_MS = 150
 
@@ -232,6 +235,15 @@ function columnCompletionSource(columns: string[]) {
   }
 }
 
+/** Completion for column names inside strings and constant names after `global_constants.`. */
+function completionExtension(columns: string[] | undefined, constants: readonly ConstantCompletion[]) {
+  const sources = [
+    ...(columns?.length ? [columnCompletionSource(columns)] : []),
+    ...(constants.length ? [constantCompletionSource(constants)] : []),
+  ]
+  return sources.length ? autocompletion({ override: sources }) : autocompletion()
+}
+
 export default function CodeMirrorEditor({
   defaultValue,
   onChange,
@@ -258,6 +270,9 @@ export default function CodeMirrorEditor({
   const diagnosticsClearRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const placeholderCompartment = useRef(new Compartment())
   const columnCompartment = useRef(new Compartment())
+  const drafts = useGraphStore((s) => s.globalConstants)
+  const activeSource = useSettingsStore((s) => s.activeSource)
+  const constants = useMemo(() => constantCompletions(drafts, activeSource), [drafts, activeSource])
   const lastPropValueRef = useRef(defaultValue)
   const pendingExternalValueRef = useRef<string | null>(null)
 
@@ -362,12 +377,8 @@ export default function CodeMirrorEditor({
         indentOnInput(),
         bracketMatching(),
         closeBrackets(),
-        // Column-aware completions (reconfigurable via compartment)
-        columnCompartment.current.of(
-          availableColumns?.length
-            ? autocompletion({ override: [columnCompletionSource(availableColumns)] })
-            : autocompletion(),
-        ),
+        // Column- and constant-aware completions (reconfigurable via compartment)
+        columnCompartment.current.of(completionExtension(availableColumns, constants)),
         highlightActiveLine(),
         highlightActiveLineGutter(),
         highlightSelectionMatches(),
@@ -456,17 +467,13 @@ export default function CodeMirrorEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount once: defaultValue is initial content only, onChange is tracked via ref
   }, [])
 
-  // Update column completions when availableColumns changes
+  // Update completions when the columns or the constants change
   useEffect(() => {
     if (!viewRef.current) return
     viewRef.current.dispatch({
-      effects: columnCompartment.current.reconfigure(
-        availableColumns?.length
-          ? autocompletion({ override: [columnCompletionSource(availableColumns)] })
-          : autocompletion(),
-      ),
+      effects: columnCompartment.current.reconfigure(completionExtension(availableColumns, constants)),
     })
-  }, [availableColumns])
+  }, [availableColumns, constants])
 
   // Push error diagnostics when errorLine changes
   useEffect(() => {

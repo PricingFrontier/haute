@@ -146,9 +146,15 @@ export default function OptimiserConfig({
     effectiveBandingNode,
   } = resolvedInputs
 
+  // buildGraph reads the constants from the store; listing them renews the
+  // callback, so a constant edited after mount reaches the next request.
+  const globalConstants = useGraphStore((s) => s.globalConstants)
   const buildGraphCb = useCallback(
-    () => buildGraph(allNodes, edges, submodels),
-    [allNodes, edges, submodels],
+    () => {
+      void globalConstants
+      return buildGraph(allNodes, edges, submodels)
+    },
+    [allNodes, edges, submodels, globalConstants],
   )
   // The estimate reads the graph upstream of this node, so edits to the node
   // itself (which move the global structural version) must not re-request it.

@@ -192,10 +192,28 @@ def test_every_consumer_totally_classifies_the_closed_logical_input_set() -> Non
 
 
 def test_checked_contract_versions_advance_with_changed_byte_layouts() -> None:
-    assert ALGO_VERSION == 8
+    assert ALGO_VERSION == 9
     assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.GRAPH_STRUCTURE].version == 2
-    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.PREVIEW_TRACE].version == 3
+    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.PREVIEW_TRACE].version == 4
     assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.RUNTIME_GRAPH_INPUT].version == 4
+    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.DEPLOY_SCHEMA].version == 2
+    assert CACHE_CONSUMER_CONTRACTS[CacheConsumer.NODE_SNAPSHOT_SIGNATURE].version == 2
+
+
+def test_global_constants_are_signed_by_every_result_identity_and_excluded_elsewhere() -> None:
+    consumed = {
+        CacheConsumer.GRAPH_EXECUTION: ("global_constants",),
+        CacheConsumer.PREVIEW_TRACE: ("global_constants",),
+        CacheConsumer.NODE_SNAPSHOT_SIGNATURE: ("lineage_fingerprint",),
+        CacheConsumer.DEPLOY_SCHEMA: ("graph_fingerprint",),
+    }
+    for consumer, contract in CACHE_CONSUMER_CONTRACTS.items():
+        disposition = contract.input_classes[CacheInputClass.GLOBAL_CONSTANTS]
+        if consumer in consumed:
+            assert disposition.fields == consumed[consumer], consumer
+        else:
+            assert disposition.fields == (), consumer
+            assert disposition.exclusion_reason, consumer
 
 
 def test_preview_contract_checks_lineage_graph_dimensions_individually() -> None:

@@ -12,6 +12,8 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Reac
 import { ConfigCheckbox } from "../../../components/form"
 import { CodeEditor } from "../CodeEditor"
 import { INPUT_STYLE } from "../_shared"
+import type { GlobalConstantType } from "../../../utils/globalConstants"
+import { ALL_CONSTANT_TYPES, useFittingConstants } from "./useFittingConstants"
 import { completionMatches } from "./completion"
 import { exprColumns, type ColumnInfo } from "./derivedColumns"
 import { FormulaError, callAtCaret, displayFormula, formulaText, functionNamed, parseFormula, renameColumnInFormula, typedAsFormula } from "./formula"
@@ -38,6 +40,7 @@ import {
   exprProblem,
   literal,
   suggestedAggregationName,
+  type FunctionArg,
 } from "./catalogue"
 import {
   AddRow,
@@ -53,6 +56,7 @@ import {
   LiteralValueInput,
   MoreOptions,
   NumberField,
+  ArgumentField,
   OperandField,
   QuantileField,
   RowGroup,
@@ -85,6 +89,7 @@ import type {
   JoinStep,
   JoinValidate,
   LimitStep,
+  FunctionArgValue,
   LiteralOperand,
   LiteralType,
   Operand,
@@ -109,6 +114,8 @@ export type StepFormContext = {
   inputColumns?: Readonly<Record<string, ColumnInfo[]>>
   /** Variables defined by earlier steps. */
   variables: string[]
+  /** The pipeline's global constants a formula may name; `StepForm` supplies them. */
+  constants?: string[]
   /** Connected input names (the executable argument names). */
   inputNames: string[]
   /** Id of the control to focus when the card opens. */
@@ -117,9 +124,27 @@ export type StepFormContext = {
   errorLine?: number | null
 }
 
+/**
+ * The constants a formula at this step reads by bare name: every one that is
+ * not also the name of a column here, since a column's name always means the
+ * column. A constant sharing a column's name is written `global_constants.<name>`.
+ */
+function bareConstants(constants: readonly string[], columns: readonly string[]): string[] {
+  return constants.filter((name) => !columns.includes(name))
+}
+
 type FormProps<S extends Step> = { step: S; onChange: (next: S) => void; ctx: StepFormContext }
 
-const ALL_SOURCES: readonly OperandSource[] = ["literal", "column", "variable"]
+const ALL_SOURCES: readonly OperandSource[] = ["literal", "column", "variable", "constant"]
+/** The constant types each typed function argument takes; a type argument takes none. */
+const ARG_CONSTANT_TYPES: Record<FunctionArg, readonly GlobalConstantType[]> = {
+  integer: ["integer"],
+  int: ["integer"],
+  number: ["integer", "float"],
+  text: ["text"],
+  scalar: ["integer", "float", "text", "boolean"],
+  dtype: [],
+}
 /** Literal types a stored value may take (fills, concat parts). */
 const VALUE_TYPES: readonly LiteralType[] = ["number", "text", "boolean", "date"]
 /** Literal types an expression operand may take: also `null`, for a missing result. */
@@ -206,9 +231,10 @@ const FORMULA_PLACEHOLDER = "e.g. (premium + commission) * tax / 12"
  * left/operator/right form.
  */
 function FormulaEditor({ expr, onChange, ctx, depth }: { expr: Extract<Expr, { type: "binary" }>; onChange: (next: Expr) => void; ctx: StepFormContext; depth: number }) {
-  const text = displayFormula(expr, ctx.variables)
+  const constants = ctx.constants ?? []
+  const text = displayFormula(expr, ctx.variables, bareConstants(constants, ctx.columns))
   if (text === null) return <StructuredFormula expr={expr} onChange={onChange} ctx={ctx} depth={depth} />
-  return <FormulaField text={text} onCommit={onChange} variables={ctx.variables} columns={ctx.columns} depth={depth} />
+  return <FormulaField text={text} onCommit={onChange} variables={ctx.variables} constants={constants} columns={ctx.columns} depth={depth} />
 }
 
 /** A value or function typed as a formula stays a formula in the editor and the "Computed as" select. */
@@ -218,32 +244,50 @@ function exprTypeValue(expr: Expr): Expr["type"] {
 
 const WORD_BEFORE_CARET = /[A-Za-z_][A-Za-z0-9_]*$/
 
-function completionText(name: string, columns: string[], variables: string[]): string | null {
-  const operand = columns.includes(name) ? { kind: "column" as const, name } : { kind: "variable" as const, name }
-  return formulaText({ type: "operand", operand }, variables)
+type CompletionKind = "col" | "var" | "const"
+
+/** The text a completion inserts for *name* as an operand of *kind*. */
+function completionText(name: string, kind: CompletionKind, variables: string[], constants: string[]): string | null {
+  const operand = { kind: kind === "col" ? "column" as const : kind === "var" ? "variable" as const : "constant" as const, name }
+  return formulaText({ type: "operand", operand }, variables, constants)
+}
+
+/** Whether the word at the caret follows `global_constants.`, so only a constant's name fits. */
+function afterConstantsNamespace(draft: string, wordStart: number): boolean {
+  return /\bglobal_constants\s*\.\s*$/.test(draft.slice(0, wordStart))
 }
 
 /**
  * What the formula box offers for the word before the caret: the columns
- * (with their types) and earlier variables starting with it, then the
- * catalogue's functions (marked `ƒ`, with what they do). `exact` is the word
- * when it already names one of them, so Tab and Enter keep it.
+ * (with their types), earlier variables and global constants starting with it, then the
+ * catalogue's functions (marked `ƒ`, with what they do). A constant sharing a
+ * column's or variable's name is offered as well, as its own entry that inserts
+ * `global_constants.<name>`; after `global_constants.` only constants are. `exact` is the word when it already
+ * names one of them, so Tab and Enter keep it.
  */
-function formulaCompletions(draft: string, caret: number, columns: string[], variables: string[], schema: StepSchema) {
+function formulaCompletions(draft: string, caret: number, columns: string[], variables: string[], constants: string[], schema: StepSchema) {
   const match = WORD_BEFORE_CARET.exec(draft.slice(0, caret))
   if (!match) return { prefix: "", entries: [] as Completion[], exact: null }
   const prefix = match[0]
   const lower = prefix.toLowerCase()
-  const names = completionMatches([...columns, ...variables], prefix).filter((name) => completionText(name, columns, variables) !== null)
+  const constantEntries: Completion[] = completionMatches(constants, prefix)
+    .map((name) => ({ value: `const:${name}`, label: name, note: "global constant" }))
+  if (afterConstantsNamespace(draft, caret - prefix.length)) {
+    return { prefix, entries: constantEntries, exact: constants.includes(prefix) ? prefix : null }
+  }
+  const bare = bareConstants(constants, columns)
+  const names = completionMatches([...new Set([...columns, ...variables])], prefix)
+    .filter((name) => completionText(name, columns.includes(name) ? "col" : "var", variables, bare) !== null)
   const entries: Completion[] = [
     ...names.map((name) =>
       columns.includes(name)
         ? { value: `col:${name}`, label: name, note: schema.describe(name) }
         : { value: `var:${name}`, label: name, note: "variable" },
     ),
+    ...constantEntries,
     ...FUNCTIONS.filter((f) => f.value.startsWith(lower) && f.value !== lower).map((f) => ({ value: `fn:${f.value}`, label: f.value, note: f.label === f.value ? null : f.label, mark: "ƒ" })),
   ]
-  const exact = columns.includes(prefix) || variables.includes(prefix) || functionNamed(prefix) !== undefined ? prefix : null
+  const exact = columns.includes(prefix) || variables.includes(prefix) || constants.includes(prefix) || functionNamed(prefix) !== undefined ? prefix : null
   return { prefix, entries, exact }
 }
 
@@ -295,7 +339,7 @@ function ArgumentTip({ fn, arg }: { fn: string; arg: number }) {
  * The draft follows `text` when it changes from outside, without remounting
  * the box, so focus survives a commit.
  */
-function FormulaField({ text, onCommit, variables, columns, depth }: { text: string; onCommit: (next: Expr) => void; variables: string[]; columns: string[]; depth: number }) {
+function FormulaField({ text, onCommit, variables, constants, columns, depth }: { text: string; onCommit: (next: Expr) => void; variables: string[]; constants: string[]; columns: string[]; depth: number }) {
   const schema = useStepSchema()
   const problemId = useId()
   const [draft, setDraft] = useState(text)
@@ -310,7 +354,8 @@ function FormulaField({ text, onCommit, variables, columns, depth }: { text: str
   }
   const box = useRef<HTMLTextAreaElement | null>(null)
   const pendingCaret = useRef<number | null>(null)
-  const { prefix, entries, exact } = formulaCompletions(draft, caret, columns, variables, schema)
+  const { prefix, entries, exact } = formulaCompletions(draft, caret, columns, variables, constants, schema)
+  const bare = useMemo(() => bareConstants(constants, columns), [constants, columns])
   const completion = useCompletionList(entries, exact)
   const call = callAtCaret(draft, caret)
 
@@ -336,7 +381,7 @@ function FormulaField({ text, onCommit, variables, columns, depth }: { text: str
       return
     }
     try {
-      const expr = parseFormula(value, variables)
+      const expr = parseFormula(value, variables, bare)
       const invalid = exprProblem(expr, "The formula", depth)
       if (invalid) throw new FormulaError(`${invalid} Compute part of it in an earlier step.`)
       onCommit(expr)
@@ -347,11 +392,15 @@ function FormulaField({ text, onCommit, variables, columns, depth }: { text: str
     }
   }
   const complete = (entry: Completion) => {
-    // Values are `col:name`, `var:name` or `fn:name`.
+    // Values are `col:name`, `var:name`, `const:name` or `fn:name`.
     const colon = entry.value.indexOf(":")
     const [kind, name] = [entry.value.slice(0, colon), entry.value.slice(colon + 1)]
     const call = kind === "fn"
-    const insert = call ? `${name}()` : completionText(name, columns, variables)
+    const insert = call
+      ? `${name}()`
+      : kind === "const" && afterConstantsNamespace(draft, caret - prefix.length)
+        ? name
+        : completionText(name, kind as CompletionKind, variables, bare)
     if (insert === null) return
     const before = draft.slice(0, caret - prefix.length)
     const after = draft.slice(caret)
@@ -366,12 +415,12 @@ function FormulaField({ text, onCommit, variables, columns, depth }: { text: str
   const unknown = useMemo(() => {
     if (schema.isKnown === null || text.trim() === "") return []
     try {
-      return [...new Set(exprColumns(parseFormula(text, variables)))].filter((name) => name && !schema.isKnown?.(name))
+      return [...new Set(exprColumns(parseFormula(text, variables, bare)))].filter((name) => name && !schema.isKnown?.(name))
     } catch {
       return []
     }
-  }, [schema, text, variables])
-  const replaceName = (from: string, to: string) => commitText(renameColumnInFormula(text, from, to, variables))
+  }, [schema, text, variables, bare])
+  const replaceName = (from: string, to: string) => commitText(renameColumnInFormula(text, from, to, variables, bare))
 
   return (
     <Field
@@ -417,7 +466,7 @@ function FormulaField({ text, onCommit, variables, columns, depth }: { text: str
             <Hint>No column names known yet: run the step above to load them.</Hint>
           </div>
         )}
-        <CompletionList {...completion.listProps} prefix={prefix} onPick={complete} label="Matching columns and functions" />
+        <CompletionList {...completion.listProps} prefix={prefix} onPick={complete} label="Matching columns, constants and functions" />
       </div>
       {call && completion.matches.length === 0 && <ArgumentTip fn={call.fn} arg={call.arg} />}
       {problem && (
@@ -467,8 +516,9 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
   return (
     <>
       {spec.args.map((arg, index) => {
-        const value: LiteralOperand = expr.args[index] ?? defaultArgFor(arg)
-        const set = (next: LiteralOperand) => {
+        const value: FunctionArgValue = expr.args[index] ?? defaultArgFor(arg)
+        const plain: LiteralOperand = value.kind === "literal" ? value : defaultArgFor(arg)
+        const set = (next: FunctionArgValue) => {
           const args = spec.args.map((a, i) => (i === index ? next : (expr.args[i] ?? defaultArgFor(a))))
           onChange({ ...expr, args })
         }
@@ -476,7 +526,7 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
         if (arg === "dtype") {
           return (
             <Field key={index} label={label}>
-              <SelectField value={String(value.value) as CastDtype} options={DTYPE_OPTIONS} onChange={(dtype) => set(literal("text", dtype))} ariaLabel={label} />
+              <SelectField value={String(plain.value) as CastDtype} options={DTYPE_OPTIONS} onChange={(dtype) => set(literal("text", dtype))} ariaLabel={label} />
             </Field>
           )
         }
@@ -485,9 +535,10 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
             <Field key={index} label={label}>
               <OperandField
                 value={value}
-                onChange={(next) => next.kind === "literal" && set(next)}
-                sources={["literal"]}
+                onChange={(next) => (next.kind === "literal" || next.kind === "constant") && set(next)}
+                sources={["literal", "constant"]}
                 literalTypes={["number", "text", "boolean"]}
+                constantTypes={ARG_CONSTANT_TYPES.scalar}
                 columns={ctx.columns}
                 variables={[]}
                 ariaLabel={label}
@@ -498,18 +549,22 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
         if (arg === "text") {
           return (
             <Field key={index} label={label}>
-              <TextField value={value.type === "text" ? String(value.value) : ""} onCommit={(text) => set(literal("text", text))} ariaLabel={label} mono />
+              <ArgumentField value={value} onChange={set} constantTypes={ARG_CONSTANT_TYPES.text} plainValue={literal("text", "")} plainLabel="text" ariaLabel={label}>
+                <TextField value={plain.type === "text" ? String(plain.value) : ""} onCommit={(text) => set(literal("text", text))} ariaLabel={label} mono />
+              </ArgumentField>
             </Field>
           )
         }
         return (
           <Field key={index} label={label}>
-            <LiteralValueInput
-              value={value.type === "number" ? value : literal("number", 0)}
-              onChange={set}
-              ariaLabel={label}
-              integer={arg === "integer" || arg === "int"}
-            />
+            <ArgumentField value={value} onChange={set} constantTypes={ARG_CONSTANT_TYPES[arg]} plainValue={defaultArgFor(arg)} plainLabel="number" ariaLabel={label}>
+              <LiteralValueInput
+                value={plain.type === "number" ? plain : literal("number", 0)}
+                onChange={set}
+                ariaLabel={label}
+                integer={arg === "integer" || arg === "int"}
+              />
+            </ArgumentField>
           </Field>
         )
       })}
@@ -518,8 +573,8 @@ function FunctionArgs({ expr, onChange, ctx }: { expr: Extract<Expr, { type: "fu
 }
 
 function ExprEditor({ expr, onChange, ctx, depth = 1 }: { expr: Expr; onChange: (next: Expr) => void; ctx: StepFormContext; depth?: number }) {
-  const typedText = typedAsFormula(expr) ? displayFormula(expr, ctx.variables) : null
-  if (typedText !== null) return <FormulaField text={typedText} onCommit={onChange} variables={ctx.variables} columns={ctx.columns} depth={depth} />
+  const typedText = typedAsFormula(expr) ? displayFormula(expr, ctx.variables, bareConstants(ctx.constants ?? [], ctx.columns)) : null
+  if (typedText !== null) return <FormulaField text={typedText} onCommit={onChange} variables={ctx.variables} constants={ctx.constants ?? []} columns={ctx.columns} depth={depth} />
   const operandProps = anyOperand(ctx, depth + 1)
   switch (expr.type) {
     case "operand":
@@ -1353,7 +1408,8 @@ function StepFormBody({ step, onChange, ctx }: { step: Step; onChange: (next: St
 /** The form for `step`, with its column schema available to every field in it. */
 export function StepForm({ step: raw, onChange, ctx }: { step: Step; onChange: (next: Step) => void; ctx: StepFormContext }) {
   const id = useId()
-  const context = { ...ctx, firstFieldId: ctx.firstFieldId || id }
+  const constants = useFittingConstants(ALL_CONSTANT_TYPES)
+  const context = { ...ctx, constants: ctx.constants ?? constants, firstFieldId: ctx.firstFieldId || id }
   return (
     <StepSchemaContext.Provider value={ctx.schema ?? UNKNOWN_SCHEMA}>
       <StepFormBody step={canonicalStep(raw)} onChange={onChange} ctx={context} />

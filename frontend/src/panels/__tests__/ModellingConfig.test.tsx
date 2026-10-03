@@ -864,6 +864,24 @@ describe("ModellingConfig", () => {
       )
     })
 
+    it("sends a global constant edited after the panel mounted", async () => {
+      mockTrainModel.mockResolvedValue({ status: "started", job_id: "job_1" })
+      const actual = await vi.importActual<typeof import("../../utils/buildGraph")>("../../utils/buildGraph")
+      vi.mocked(buildGraph).mockImplementation(actual.buildGraph)
+      renderConfig()
+      act(() => {
+        useGraphStore.getState().setGlobalConstantsRaw([
+          { name: "rate", type: "float", split: false, value: "1.5", bySource: {} },
+        ])
+      })
+      fireEvent.click(screen.getByRole("button", { name: /Train Model/ }))
+      await waitFor(() => expect(mockTrainModel).toHaveBeenCalledTimes(1))
+      expect(mockTrainModel.mock.calls[0][0].graph.global_constants).toEqual([
+        { name: "rate", type: "float", value: 1.5 },
+      ])
+      act(() => useGraphStore.getState().setGlobalConstantsRaw([]))
+    })
+
     it("records the lineage of the graph it submitted, not one edited while the request was pending", async () => {
       let respond: (value: unknown) => void = () => {}
       mockTrainModel.mockReturnValue(new Promise((resolve) => { respond = resolve }))

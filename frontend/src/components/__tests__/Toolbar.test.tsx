@@ -13,6 +13,7 @@ vi.mock("../PipelineSettingsModal", () => ({
 
 import Toolbar from "../Toolbar"
 import useSettingsStore from "../../stores/useSettingsStore"
+import useGraphStore from "../../stores/useGraphStore"
 import useUIStore from "../../stores/useUIStore"
 import useGitStore from "../../stores/useGitStore"
 
@@ -26,7 +27,7 @@ function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
     onZoomIn: vi.fn(),
     onZoomOut: vi.fn(),
     onOpenUtility: vi.fn(),
-    onOpenImports: vi.fn(),
+    onOpenConstants: vi.fn(),
     submodelAction: "create" as const,
     canRunSubmodelAction: true,
     onSubmodelAction: vi.fn(),
@@ -218,23 +219,23 @@ describe("Toolbar", () => {
     expect(zoomColumn!.compareDocumentPosition(centreColumn!) & 4).toBeTruthy()
   })
 
-  it("renders Utility on top of Imports in a column next to Assistant/Documentation", () => {
+  it("renders Utility on top of Constants in a column next to Assistant/Documentation", () => {
     render(<Toolbar {...makeProps()} />)
     const utilityBtn = screen.getByTestId("toolbar-utility")
-    const importsBtn = screen.getByTestId("toolbar-imports")
+    const constantsBtn = screen.getByTestId("toolbar-constants")
     const assistantBtn = screen.getByTestId("toolbar-assistant")
 
     const utilityColumn = utilityBtn.parentElement
     expect(utilityColumn).toBeInTheDocument()
     expect(utilityColumn).toHaveClass("flex-col")
-    expect(utilityColumn).toContainElement(importsBtn)
+    expect(utilityColumn).toContainElement(constantsBtn)
 
     expect(utilityBtn).toHaveTextContent(/utility/i)
-    expect(importsBtn).toHaveTextContent(/imports/i)
+    expect(constantsBtn).toHaveTextContent(/constants/i)
     expect(utilityBtn).toHaveClass("w-full")
-    expect(importsBtn).toHaveClass("w-full")
+    expect(constantsBtn).toHaveClass("w-full")
 
-    expect(utilityBtn.compareDocumentPosition(importsBtn) & 4).toBeTruthy()
+    expect(utilityBtn.compareDocumentPosition(constantsBtn) & 4).toBeTruthy()
 
     const assistantColumn = assistantBtn.parentElement
     expect(utilityColumn).not.toBeNull()
@@ -242,7 +243,7 @@ describe("Toolbar", () => {
     expect(utilityColumn!.compareDocumentPosition(assistantColumn!) & 4).toBeTruthy()
   })
 
-  it("renders Submodel on top of Instance in a column next to Utility/Imports", () => {
+  it("renders Submodel on top of Instance in a column next to Utility/Constants", () => {
     render(<Toolbar {...makeProps()} />)
     const submodelBtn = screen.getByTestId("toolbar-submodel")
     const instanceBtn = screen.getByTestId("toolbar-instance")
@@ -293,7 +294,7 @@ describe("Toolbar", () => {
     expect(screen.getByText("1.50 s")).toBeInTheDocument()
   })
 
-  it("places the Undo through Imports columns between Source/Pipeline and Timing/Memory", () => {
+  it("places the Undo through Constants columns between Source/Pipeline and Timing/Memory", () => {
     render(<Toolbar {...makeProps()} />)
     const sourcePipeline = screen.getByTestId("toolbar-source-pipeline")
     const canvasActions = screen.getByTestId("toolbar-canvas-actions")
@@ -301,7 +302,7 @@ describe("Toolbar", () => {
 
     expect(sourcePipeline.compareDocumentPosition(canvasActions) & 4).toBeTruthy()
     expect(canvasActions.compareDocumentPosition(breakdowns) & 4).toBeTruthy()
-    for (const id of ["toolbar-undo", "toolbar-zoom-in", "toolbar-centre", "toolbar-submodel", "toolbar-imports"]) {
+    for (const id of ["toolbar-undo", "toolbar-zoom-in", "toolbar-centre", "toolbar-submodel", "toolbar-constants"]) {
       expect(canvasActions).toContainElement(screen.getByTestId(id))
     }
     expect(canvasActions).not.toContainElement(screen.getByTestId("toolbar-assistant"))
@@ -459,14 +460,14 @@ describe("Toolbar", () => {
     expect(screen.getByTestId("toolbar-redo")).toBeDisabled()
     expect(screen.getByTestId("toolbar-layout")).toBeDisabled()
     expect(screen.getByTestId("toolbar-utility")).toBeDisabled()
-    expect(screen.getByTestId("toolbar-imports")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-constants")).toBeDisabled()
     expect(screen.getByTestId("toolbar-assistant")).toBeDisabled()
     fireEvent.click(screen.getByTestId("toolbar-layout"))
     fireEvent.click(screen.getByTestId("toolbar-utility"))
-    fireEvent.click(screen.getByTestId("toolbar-imports"))
+    fireEvent.click(screen.getByTestId("toolbar-constants"))
     expect(props.onAutoLayout).not.toHaveBeenCalled()
     expect(props.onOpenUtility).not.toHaveBeenCalled()
-    expect(props.onOpenImports).not.toHaveBeenCalled()
+    expect(props.onOpenConstants).not.toHaveBeenCalled()
   })
 
   describe("assistant progress", () => {
@@ -514,11 +515,11 @@ describe("Toolbar", () => {
     expect(props.onCentre).toHaveBeenCalledOnce()
   })
 
-  it("clicking Imports calls onOpenImports", () => {
+  it("clicking Constants calls onOpenConstants", () => {
     const props = makeProps()
     render(<Toolbar {...props} />)
-    fireEvent.click(screen.getByText("Imports"))
-    expect(props.onOpenImports).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByText("Constants"))
+    expect(props.onOpenConstants).toHaveBeenCalledOnce()
   })
 
   it("clicking Utility calls onOpenUtility", () => {
@@ -808,6 +809,29 @@ describe("Toolbar", () => {
     render(<Toolbar {...makeProps()} />)
     fireEvent.click(screen.getByTitle("Data source"))
     expect(screen.getByText(/Remove "test_scenario"/)).toBeInTheDocument()
+  })
+
+  it("asks before removing a source whose values split constants hold, then removes them", () => {
+    useSettingsStore.setState({ sources: ["live", "nb_batch"], activeSource: "nb_batch" })
+    useGraphStore.getState().resetForTests()
+    useGraphStore.getState().setGlobalConstantsRaw([
+      { name: "rate", type: "float", split: true, value: "", bySource: { live: "1", nb_batch: "2" } },
+    ])
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true)
+    render(<Toolbar {...makeProps()} />)
+
+    fireEvent.click(screen.getByTitle("Data source"))
+    fireEvent.click(screen.getByText(/Remove "nb_batch"/))
+    expect(confirm).toHaveBeenLastCalledWith('Remove source "nb_batch"? Its values for rate will be deleted.')
+    expect(useSettingsStore.getState().sources).toEqual(["live", "nb_batch"])
+    expect(useGraphStore.getState().globalConstants[0].bySource).toEqual({ live: "1", nb_batch: "2" })
+
+    fireEvent.click(screen.getByTitle("Data source"))
+    fireEvent.click(screen.getByText(/Remove "nb_batch"/))
+    expect(useSettingsStore.getState().sources).toEqual(["live"])
+    expect(useGraphStore.getState().globalConstants[0].bySource).toEqual({ live: "1" })
+    confirm.mockRestore()
+    useGraphStore.getState().resetForTests()
   })
 
   it("does not show remove option when live is active", () => {

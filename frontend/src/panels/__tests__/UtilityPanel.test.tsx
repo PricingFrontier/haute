@@ -50,6 +50,8 @@ describe("UtilityPanel", () => {
   const defaultProps = {
     onClose: vi.fn(),
     onImportAdded: vi.fn(),
+    preamble: "from utility.features import *",
+    onPreambleChange: vi.fn(),
   }
 
   beforeEach(() => {
@@ -63,6 +65,45 @@ describe("UtilityPanel", () => {
     render(<UtilityPanel {...defaultProps} />)
     expect(screen.getByText("Utility Scripts")).toBeInTheDocument()
     expect(screen.getByTitle("Close")).toBeInTheDocument()
+  })
+
+  describe("Imports entry", () => {
+    const openImports = async () => {
+      render(<UtilityPanel {...defaultProps} />)
+      await waitFor(() => expect(mockListFiles).toHaveBeenCalled())
+      fireEvent.click(screen.getByText("No files"))
+      fireEvent.click(await screen.findByTestId("utility-imports-entry"))
+      return screen.findByTestId("utility-imports")
+    }
+
+    it("is listed first and shows the preamble", async () => {
+      mockListFiles.mockResolvedValue({ files: [{ module: "features", path: "utility/features.py" }] })
+      mockReadFile.mockResolvedValue({ module: "features", content: "def f(): ..." })
+      render(<UtilityPanel {...defaultProps} />)
+      await waitFor(() => expect(mockReadFile).toHaveBeenCalledWith("features"))
+      fireEvent.click(screen.getByText("features"))
+      const imports = await screen.findByTestId("utility-imports-entry")
+      expect(imports.previousElementSibling).toBeNull()
+      expect(imports.nextElementSibling?.textContent).toBe("features")
+      fireEvent.click(screen.getByTestId("utility-imports-entry"))
+      await screen.findByTestId("utility-imports")
+      expect(screen.getByTestId("code-editor")).toHaveValue("from utility.features import *")
+      expect(screen.queryByTitle("Delete features")).not.toBeInTheDocument()
+    })
+
+    it("edits the preamble without the utility file routes", async () => {
+      await openImports()
+      fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "import numpy as np" } })
+      expect(defaultProps.onPreambleChange).toHaveBeenCalledWith("import numpy as np")
+      expect(mockUpdateFile).not.toHaveBeenCalled()
+      expect(mockReadFile).not.toHaveBeenCalled()
+    })
+
+    it("notes the imports that are always included", async () => {
+      await openImports()
+      expect(screen.getByText(/import polars as pl/)).toBeInTheDocument()
+      expect(screen.getByText(/import haute/)).toBeInTheDocument()
+    })
   })
 
   it("close button calls onClose", () => {
@@ -166,6 +207,8 @@ describe("UtilityPanel auto-save", () => {
   const defaultProps = {
     onClose: vi.fn(),
     onImportAdded: vi.fn(),
+    preamble: "from utility.features import *",
+    onPreambleChange: vi.fn(),
   }
 
   beforeEach(() => {
@@ -487,6 +530,8 @@ describe("UtilityPanel dropdown close-on-outside-click", () => {
   const defaultProps = {
     onClose: vi.fn(),
     onImportAdded: vi.fn(),
+    preamble: "from utility.features import *",
+    onPreambleChange: vi.fn(),
   }
 
   beforeEach(() => {

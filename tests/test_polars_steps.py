@@ -44,6 +44,7 @@ from haute._polars_steps import (
 )
 from haute._polars_steps_layout import layout_statement, restyle_statement
 from haute._types import (
+    GlobalConstant,
     GraphEdge,
     GraphNode,
     NodeData,
@@ -3962,6 +3963,40 @@ def test_free_code_columns_endpoint_resolves_free_code_on_a_frame_surface(
     assert stray.status_code == 422
 
 
+def test_free_code_columns_endpoint_reads_the_constants_for_the_requested_source(
+    client: TestClient,
+) -> None:
+    """Free code reads each constant's value for the source the request names."""
+    steps = [
+        source(),
+        step(
+            "c",
+            "free_code",
+            code="df = df.with_columns(pl.lit(1).alias(global_constants.column))",
+        ),
+    ]
+    constants = [
+        {"name": "column", "type": "text", "by_source": {"live": "live_col", "nb_batch": "nb_col"}}
+    ]
+
+    def resolve(source_name: str) -> dict[str, Any]:
+        body = _columns_body(steps, ["quotes"], input_columns={"quotes": QUOTE_COLUMNS})
+        response = client.post(
+            FREE_CODE_COLUMNS,
+            json={**body, "global_constants": constants, "source": source_name},
+        )
+        assert response.status_code == 200
+        [entry] = response.json()["free_code_columns"]
+        return entry
+
+    added = {"dtype": "Int32"}
+    assert resolve("live")["columns"] == [*QUOTE_COLUMNS, {"name": "live_col", **added}]
+    assert resolve("nb_batch")["columns"] == [*QUOTE_COLUMNS, {"name": "nb_col", **added}]
+    missing = resolve("other")
+    assert missing["columns"] is None
+    assert "no value for source 'other'" in missing["message"]
+
+
 def test_free_code_columns_endpoint_runs_nothing_without_free_code(client: TestClient) -> None:
     """A list without free code answers at once; one that does not render is a 422."""
     plain = client.post(
@@ -5595,3 +5630,225 @@ def test_frame_global_df_saves_as_incomplete_placeholder(tmp_path: Path) -> None
     parsed = parse_pipeline_source(generated, _base_dir=tmp_path)
     parsed_node = next(n for n in parsed.nodes if n.id == node_id)
     assert parsed_node.data.config["steps"] == offending_steps
+
+
+def test_a_step_variable_cannot_take_the_reserved_global_constants_name() -> None:
+    with pytest.raises(PolarsStepError, match="'global_constants' is not a valid name"):
+        render_polars_steps(
+            [source(), step("v", "variable", name="global_constants", value=num(1))],
+            ["quotes"],
+            start="input",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Global constants as step operands
+# ---------------------------------------------------------------------------
+
+
+def const(name: str) -> dict[str, Any]:
+    return {"kind": "constant", "name": name}
+
+
+ALL_CONSTANT_TYPES = ("integer", "float", "text", "boolean", "date")
+
+
+def _round(argument: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "function", "fn": "round", "operand": col("x"), "args": [argument]}
+
+
+def test_a_constant_renders_bare_in_value_position_and_wrapped_in_expression_position() -> None:
+    rendered = render_polars_steps(
+        [
+            source(),
+            step(
+                "f", "filter", match="all", conditions=[cond("premium", "gt", value=const("floor"))]
+            ),
+            step(
+                "w", "with_column", name="rate", expr={"type": "operand", "operand": const("rate")}
+            ),
+            step(
+                "b",
+                "with_column",
+                name="gross",
+                expr={"type": "binary", "left": const("rate"), "op": "*", "right": const("load")},
+            ),
+        ],
+        start="input",
+    )
+
+    assert rendered.code.split("\n")[1:] == [
+        'df = df.filter(pl.col("premium") > global_constants.floor)',
+        'df = df.with_columns(pl.lit(global_constants.rate).alias("rate"))',
+        "df = df.with_columns(",
+        '    (pl.lit(global_constants.rate) * global_constants.load).alias("gross")',
+        ")",
+    ]
+    assert [(r.step_index, r.name) for r in rendered.constant_references] == [
+        (1, "floor"),
+        (2, "rate"),
+        (3, "rate"),
+        (3, "load"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("slot", "types"),
+    [
+        (cond("x", "eq", value=const("c")), ALL_CONSTANT_TYPES),
+        (cond("x", "contains", value=const("c")), ("text",)),
+    ],
+    ids=["comparison", "string-operator"],
+)
+def test_a_condition_value_takes_the_constant_types_its_operator_does(
+    slot: dict[str, Any], types: tuple[str, ...]
+) -> None:
+    rendered = render_polars_steps(
+        [source(), step("f", "filter", match="all", conditions=[slot])], start="input"
+    )
+    [reference] = rendered.constant_references
+    assert (reference.types, reference.non_negative) == (types, False)
+
+
+@pytest.mark.parametrize(
+    ("fn", "args", "types", "non_negative"),
+    [
+        ("round", [const("c")], ("integer",), True),
+        ("slice", [const("c"), num(2)], ("integer",), False),
+        ("clip", [const("c"), num(2)], ("integer", "float"), False),
+        ("offset_by", [const("c")], ("text",), False),
+        ("fill_null", [const("c")], ("integer", "float", "text", "boolean"), False),
+    ],
+)
+def test_a_function_argument_takes_the_constant_types_of_its_expected_type(
+    fn: str, args: list[dict[str, Any]], types: tuple[str, ...], non_negative: bool
+) -> None:
+    rendered = render_polars_steps(
+        [
+            source(),
+            step(
+                "w",
+                "with_column",
+                name="out",
+                expr={"type": "function", "fn": fn, "operand": col("x"), "args": args},
+            ),
+        ],
+        start="input",
+    )
+    [reference] = rendered.constant_references
+    assert (reference.types, reference.non_negative) == (types, non_negative)
+    assert "global_constants.c" in rendered.code
+
+
+def test_fill_and_branch_values_take_every_constant_type() -> None:
+    rendered = render_polars_steps(
+        [
+            source(),
+            step("n", "fill_null", columns=["x"], fill={"kind": "value", "value": const("a")}),
+            step(
+                "c",
+                "with_column",
+                name="band",
+                expr={
+                    "type": "conditional",
+                    "match": "all",
+                    "conditions": [cond("x", "gt", value=num(1))],
+                    "then": const("b"),
+                    "otherwise": text("low"),
+                },
+            ),
+        ],
+        start="input",
+    )
+    assert [r.types for r in rendered.constant_references] == [ALL_CONSTANT_TYPES] * 2
+
+
+def test_a_dtype_argument_and_an_invalid_name_refuse_a_constant() -> None:
+    cast = {"type": "function", "fn": "cast", "operand": col("x"), "args": [const("c")]}
+    with pytest.raises(PolarsStepError, match="not a constant"):
+        render_polars_steps(
+            [source(), step("w", "with_column", name="o", expr=cast)], start="input"
+        )
+    bad = {"type": "operand", "operand": const("1rate")}
+    with pytest.raises(PolarsStepError, match="not a valid constant name"):
+        render_polars_steps([source(), step("w", "with_column", name="o", expr=bad)], start="input")
+
+
+@pytest.mark.parametrize(
+    ("constant", "problem"),
+    [
+        (None, "Global constant 'digits' is not defined."),
+        (
+            GlobalConstant(name="digits", type="float", value=2.0),
+            "is float; this value takes integer.",
+        ),
+        (
+            GlobalConstant(name="digits", type="integer", by_source={"live": 2, "nb_batch": -1}),
+            "must be zero or more; it is -1 for source 'nb_batch'.",
+        ),
+        (GlobalConstant(name="digits", type="integer", by_source={"live": 2, "nb_batch": 0}), None),
+    ],
+    ids=["undefined", "wrong-type", "negative-source", "fits"],
+)
+def test_reference_problem_checks_existence_type_and_every_value(
+    constant: GlobalConstant | None, problem: str | None
+) -> None:
+    from haute._global_constants import reference_problem
+
+    rendered = render_polars_steps(
+        [source(), step("w", "with_column", name="r", expr=_round(const("digits")))],
+        start="input",
+    )
+    [reference] = rendered.constant_references
+    found = reference_problem(reference, {} if constant is None else {constant.name: constant})
+    if problem is None:
+        assert found is None
+    else:
+        assert found is not None and problem in found
+
+
+def test_render_route_reports_a_reference_the_given_constants_cannot_serve(
+    client: TestClient,
+) -> None:
+    steps = [
+        source(),
+        step(
+            "f", "filter", match="all", conditions=[cond("region", "contains", value=const("area"))]
+        ),
+    ]
+    body = _render_body(steps, ["quotes"])
+
+    without = client.post("/api/pipeline/polars-steps/render", json=body)
+    assert without.json()["ok"] is True
+
+    wrong = client.post(
+        "/api/pipeline/polars-steps/render",
+        json={**body, "global_constants": [{"name": "area", "type": "integer", "value": 1}]},
+    )
+    assert wrong.json() == {
+        "ok": False,
+        "code": "",
+        "step_lines": [],
+        "step_index": 1,
+        "message": "Global constant 'area' is integer; this value takes text.",
+    }
+
+
+def test_save_refuses_a_step_constant_of_the_wrong_type(project_root: Path) -> None:
+    from fastapi import HTTPException
+
+    steps = [
+        source(),
+        step("f", "filter", match="all", conditions=[cond("premium", "gt", value=const("floor"))]),
+        step("w", "with_column", name="r", expr=_round(const("floor"))),
+    ]
+    graph = _project_graph(project_root, steps)
+    graph.global_constants = [GlobalConstant(name="floor", type="float", value=100.0)]
+
+    with pytest.raises(HTTPException) as refused:
+        _save(project_root, graph)
+
+    assert refused.value.status_code == 400
+    assert refused.value.detail == (
+        "Node 't', step 3: Global constant 'floor' is float; this value takes integer."
+    )

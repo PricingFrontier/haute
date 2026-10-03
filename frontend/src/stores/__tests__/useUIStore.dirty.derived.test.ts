@@ -60,7 +60,7 @@ function resetStore() {
   useUIStore.setState({
     paletteOpen: true,
     utilityOpen: false,
-    importsOpen: false,
+    constantsOpen: false,
     gitOpen: false,
     shortcutsOpen: false,
     submodelDialog: null,

@@ -84,7 +84,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // findings on change cards, context chips, the empty state and readiness card),
 // and main's connection drop menu adds its lazy menu. The complete production
 // bundle is 1,571.1 KiB; 1,581 KiB restores about 10 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1581
+// Global constants add the lazy Constants pane (3.5 KiB), Constant operands
+// and constant completion in the step editor (SteppedCodePane +1.1 KiB) and
+// the eager core counted below. The complete production bundle is
+// 1,586.9 KiB; 1,588 KiB restores about 1 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1588
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
@@ -192,7 +196,13 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // the empty-canvas hit-test and the menu's type list. The menu itself stays
 // lazy. With both, the merged initial bundle is 283.8 KiB; 285 KiB restores
 // ~1.2 KiB of headroom.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 285
+// Global constants add ~1.7 KiB of deliberate eager core: every build of an
+// execution request carries the valid constants (utils/globalConstants.ts),
+// save refuses invalid drafts, the store holds the drafts and the document
+// parser reads them. The pane's editing helpers and the reads analysis stay
+// lazy (utils/globalConstantsEditing.ts). The merged initial bundle is
+// 285.7 KiB; 287 KiB restores ~1.3 KiB of headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 287
 
 // Chunks that should only be fetched when their preview or editor is needed.
 // If one appears as a startup modulepreload, the app has likely

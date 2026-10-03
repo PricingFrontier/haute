@@ -37,6 +37,7 @@ from haute._cache import (
 )
 from haute._estimate_calibration import calibrate_materialisation_bytes
 from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._global_constants import node_code_globals
 from haute._graph_utils import upstream_node_ids
 from haute._hashing import HASH_ALGO, content_hash_bytes
 from haute._json_shred._source_proof import file_signature
@@ -1465,7 +1466,7 @@ def build_linear_execution_chain_functions(
         incoming_edges_by_target=incoming_edges_by_target,
         all_incoming_edges_by_target=all_incoming_edges_by_target,
         all_node_map=graph.node_map,
-        preamble_ns=preamble_ns,
+        preamble_ns=node_code_globals(preamble_ns, graph, routing_source),
         source=build_source,
         required_output_columns_by_node=required_output_columns_by_node,
         reuse_loaded_model_by_node=reuse_loaded_model_by_node,

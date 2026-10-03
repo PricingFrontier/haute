@@ -5,7 +5,7 @@ function reset() {
   useUIStore.setState({
     paletteOpen: true,
     utilityOpen: false,
-    importsOpen: false,
+    constantsOpen: false,
     gitOpen: false,
     assistantOpen: false,
     assistantTurn: null,
@@ -132,11 +132,11 @@ describe("useUIStore", () => {
 
     it("closes utility and imports when opening git", () => {
       useUIStore.getState().setUtilityOpen(true)
-      useUIStore.getState().setImportsOpen(true)
+      useUIStore.getState().setConstantsOpen(true)
       useUIStore.getState().setGitOpen(true)
       expect(useUIStore.getState().gitOpen).toBe(true)
       expect(useUIStore.getState().utilityOpen).toBe(false)
-      expect(useUIStore.getState().importsOpen).toBe(false)
+      expect(useUIStore.getState().constantsOpen).toBe(false)
     })
 
     it("setting utility closes git", () => {
@@ -147,7 +147,7 @@ describe("useUIStore", () => {
 
     it("setting imports closes git", () => {
       useUIStore.getState().setGitOpen(true)
-      useUIStore.getState().setImportsOpen(true)
+      useUIStore.getState().setConstantsOpen(true)
       expect(useUIStore.getState().gitOpen).toBe(false)
     })
   })
@@ -155,20 +155,20 @@ describe("useUIStore", () => {
   describe("setUtilityOpen mutual exclusion", () => {
     it("closes git and imports when opening utility", () => {
       useUIStore.getState().setGitOpen(true)
-      useUIStore.getState().setImportsOpen(true)
+      useUIStore.getState().setConstantsOpen(true)
       useUIStore.getState().setUtilityOpen(true)
       expect(useUIStore.getState().utilityOpen).toBe(true)
       expect(useUIStore.getState().gitOpen).toBe(false)
-      expect(useUIStore.getState().importsOpen).toBe(false)
+      expect(useUIStore.getState().constantsOpen).toBe(false)
     })
   })
 
-  describe("setImportsOpen mutual exclusion", () => {
+  describe("setConstantsOpen mutual exclusion", () => {
     it("closes git and utility when opening imports", () => {
       useUIStore.getState().setGitOpen(true)
       useUIStore.getState().setUtilityOpen(true)
-      useUIStore.getState().setImportsOpen(true)
-      expect(useUIStore.getState().importsOpen).toBe(true)
+      useUIStore.getState().setConstantsOpen(true)
+      expect(useUIStore.getState().constantsOpen).toBe(true)
       expect(useUIStore.getState().gitOpen).toBe(false)
       expect(useUIStore.getState().utilityOpen).toBe(false)
     })

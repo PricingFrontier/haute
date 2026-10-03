@@ -2853,3 +2853,56 @@ def test_editor_identity_route_requires_an_alias_for_submodel_nodes(client: Test
     )
     assert response.status_code == 422
     assert "alias" in response.text
+
+
+def _constants_source(name: str = "legacy") -> str:
+    return _legacy_explore_source(name).replace(
+        f'pipeline = haute.Pipeline("{name}")',
+        f'pipeline = haute.Pipeline("{name}", global_constants="config/global_constants.json")\n'
+        "        global_constants = pipeline.global_constants",
+    )
+
+
+@pytest.mark.parametrize("strict", [True, False], ids=["ready", "recovered"])
+def test_an_editor_document_carries_the_constants_and_the_load_error(
+    tmp_path: Path,
+    strict: bool,
+) -> None:
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    source = _constants_source()
+    if strict:
+        source = textwrap.dedent(
+            """\
+            import haute
+            import polars as pl
+
+            pipeline = haute.Pipeline("p", global_constants="config/global_constants.json")
+            global_constants = pipeline.global_constants
+
+            @pipeline.polars
+            def quotes():
+                return pl.LazyFrame({"a": [global_constants.rate]})
+            """
+        )
+    pipeline_file = _write(tmp_path / "main.py", source)
+    constants = tmp_path / "config" / "global_constants.json"
+    constants.parent.mkdir()
+    constants.write_text(
+        '{"constants": [{"name": "rate", "type": "float", "value": 1.5}]}', encoding="utf-8"
+    )
+
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert document.load_status == ("ready" if strict else "degraded")
+    assert [(constant.name, constant.value) for constant in document.global_constants] == [
+        ("rate", 1.5)
+    ]
+    assert document.global_constants_error is None
+
+    constants.write_text('{"constants": [{"name": "rate"}]}', encoding="utf-8")
+    broken = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+
+    assert broken.global_constants == []
+    assert broken.global_constants_error is not None
+    assert "constant 1 ('rate')" in broken.global_constants_error

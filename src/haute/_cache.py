@@ -15,6 +15,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from haute._global_constants import ConstantReads, graph_constant_reads
 from haute._hashing import content_hash_bytes
 from haute._json_shred._source_proof import file_signature
 from haute._logging import get_logger
@@ -67,7 +68,7 @@ logger = get_logger(component="cache")
 # v8: repeated graph/runtime identity records use versioned, checked shapes.
 # Preview lineage fields are explicit rather than hidden beneath an opaque
 # graph member, and runtime identity declares its required structural companion.
-ALGO_VERSION: int = 8
+ALGO_VERSION: int = 9
 
 
 class CacheInputClass(StrEnum):
@@ -83,6 +84,7 @@ class CacheInputClass(StrEnum):
     ARTIFACTS = "artifacts"
     REQUEST_SHAPE = "request_shape"
     EXECUTION_POLICY = "execution_policy"
+    GLOBAL_CONSTANTS = "global_constants"
 
 
 class CacheConsumer(StrEnum):
@@ -105,6 +107,8 @@ class CacheIdentityRecord(StrEnum):
     GRAPH_EDGE = "graph_edge"
     RUNTIME_INPUT_ENTRY = "runtime_input_entry"
     LIVE_SWITCH_SELECTION = "live_switch_selection"
+    GLOBAL_CONSTANT = "global_constant"
+    GLOBAL_CONSTANT_VALUE = "global_constant_value"
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +148,20 @@ CACHE_IDENTITY_RECORD_CONTRACTS: Mapping[CacheIdentityRecord, CacheIdentityRecor
                 record=CacheIdentityRecord.LIVE_SWITCH_SELECTION,
                 version=1,
                 fields=("switch_id", "incoming_edges"),
+            ),
+            # A read constant as declared, every source's value included; a name
+            # the pipeline does not define carries ``None`` throughout.
+            CacheIdentityRecord.GLOBAL_CONSTANT: CacheIdentityRecordContract(
+                record=CacheIdentityRecord.GLOBAL_CONSTANT,
+                version=1,
+                fields=("name", "type", "value", "by_source"),
+            ),
+            # A read constant resolved for one source: ``state`` is ``set``,
+            # ``missing`` (split without that source) or ``undefined``.
+            CacheIdentityRecord.GLOBAL_CONSTANT_VALUE: CacheIdentityRecordContract(
+                record=CacheIdentityRecord.GLOBAL_CONSTANT_VALUE,
+                version=1,
+                fields=("name", "type", "value", "state"),
             ),
         }
     )
@@ -281,6 +299,9 @@ _CALLER_KEYS_SOURCE = "The caller keys source selection outside this structural 
 _FULL_FRAME_NO_ROW_LIMIT = "This cache stores a complete materialised frame, not a row slice."
 _NO_RUNTIME_STATE = "Runtime state is owned by a separate input/artifact identity."
 _NO_GRAPH_INPUT = "This cache is independent of pipeline graph execution."
+_CONSTANT_VALUES_ARE_EXECUTION_INPUTS = (
+    "Constant values are execution inputs; a structured reference to a constant is node config."
+)
 _REQUIRES_STRUCTURAL_IDENTITY = (
     "This external-state component must be paired with the caller's checked structural "
     "graph or lineage identity."
@@ -305,6 +326,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                 CacheInputClass.RUNTIME_FILES: _NO_RUNTIME_STATE,
                 CacheInputClass.ARTIFACTS: _NO_RUNTIME_STATE,
                 CacheInputClass.EXECUTION_POLICY: "Execution policy is supplied by each consumer.",
+                CacheInputClass.GLOBAL_CONSTANTS: _CONSTANT_VALUES_ARE_EXECUTION_INPUTS,
             },
         ),
         CacheConsumer.GRAPH_EXECUTION: _consumer_contract(
@@ -313,6 +335,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
             fields=(
                 "base_fingerprint",
                 "preamble_fingerprint",
+                "global_constants",
                 "source_file",
                 "extra_keys",
             ),
@@ -326,6 +349,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                     "source_file",
                 ),
                 CacheInputClass.REQUEST_SHAPE: ("extra_keys",),
+                CacheInputClass.GLOBAL_CONSTANTS: ("global_constants",),
             },
             excluded={
                 CacheInputClass.SOURCE_SELECTION: _CALLER_KEYS_SOURCE,
@@ -337,9 +361,10 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
         ),
         CacheConsumer.PREVIEW_TRACE: _consumer_contract(
             CacheConsumer.PREVIEW_TRACE,
-            version=3,
+            version=4,
             fields=(
                 "preamble",
+                "global_constants",
                 "source_file",
                 "nodes",
                 "edges",
@@ -377,6 +402,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                     "contract_fingerprint",
                     "execution_semantics_version",
                 ),
+                CacheInputClass.GLOBAL_CONSTANTS: ("global_constants",),
             },
             excluded={},
         ),
@@ -404,11 +430,12 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                 CacheInputClass.EXECUTION_POLICY: (
                     "Execution policy is keyed by the frame consumer."
                 ),
+                CacheInputClass.GLOBAL_CONSTANTS: _REQUIRES_STRUCTURAL_IDENTITY,
             },
         ),
         CacheConsumer.DEPLOY_SCHEMA: _consumer_contract(
             CacheConsumer.DEPLOY_SCHEMA,
-            version=1,
+            version=2,
             fields=(
                 "graph_fingerprint",
                 "runtime_input_fingerprint",
@@ -433,6 +460,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                 ),
                 CacheInputClass.REQUEST_SHAPE: ("output_node_id", "input_node_ids"),
                 CacheInputClass.EXECUTION_POLICY: ("execution_policy",),
+                CacheInputClass.GLOBAL_CONSTANTS: ("graph_fingerprint",),
             },
             excluded={},
         ),
@@ -465,6 +493,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                 CacheInputClass.EXECUTION_POLICY: (
                     "Feature/schema compatibility is policy-independent."
                 ),
+                CacheInputClass.GLOBAL_CONSTANTS: _NO_GRAPH_INPUT,
             },
         ),
         CacheConsumer.INPUT_SNAPSHOT: _consumer_contract(
@@ -492,11 +521,14 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                 CacheInputClass.EXECUTION_POLICY: (
                     "Build boundedness controls admission, not source identity."
                 ),
+                CacheInputClass.GLOBAL_CONSTANTS: (
+                    "Post-read code changes execution, not external source bytes."
+                ),
             },
         ),
         CacheConsumer.NODE_SNAPSHOT_SIGNATURE: _consumer_contract(
             CacheConsumer.NODE_SNAPSHOT_SIGNATURE,
-            version=1,
+            version=2,
             fields=(
                 "lineage_fingerprint",
                 "runtime_input_fingerprint",
@@ -523,6 +555,7 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                     "enforce_contracts",
                     "execution_semantics_version",
                 ),
+                CacheInputClass.GLOBAL_CONSTANTS: ("lineage_fingerprint",),
             },
             excluded={
                 CacheInputClass.ROW_LIMIT: _FULL_FRAME_NO_ROW_LIMIT,
@@ -1310,6 +1343,14 @@ def lineage_cache_key(request: LineageCacheKeyRequest) -> str:
 
     payload = {
         "preamble": request.graph.preamble,
+        "global_constants": _global_constant_values_identity(
+            request.graph,
+            graph_constant_reads(
+                [relevant_nodes[node_id] for node_id in sorted(relevant_nodes)],
+                request.graph.node_map,
+            ),
+            source=request.source,
+        ),
         "source_file": request.graph.source_file,
         "nodes": [
             _lineage_node_identity(relevant_nodes[node_id]) for node_id in sorted(relevant_nodes)
@@ -1547,6 +1588,68 @@ def preamble_execution_fingerprint(
     return content_hash_bytes(canonical_json(parts).encode())
 
 
+def _read_constant_names(graph: PipelineGraph, reads: ConstantReads) -> list[str]:
+    if isinstance(reads, frozenset):
+        return sorted(reads)
+    return sorted(constant.name for constant in graph.global_constants)
+
+
+def _global_constants_identity(graph: PipelineGraph, reads: ConstantReads) -> object:
+    """The declared definitions of the constants *reads* names, every source's value included.
+
+    ``None`` when nothing is read, so a graph whose nodes read no constant
+    signs no constant state at all.
+    """
+    if isinstance(reads, frozenset) and not reads:
+        return None
+    by_name = {constant.name: constant for constant in graph.global_constants}
+    records = []
+    for name in _read_constant_names(graph, reads):
+        constant = by_name.get(name)
+        records.append(
+            checked_cache_identity_record(
+                CacheIdentityRecord.GLOBAL_CONSTANT,
+                {
+                    "name": name,
+                    "type": None if constant is None else constant.type,
+                    "value": None if constant is None else constant.value,
+                    "by_source": None if constant is None else constant.by_source,
+                },
+            )
+        )
+    return {"load_error": graph.global_constants_error, "constants": records}
+
+
+def _global_constant_values_identity(
+    graph: PipelineGraph,
+    reads: ConstantReads,
+    *,
+    source: str,
+) -> object:
+    """What the constants *reads* names hold for *source*; ``None`` when nothing is read."""
+    if isinstance(reads, frozenset) and not reads:
+        return None
+    by_name = {constant.name: constant for constant in graph.global_constants}
+    records = []
+    for name in _read_constant_names(graph, reads):
+        constant = by_name.get(name)
+        if constant is None:
+            constant_type, value, state = None, None, "undefined"
+        elif constant.by_source is None:
+            constant_type, value, state = constant.type, constant.value, "set"
+        elif source in constant.by_source:
+            constant_type, value, state = constant.type, constant.by_source[source], "set"
+        else:
+            constant_type, value, state = constant.type, None, "missing"
+        records.append(
+            checked_cache_identity_record(
+                CacheIdentityRecord.GLOBAL_CONSTANT_VALUE,
+                {"name": name, "type": constant_type, "value": value, "state": state},
+            )
+        )
+    return {"load_error": graph.global_constants_error, "constants": records}
+
+
 def graph_fingerprint(
     graph: PipelineGraph,
     *extra_keys: str,
@@ -1580,6 +1683,9 @@ def graph_fingerprint(
         {
             "base_fingerprint": base,
             "preamble_fingerprint": context_fingerprint,
+            "global_constants": _global_constants_identity(
+                graph, graph._haute_global_constant_reads
+            ),
             "source_file": graph.source_file,
             "extra_keys": tuple(extra_keys),
         },
