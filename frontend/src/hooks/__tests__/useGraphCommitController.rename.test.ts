@@ -76,6 +76,54 @@ describe("useGraphCommitController submodel occurrence rename", () => {
     expect(resolveNodeIdentities).toHaveBeenCalledOnce()
   })
 
+  it.each(["document", "newer edit"] as const)(
+    "a refused rename superseded by a %s is not retried",
+    async (change) => {
+      const original = makeNode("source", "polars", { data: { label: "source", nodeType: "polars" } })
+      const graphRef = { current: { nodes: [original], edges: [] as Edge[] } }
+      const commitGraph = vi.fn()
+      const context = { document: "a.py:1", naming: "taken" }
+      let refuse!: () => void
+      const resolveRenameIdentities = vi.fn((nodes: readonly Node[]) => {
+        if (resolveRenameIdentities.mock.calls.length === 1) {
+          return new Promise<Node[]>((_resolve, reject) => {
+            refuse = () => reject(new EditorNameCollisionError("source", "Name taken."))
+          })
+        }
+        return Promise.resolve(nodes.map((n) => ({ ...n, data: { ...n.data, _functionName: String(n.data.label) } })))
+      })
+      const hook = renderHook(() => useGraphCommitController({
+        graphRef, submodelsRef: { current: {} },
+        readDocumentIdentity: () => context.document, readOnly: false,
+        reservedApiInputFrameLabels: new Set(),
+        resolveNodeIdentities: resolveRenameIdentities,
+        resolveRenameIdentities,
+        readNamingContextKey: () => context.naming,
+        commitGraph, setSelectedNode: vi.fn(), addToast: vi.fn(),
+      }))
+      let older!: ReturnType<typeof hook.result.current.onRenameNode>
+      act(() => { older = hook.result.current.onRenameNode("source", "renamed") })
+      // The name is freed too, so only the cancellation keeps the old refusal from retrying.
+      context.naming = "freed"
+      if (change === "document") {
+        context.document = "b.py:1"
+        hook.rerender()
+      } else {
+        // A newer rename of the same node supersedes the older one.
+        await act(async () => { await hook.result.current.onRenameNode("source", "newest") })
+      }
+      commitGraph.mockClear()
+      let outcome: unknown
+      await act(async () => {
+        refuse()
+        outcome = await older
+      })
+
+      expect(outcome).toMatchObject({ ok: false, error: expect.stringContaining("superseded") })
+      expect(commitGraph).not.toHaveBeenCalled()
+    },
+  )
+
   afterEach(() => {
     cleanup()
     vi.clearAllMocks()

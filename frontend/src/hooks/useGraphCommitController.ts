@@ -280,6 +280,14 @@ export default function useGraphCommitController({
           try {
             resolved = await resolveRenameIdentities([candidateFor(currentNode)])
           } catch (error: unknown) {
+            // A newer edit or another document supersedes a refusal as it
+            // would an acceptance; only then may a stale refusal be retried.
+            if (requestInvalidated(request)) {
+              return {
+                ok: false,
+                error: "Rename was not applied because the document, editing capability, or a newer node edit superseded it.",
+              }
+            }
             // A refusal judged against names that have since changed may no
             // longer hold: the other node may have been renamed away.
             if (error instanceof EditorNameCollisionError && readNamingContextKey() !== namingKey) {
