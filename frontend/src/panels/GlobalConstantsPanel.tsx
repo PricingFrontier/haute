@@ -9,6 +9,11 @@ import {
   GLOBAL_CONSTANT_TYPES,
   MISSING_VALUE,
   constantIssues,
+  type GlobalConstantDraft,
+  type GlobalConstantIssues,
+  type GlobalConstantType,
+} from "../utils/globalConstants"
+import {
   constantReaders,
   joinSources,
   newConstantDraft,
@@ -16,10 +21,7 @@ import {
   unknownSourceKeys,
   valuesDiscardedByJoining,
   withType,
-  type GlobalConstantDraft,
-  type GlobalConstantIssues,
-  type GlobalConstantType,
-} from "../utils/globalConstants"
+} from "../utils/globalConstantsEditing"
 
 interface GlobalConstantsPanelProps {
   onClose: () => void

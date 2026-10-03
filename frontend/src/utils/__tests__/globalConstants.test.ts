@@ -1,26 +1,28 @@
 import { describe, expect, it } from "vitest"
 import {
-  EVERY_CONSTANT,
   MISSING_VALUE,
-  codeConstantReads,
   constantDrafts,
   constantIssues,
-  constantReaders,
   constantsPayload,
   constantsWithSourceValue,
+  saveRefusal,
+  withoutSource,
+  type GlobalConstantDraft,
+} from "../globalConstants"
+import {
+  EVERY_CONSTANT,
+  codeConstantReads,
+  constantReaders,
   convertValue,
   freeConstantName,
   joinSources,
   newConstantDraft,
   nodeConstantReads,
-  saveRefusal,
   splitBySource,
   unknownSourceKeys,
   valuesDiscardedByJoining,
   withType,
-  withoutSource,
-  type GlobalConstantDraft,
-} from "../globalConstants"
+} from "../globalConstantsEditing"
 
 const uniform = (name: string, value: string, type: GlobalConstantDraft["type"] = "float"): GlobalConstantDraft =>
   ({ name, type, split: false, value, bySource: {} })
