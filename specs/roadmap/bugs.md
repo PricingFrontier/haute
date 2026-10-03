@@ -20,7 +20,6 @@ Current rating behaviour is specified in
 |---|---|---:|---|
 | BUG-01 | Planned | P1 | Editing a Rating Step in the editor keeps each table's `onMissing` setting. |
 | BUG-02 | Decision | P1 | A rating table built in the editor no longer prices an unmatched level at 1.0 without saying so. |
-| BUG-06 | Planned | P2 | A Delta table folder can be chosen as a Lakehouse Data Input in the editor. |
 | BUG-12 | Planned | P1 | A save never drops a statement written after the pipeline constructor; such a statement is reported and saving waits for it to move. |
 | BUG-15 | Decision | P2 | A bare `pipeline.run()` routes a source the pipeline has instead of a `batch` scenario no pipeline declares. |
 | BUG-17 | Decision | P3 | A standalone run of a pipeline with a submodel runs it, or refuses up front naming the submodel, instead of reporting it as an unknown node. |
@@ -87,31 +86,6 @@ table's miss count in the preview; a test covers that miss.
 `frontend/src/panels/editors/RatingStepEditor.tsx` (the table fallback and
 `addTable`); `src/haute/_rating.py::RatingTableMissError`;
 `docs/building-models/nodes/rating-step.md`.
-
-### BUG-06 — A Delta table folder can be chosen as a Data Input
-**Why:** A Delta table is read from its folder. The Data Input's path browser
-opens a folder when it is clicked and only ever selects a file, and an input
-has no manual path entry (only outputs get one), so a Delta Lakehouse input's
-**TABLE LOCATOR** cannot be set in the editor; only a hand-edited pipeline file
-reaches it. Iceberg is not affected: `scan_iceberg` reads a table from its
-metadata file (`metadata/<version>.metadata.json`), and for a format without
-extensions the browser lists files with any installed file format's extension,
-`.json` among them, so it can select that file.
-
-**Plan:** Let the browser select a folder for the Delta format (a Delta folder
-is recognisable by its `_delta_log`), or give lakehouse inputs the same manual
-path entry outputs have.
-
-**Acceptance:** In the editor, a Lakehouse Data Input can be pointed at a Delta
-table folder under the project and previews it; a frontend test covers the
-selection.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/editors/_IoFormatEditor.tsx`
-(`manualEntry={direction === "output"}`); `frontend/src/panels/editors/_shared.tsx`
-(the browser's folder click); `src/haute/routes/files.py` (directory items);
-`src/haute/_polars_io_registry.py` (the `delta` and `iceberg` formats).
 
 ### BUG-12 — A save keeps the statements written after the pipeline constructor
 **Why:** Codegen regenerates a pipeline file from the parsed graph, and the

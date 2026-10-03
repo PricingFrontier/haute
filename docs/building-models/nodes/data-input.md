@@ -38,7 +38,7 @@ For a **CSV** file, the tab also shows the columns and types Haute detects in th
 | Field | What it does |
 |---|---|
 | **FORMAT** | **Delta Lake** or **Iceberg (unstable)**. |
-| **TABLE LOCATOR \*** | The table's location in your project: a Delta table's folder, or an Iceberg table's metadata file (`metadata/<version>.metadata.json`). The file browser selects only files, so a Delta folder is set as `path` in the node's JSON sidecar (see "In the pipeline file" below). |
+| **TABLE LOCATOR \*** | The table's location in your project: a Delta table's folder, or an Iceberg table's metadata file (`metadata/<version>.metadata.json`). For Delta, open the table's folder in the file browser and click **Use this folder**. |
 
 ### Databricks
 

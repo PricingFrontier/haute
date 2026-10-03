@@ -7220,6 +7220,10 @@
           ],
           "title": "Snapshot Build",
           "type": "string"
+        },
+        "source_is_folder": {
+          "title": "Source Is Folder",
+          "type": "boolean"
         }
       },
       "required": [
@@ -7229,6 +7233,7 @@
         "cache_mode",
         "direct_bounded",
         "needs_schema_when_bounded",
+        "source_is_folder",
         "snapshot_build",
         "cached_read"
       ],

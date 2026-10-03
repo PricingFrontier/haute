@@ -279,7 +279,10 @@ is the API preview contract. While expanded, the picker remains the sole
 selected-path summary; its embedded `FileBrowser` does not repeat the path.
 Registry-defined input paths are browser-only, matching Preview Data. Output
 destinations may additionally enable committed manual entry because their
-target file need not exist yet.
+target file need not exist yet. A format whose input capability reports
+`source_is_folder` (Delta Lake, whose table is a folder) adds a **Use this
+folder** action to the browser's header once it has opened a folder below the
+project root; it selects that folder as the path.
 
 **Shared Transform tab.** Known non-instance Data Input, External File, Scenario
 Expander, Rating Step, and Model Score nodes expose `Config`, `Transform`, then

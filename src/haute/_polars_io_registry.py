@@ -103,6 +103,8 @@ class IoFormat:
     # True → bounded reads additionally require a full declared ``schema``
     # argument (the generic form of the CSV declared-dtypes rule).
     needs_schema_when_bounded: bool = False
+    # True -> the source is a table folder, not a file, so pickers select a folder.
+    source_is_folder: bool = False
     unstable: bool = False
     # Engine packages (import names): reading/writing needs at least one
     # importable. Empty = polars-native, always available.
@@ -259,6 +261,7 @@ FORMATS: tuple[IoFormat, ...] = (
         writer="write_delta",
         sinker="sink_delta",
         bounded_read=True,
+        source_is_folder=True,
         read_engines=("deltalake",),
         write_engines=("deltalake",),
         source_owned_args=frozenset({"source", "target"}),
@@ -1309,6 +1312,7 @@ def registry_capabilities() -> dict[str, Any]:
             ),
             "direct_bounded": fmt.bounded_read,
             "needs_schema_when_bounded": fmt.needs_schema_when_bounded,
+            "source_is_folder": fmt.source_is_folder,
             "snapshot_build": _snapshot_build(fmt),
             "cached_read": _snapshot_build(fmt) != "unsupported",
         }

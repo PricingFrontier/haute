@@ -273,6 +273,10 @@ class TestRegistrySchemaCompleteness:
         # Core haute ships no deltalake engine: the capability payload must
         # say so rather than pretending delta is runnable.
         assert delta["input"]["engines_missing"] == ["deltalake"]
+        # A Delta table is a folder; every other format's source is a file.
+        assert [name for name, entry in formats.items() if entry["input"]["source_is_folder"]] == [
+            "delta"
+        ]
         records = formats["records"]
         assert records["input"]["snapshot_build"] == "bounded"
         assert records["input"]["cached_read"] is True

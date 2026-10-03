@@ -5179,6 +5179,7 @@ class IoInputCapability(_StrictIoCapabilitiesModel):
     cache_mode: Literal["direct", "snapshot"]
     direct_bounded: bool
     needs_schema_when_bounded: bool
+    source_is_folder: bool
     snapshot_build: Literal["bounded", "admitted_eager", "unsupported"]
     cached_read: bool
 

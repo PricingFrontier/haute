@@ -39,6 +39,7 @@ vi.mock("../CodeEditor", () => ({
 import {
   fetchSchema,
   fetchIoCapabilities,
+  listFiles,
 } from "../../../api/client"
 import DataInputEditor from "../DataInputEditor"
 import { resetIoCapabilitiesRequestForTests } from "../_ioFormats"
@@ -68,6 +69,7 @@ const groups: IoCapabilityGroup[] = [
           cache_mode: "direct",
           direct_bounded: true,
           needs_schema_when_bounded: false,
+          source_is_folder: false,
           snapshot_build: "bounded",
           cached_read: true,
         },
@@ -86,6 +88,7 @@ const groups: IoCapabilityGroup[] = [
           cache_mode: "snapshot",
           direct_bounded: true,
           needs_schema_when_bounded: true,
+          source_is_folder: false,
           snapshot_build: "bounded",
           cached_read: true,
         },
@@ -104,6 +107,7 @@ const groups: IoCapabilityGroup[] = [
           cache_mode: "snapshot",
           direct_bounded: false,
           needs_schema_when_bounded: false,
+          source_is_folder: false,
           snapshot_build: "admitted_eager",
           cached_read: true,
         },
@@ -122,6 +126,7 @@ const groups: IoCapabilityGroup[] = [
           cache_mode: "snapshot",
           direct_bounded: false,
           needs_schema_when_bounded: false,
+          source_is_folder: false,
           snapshot_build: "admitted_eager",
           cached_read: true,
         },
@@ -165,6 +170,7 @@ const groups: IoCapabilityGroup[] = [
           cache_mode: "snapshot",
           direct_bounded: false,
           needs_schema_when_bounded: false,
+          source_is_folder: false,
           snapshot_build: "bounded",
           cached_read: true,
         },
@@ -201,6 +207,7 @@ const groups: IoCapabilityGroup[] = [
           cache_mode: "snapshot",
           direct_bounded: true,
           needs_schema_when_bounded: false,
+          source_is_folder: true,
           snapshot_build: "bounded",
           cached_read: true,
         },
@@ -256,6 +263,7 @@ const groups: IoCapabilityGroup[] = [
           cache_mode: "snapshot",
           direct_bounded: true,
           needs_schema_when_bounded: false,
+          source_is_folder: false,
           snapshot_build: "bounded",
           cached_read: true,
         },
@@ -375,6 +383,23 @@ describe("DataInputEditor", () => {
       { signal: expect.any(AbortSignal) },
       { format: "csv", arguments: { separator: ";" } },
     )
+  })
+
+  it("points a Delta Lakehouse input at a table folder", async () => {
+    vi.mocked(listFiles).mockImplementation((dir) =>
+      Promise.resolve(
+        dir === "."
+          ? { items: [{ name: "claims", path: "tables/claims", type: "directory" }] }
+          : { items: [{ name: "_delta_log", path: "tables/claims/_delta_log", type: "directory" }] },
+      ) as ReturnType<typeof listFiles>,
+    )
+    const { onUpdate } = renderEditor({ inputType: "lakehouse", format: "delta", mode: "scan", code: "" })
+
+    fireEvent.click(await screen.findByText("claims"))
+    await screen.findByText("_delta_log")
+    fireEvent.click(screen.getByRole("button", { name: "Use this folder" }))
+
+    expect(onUpdate).toHaveBeenCalledWith("path", "tables/claims")
   })
 
   it("tolerates a leftover cacheMode key and never migrates it", async () => {
