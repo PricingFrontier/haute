@@ -221,6 +221,22 @@ describe("global constants in formulas", () => {
     expect(displayFormula(parseFormula("excess * rate", [], ["rate"]), [], ["rate"])).toBe("excess * rate")
   })
 
+  it("keeps literal keywords and type arguments when a constant shares their name", () => {
+    const constants = ["false", "Float64", "null"]
+    const fill = parseFormula("fill_null(flag, false)", [], constants)
+    expect(withoutFormulaText(fill)).toMatchObject({ args: [{ kind: "literal", type: "boolean", value: false }] })
+    expect(displayFormula(fill, [], constants)).toBe("fill_null(flag, false)")
+
+    const cast = parseFormula("cast(excess, Float64)", [], constants)
+    expect(withoutFormulaText(cast)).toMatchObject({ args: [{ kind: "literal", type: "text", value: "Float64" }] })
+    expect(displayFormula(cast, [], constants)).toBe("cast(excess, Float64)")
+
+    // A constant named like a keyword is still readable, qualified.
+    const qualified = withoutFormulaText(parseFormula("excess * global_constants.null", [], constants))
+    expect(qualified).toMatchObject({ right: { kind: "constant", name: "null" } })
+    expect(formulaText(qualified, [], constants)).toBe("excess * global_constants.null")
+  })
+
   it("refuses a constant where a type is expected", () => {
     expect(() => parseFormula("cast(premium, global_constants.kind)")).toThrow(FormulaError)
   })

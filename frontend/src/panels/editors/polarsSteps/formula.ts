@@ -287,7 +287,15 @@ class Parser {
 
   private literalArg(fn: string, arg: FunctionArg): FunctionArgValue {
     const token = this.take()
-    const bareConstant = token.kind === "name" && !token.quoted && !this.variables.has(token.value) && this.constants.has(token.value)
+    // A bare name is a constant only where a constant may stand: never a type
+    // argument, and never a keyword (`true`, `false`, `null`, `date`).
+    const bareConstant =
+      arg !== "dtype"
+      && token.kind === "name"
+      && !token.quoted
+      && !KEYWORDS.has(token.value)
+      && !this.variables.has(token.value)
+      && this.constants.has(token.value)
     if (token.kind === "constant" || bareConstant) {
       if (arg === "dtype") throw new FormulaError(`${fn}() expects a type here, not a constant.`, token.start)
       return { kind: "constant", name: token.value }

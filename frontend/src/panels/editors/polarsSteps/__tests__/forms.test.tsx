@@ -564,6 +564,38 @@ describe("step forms only build schema-valid payloads", () => {
     expect(screen.queryByText(/is not a column/)).not.toBeInTheDocument()
   })
 
+  it("offers a constant beside a column of the same name, and only constants after global_constants.", () => {
+    const spy = vi.fn()
+    const step: Step = {
+      id: "w",
+      kind: "with_column",
+      name: "x",
+      expr: { type: "binary", left: { kind: "column", name: "a" }, op: "+", right: { kind: "literal", type: "number", value: 1 }, text: "" },
+    }
+    render(<StepForm step={step} onChange={(next) => spy(next)} ctx={{ ...ctx, columns: ["rate", "excess"], variables: [], constants: ["rate"] }} />)
+    const input = screen.getByRole("combobox", { name: "Formula" })
+
+    fireEvent.change(input, { target: { value: "excess * ra" } })
+    const options = within(screen.getByRole("listbox")).getAllByRole("option")
+    expect(options.map((o) => o.textContent)).toEqual([expect.stringContaining("rate"), expect.stringContaining("global constant")])
+    fireEvent.keyDown(input, { key: "ArrowDown" })
+    fireEvent.keyDown(input, { key: "Tab" })
+    expect(input).toHaveValue("excess * rate")
+
+    fireEvent.change(input, { target: { value: "excess * `rate` + global_constants.ra" } })
+    expect(within(screen.getByRole("listbox")).getAllByRole("option").map((o) => o.textContent)).toEqual([expect.stringContaining("global constant")])
+    fireEvent.keyDown(input, { key: "Tab" })
+    expect(input).toHaveValue("excess * `rate` + global_constants.rate")
+    fireEvent.keyDown(input, { key: "Enter" })
+
+    expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({
+      expr: expect.objectContaining({
+        left: { kind: "expr", expr: expect.objectContaining({ right: { kind: "column", name: "rate" } }) },
+        right: { kind: "constant", name: "rate" },
+      }),
+    }))
+  })
+
   it("completes colliding columns as columns and plain variables as variables", () => {
     const spy = vi.fn()
     const step: Step = {

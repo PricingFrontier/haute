@@ -235,36 +235,46 @@ function exprTypeValue(expr: Expr): Expr["type"] {
 
 const WORD_BEFORE_CARET = /[A-Za-z_][A-Za-z0-9_]*$/
 
-function completionText(name: string, columns: string[], variables: string[], constants: string[]): string | null {
-  const operand = columns.includes(name)
-    ? { kind: "column" as const, name }
-    : variables.includes(name)
-      ? { kind: "variable" as const, name }
-      : { kind: "constant" as const, name }
+type CompletionKind = "col" | "var" | "const"
+
+/** The text a completion inserts for *name* as an operand of *kind*. */
+function completionText(name: string, kind: CompletionKind, variables: string[], constants: string[]): string | null {
+  const operand = { kind: kind === "col" ? "column" as const : kind === "var" ? "variable" as const : "constant" as const, name }
   return formulaText({ type: "operand", operand }, variables, constants)
+}
+
+/** Whether the word at the caret follows `global_constants.`, so only a constant's name fits. */
+function afterConstantsNamespace(draft: string, wordStart: number): boolean {
+  return /\bglobal_constants\s*\.\s*$/.test(draft.slice(0, wordStart))
 }
 
 /**
  * What the formula box offers for the word before the caret: the columns
  * (with their types), earlier variables and global constants starting with it, then the
- * catalogue's functions (marked `ƒ`, with what they do). `exact` is the word
- * when it already names one of them, so Tab and Enter keep it.
+ * catalogue's functions (marked `ƒ`, with what they do). A constant sharing a
+ * column's or variable's name is offered as well, as its own entry; after
+ * `global_constants.` only constants are. `exact` is the word when it already
+ * names one of them, so Tab and Enter keep it.
  */
 function formulaCompletions(draft: string, caret: number, columns: string[], variables: string[], constants: string[], schema: StepSchema) {
   const match = WORD_BEFORE_CARET.exec(draft.slice(0, caret))
   if (!match) return { prefix: "", entries: [] as Completion[], exact: null }
   const prefix = match[0]
   const lower = prefix.toLowerCase()
-  const names = completionMatches([...new Set([...columns, ...variables, ...constants])], prefix)
-    .filter((name) => completionText(name, columns, variables, constants) !== null)
+  const constantEntries: Completion[] = completionMatches(constants, prefix)
+    .map((name) => ({ value: `const:${name}`, label: name, note: "global constant" }))
+  if (afterConstantsNamespace(draft, caret - prefix.length)) {
+    return { prefix, entries: constantEntries, exact: constants.includes(prefix) ? prefix : null }
+  }
+  const names = completionMatches([...new Set([...columns, ...variables])], prefix)
+    .filter((name) => completionText(name, columns.includes(name) ? "col" : "var", variables, constants) !== null)
   const entries: Completion[] = [
     ...names.map((name) =>
       columns.includes(name)
         ? { value: `col:${name}`, label: name, note: schema.describe(name) }
-        : variables.includes(name)
-          ? { value: `var:${name}`, label: name, note: "variable" }
-          : { value: `const:${name}`, label: name, note: "global constant" },
+        : { value: `var:${name}`, label: name, note: "variable" },
     ),
+    ...constantEntries,
     ...FUNCTIONS.filter((f) => f.value.startsWith(lower) && f.value !== lower).map((f) => ({ value: `fn:${f.value}`, label: f.value, note: f.label === f.value ? null : f.label, mark: "ƒ" })),
   ]
   const exact = columns.includes(prefix) || variables.includes(prefix) || constants.includes(prefix) || functionNamed(prefix) !== undefined ? prefix : null
@@ -375,7 +385,11 @@ function FormulaField({ text, onCommit, variables, constants, columns, depth }: 
     const colon = entry.value.indexOf(":")
     const [kind, name] = [entry.value.slice(0, colon), entry.value.slice(colon + 1)]
     const call = kind === "fn"
-    const insert = call ? `${name}()` : completionText(name, columns, variables, constants)
+    const insert = call
+      ? `${name}()`
+      : kind === "const" && afterConstantsNamespace(draft, caret - prefix.length)
+        ? name
+        : completionText(name, kind as CompletionKind, variables, constants)
     if (insert === null) return
     const before = draft.slice(0, caret - prefix.length)
     const after = draft.slice(caret)
