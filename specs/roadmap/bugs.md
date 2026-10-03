@@ -20,7 +20,6 @@ Current rating behaviour is specified in
 |---|---|---:|---|
 | BUG-01 | Planned | P1 | Editing a Rating Step in the editor keeps each table's `onMissing` setting. |
 | BUG-02 | Decision | P1 | A rating table built in the editor no longer prices an unmatched level at 1.0 without saying so. |
-| BUG-04 | Planned | P2 | A pickled XGBoost or LightGBM model loads in a Load File node, or is refused by name. |
 | BUG-06 | Planned | P2 | A Delta table folder can be chosen as a Lakehouse Data Input in the editor. |
 | BUG-10 | Planned | P2 | A CSV Data Input's detected schema is read with the node's reader arguments. |
 | BUG-12 | Planned | P1 | A save never drops a statement written after the pipeline constructor; such a statement is reported and saving waits for it to move. |
@@ -92,31 +91,6 @@ table's miss count in the preview; a test covers that miss.
 `frontend/src/panels/editors/RatingStepEditor.tsx` (the table fallback and
 `addTable`); `src/haute/_rating.py::RatingTableMissError`;
 `docs/building-models/nodes/rating-step.md`.
-
-### BUG-04 — A pickled XGBoost or LightGBM model loads in a Load File node
-**Why:** Load File reads pickle and joblib files through an exact allowlist of
-classes. The list names XGBoost's `XGBRegressor`, `XGBClassifier` and
-`XGBModel` and LightGBM's `LGBMRegressor`, `LGBMClassifier` and `LGBMModel`,
-but not the booster each of them pickles inside itself
-(`xgboost.core.Booster`, `lightgbm.basic.Booster`). Loading a pickled
-`XGBRegressor` or `LGBMRegressor` through `safe_unpickle` fails with "Blocked
-unpickling of xgboost.core.Booster" (or `lightgbm.basic.Booster`), so the
-listed entries can never load and the list claims support that does not
-exist. The Load File page now says these pickles fail.
-
-**Plan:** Decide whether Load File supports these models. If it does, add the
-two booster classes (and whatever else their pickles reference) and prove a
-pickled regressor and classifier of each library load and predict; if it does
-not, remove the wrapper entries so the refusal names the model class.
-
-**Acceptance:** A test pickles an `XGBRegressor` and an `LGBMRegressor` into a
-project folder and loads each through `safe_unpickle`: both load and predict,
-or both are refused naming their own class; the Load File page matches.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_sandbox.py` (`_ALLOWED_PICKLE_CLASSES`,
-`safe_unpickle`); `docs/building-models/nodes/external-file.md`.
 
 ### BUG-06 — A Delta table folder can be chosen as a Data Input
 **Why:** A Delta table is read from its folder. The Data Input's path browser

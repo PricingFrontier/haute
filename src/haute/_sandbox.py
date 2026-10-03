@@ -406,12 +406,6 @@ _ALLOWED_PICKLE_CLASSES: frozenset[tuple[str, str]] = frozenset(
         ("catboost.core", "CatBoost"),
         ("catboost.core", "CatBoostClassifier"),
         ("catboost.core", "CatBoostRegressor"),
-        ("lightgbm.sklearn", "LGBMClassifier"),
-        ("lightgbm.sklearn", "LGBMModel"),
-        ("lightgbm.sklearn", "LGBMRegressor"),
-        ("xgboost.sklearn", "XGBClassifier"),
-        ("xgboost.sklearn", "XGBModel"),
-        ("xgboost.sklearn", "XGBRegressor"),
         # Exactly the two EBM estimators; no other InterpretML symbol is trusted.
         ("interpret.glassbox._ebm._ebm", "ExplainableBoostingClassifier"),
         ("interpret.glassbox._ebm._ebm", "ExplainableBoostingRegressor"),
@@ -458,8 +452,8 @@ def _resolve_allowed_global(
 def _resolve_installed(resolver: Any, module: str, name: str) -> Any:
     """Resolve an allowlisted ``module.name``, naming a package that is absent.
 
-    The allowlist names other projects' module paths, some of which
-    (LightGBM, XGBoost) are not installed in every environment.  Only a
+    The allowlist names other projects' module paths, some of which may not
+    be installed in every environment.  Only a
     ``ModuleNotFoundError`` for the entry's own top-level package becomes the
     uniform blocked-pickle error; a missing module deeper in the tree is a
     broken install and propagates unchanged.

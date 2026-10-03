@@ -193,6 +193,24 @@ class TestSafeUnpickle:
         with pytest.raises(pickle.UnpicklingError, match="not in.*allowlist"):
             safe_unpickle(str(f))
 
+    @pytest.mark.parametrize(
+        ("module", "name"),
+        [("xgboost.sklearn", "XGBRegressor"), ("lightgbm.sklearn", "LGBMRegressor")],
+    )
+    def test_boosted_model_pickles_are_refused_by_their_own_class(
+        self, tmp_path: Path, module: str, name: str
+    ):
+        """Gradient-boosted models load through Model Scoring, not Load File."""
+        estimator_cls = getattr(pytest.importorskip(module), name)
+        model = estimator_cls(n_estimators=2).fit([[0.0], [1.0], [2.0]], [1.0, 3.0, 5.0])
+        set_project_root(tmp_path)
+        f = tmp_path / "model.pkl"
+        f.write_bytes(pickle.dumps(model))
+        with pytest.raises(
+            pickle.UnpicklingError, match=rf"Blocked unpickling of {module}\.{name} "
+        ):
+            safe_unpickle(str(f))
+
     def test_path_outside_root_blocked(self, tmp_path: Path):
         """Pickle loading should fail if path is outside root."""
         set_project_root(tmp_path / "safe_dir")
@@ -1495,12 +1513,10 @@ _PICKLE_ALLOWLIST_DISTRIBUTIONS = {
     "catboost": "catboost",
     "joblib": "joblib",
     "interpret": "interpret-core",
-    "lightgbm": "lightgbm",
     "numpy": "numpy",
     "pandas": "pandas",
     "polars": "polars",
     "sklearn": "scikit-learn",
-    "xgboost": "xgboost",
 }
 _PICKLE_ALLOWLIST_STDLIB = frozenset({"builtins", "copyreg", "_codecs"})
 
@@ -1553,10 +1569,10 @@ class TestPickleAllowlistResolves:
         """An allowlisted entry whose package is absent is reported as such."""
 
         def resolver(module: str, name: str) -> object:
-            raise ModuleNotFoundError(f"No module named {module!r}", name="xgboost")
+            raise ModuleNotFoundError(f"No module named {module!r}", name="catboost")
 
-        with pytest.raises(pickle.UnpicklingError, match="`xgboost` is not installed"):
-            _resolve_allowed_global(resolver, "xgboost.sklearn", "XGBModel")
+        with pytest.raises(pickle.UnpicklingError, match="`catboost` is not installed"):
+            _resolve_allowed_global(resolver, "catboost.core", "CatBoost")
 
     def test_broken_install_deeper_in_the_tree_propagates(self) -> None:
         """Only the entry's own top-level package counts as absent."""
@@ -1565,17 +1581,17 @@ class TestPickleAllowlistResolves:
             raise ModuleNotFoundError("No module named 'scipy.sparse'", name="scipy.sparse")
 
         with pytest.raises(ModuleNotFoundError, match="scipy.sparse"):
-            _resolve_allowed_global(resolver, "xgboost.sklearn", "XGBModel")
+            _resolve_allowed_global(resolver, "catboost.core", "CatBoost")
 
-    def test_real_unpickler_reports_absent_xgboost(self) -> None:
-        """The real ``find_class`` path in an environment without xgboost."""
+    def test_real_unpickler_reports_absent_catboost(self) -> None:
+        """The real ``find_class`` path in an environment without catboost."""
         import importlib.util
         import io
 
         from haute._sandbox import _RestrictedUnpickler
 
-        if importlib.util.find_spec("xgboost") is not None:
-            pytest.skip("xgboost is installed here; the absent-package path is not reachable")
+        if importlib.util.find_spec("catboost") is not None:
+            pytest.skip("catboost is installed here; the absent-package path is not reachable")
         unpickler = _RestrictedUnpickler(io.BytesIO(b""))
-        with pytest.raises(pickle.UnpicklingError, match="`xgboost` is not installed"):
-            unpickler.find_class("xgboost.sklearn", "XGBModel")
+        with pytest.raises(pickle.UnpicklingError, match="`catboost` is not installed"):
+            unpickler.find_class("catboost.core", "CatBoost")

@@ -409,7 +409,7 @@ from its suffix instead: `.cbm` → `catboost`, `.ubj` → the installed XGBoost
 plus `pandas`, `.lgbm` → `lightgbm` plus `pandas`, `.ebm` → `interpret-core` plus `pandas`,
 and `.rsglm` → `rustystats`. A pickled or joblib artefact (`.pkl`, `.pickle`, `.joblib`) may
 hold an object of any third-party package haute's restricted unpickler allows, so it adds all
-of them: `catboost`, `interpret-core`, `lightgbm`, `pandas`, `scikit-learn` and XGBoost. Both
+of them: `catboost`, `interpret-core`, `pandas` and `scikit-learn`. Both
 score XGBoost, LightGBM and EBM on CPU with no extra requirement. Bundling discovers `.ubj`, `.lgbm` and `.ebm`
 artifacts with the other native suffixes and carries each model's feature contract; for an
 `.ebm` it fetches the contract the run logged beside the model, and the deployed scorer loads
