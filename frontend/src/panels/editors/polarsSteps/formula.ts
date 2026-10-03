@@ -11,8 +11,9 @@
  * any case (the kept text spells them as the catalogue does) with their extra
  * arguments as plain values. A pipeline global constant is its bare name
  * (or `global_constants.<name>`), also as an extra argument; a bare name is an
- * earlier variable first, then a constant, then a column, and backticks always
- * name a column. Operators follow Python: `+ - * / // % **`,
+ * earlier variable first, then one of the `constants` given, then a column, and
+ * backticks always name a column. The editor leaves out of `constants` any
+ * constant sharing a column's name, so a column's name always means the column. Operators follow Python: `+ - * / // % **`,
  * with `**` binding tightest and right-associative, and brackets group.
  * Expression types text cannot express (windows, conditionals, text joins)
  * make `formulaText` return null, and the structured editor takes over.

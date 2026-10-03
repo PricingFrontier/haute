@@ -385,8 +385,9 @@ offers Value, Formula, Function, If-then, Window and Join text; a new column sta
 Formula, its name field taking focus first. A formula is edited as text
 (`(premium + tax) * 1.05 / 12`, `round(premium / sum_insured * 1000, 3)`: columns by name or
 in backticks, earlier variables by name, global constants by name or as `global_constants.<name>`
-(a bare name is an earlier variable first, then a constant, then a column; backticks always name
-a column), quoted
+(a bare name is an earlier variable first, then a column the step has, then a constant; a constant
+that shares a column's name is written `global_constants.<name>`, which its completion inserts),
+quoted
 text, `true`/`false`/`null`,
 `date('YYYY-MM-DD')`, Python operator precedence with `**` right-associative (power
 binds before a leading sign, while negative exponents are accepted: `-2 ** 2` is

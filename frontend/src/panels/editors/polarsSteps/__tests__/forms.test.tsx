@@ -564,7 +564,7 @@ describe("step forms only build schema-valid payloads", () => {
     expect(screen.queryByText(/is not a column/)).not.toBeInTheDocument()
   })
 
-  it("offers a constant beside a column of the same name, and only constants after global_constants.", () => {
+  it("reads a column's name as the column and writes a same-named constant out in full, without backticks", () => {
     const spy = vi.fn()
     const step: Step = {
       id: "w",
@@ -575,17 +575,22 @@ describe("step forms only build schema-valid payloads", () => {
     render(<StepForm step={step} onChange={(next) => spy(next)} ctx={{ ...ctx, columns: ["rate", "excess"], variables: [], constants: ["rate"] }} />)
     const input = screen.getByRole("combobox", { name: "Formula" })
 
+    // Both are offered: the column inserts its name, the constant its full name.
     fireEvent.change(input, { target: { value: "excess * ra" } })
     const options = within(screen.getByRole("listbox")).getAllByRole("option")
     expect(options.map((o) => o.textContent)).toEqual([expect.stringContaining("rate"), expect.stringContaining("global constant")])
-    fireEvent.keyDown(input, { key: "ArrowDown" })
     fireEvent.keyDown(input, { key: "Tab" })
     expect(input).toHaveValue("excess * rate")
+    fireEvent.change(input, { target: { value: "excess * rate + ra" } })
+    fireEvent.keyDown(input, { key: "ArrowDown" })
+    fireEvent.keyDown(input, { key: "Tab" })
+    expect(input).toHaveValue("excess * rate + global_constants.rate")
 
-    fireEvent.change(input, { target: { value: "excess * `rate` + global_constants.ra" } })
+    // After global_constants. only constants are offered, and just the name goes in.
+    fireEvent.change(input, { target: { value: "excess * rate + global_constants.ra" } })
     expect(within(screen.getByRole("listbox")).getAllByRole("option").map((o) => o.textContent)).toEqual([expect.stringContaining("global constant")])
     fireEvent.keyDown(input, { key: "Tab" })
-    expect(input).toHaveValue("excess * `rate` + global_constants.rate")
+    expect(input).toHaveValue("excess * rate + global_constants.rate")
     fireEvent.keyDown(input, { key: "Enter" })
 
     expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({
