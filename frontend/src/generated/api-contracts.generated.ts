@@ -216,6 +216,7 @@ export interface TableItem {
 }
 export interface EditorIdentitiesResponse {
   identities: EditorIdentityResponseNode[];
+  violations: PipelineNameViolation[] | null;
 }
 export interface EditorIdentityResponseNode {
   config_reference: string | null;
@@ -225,6 +226,26 @@ export interface EditorIdentityResponseNode {
   source_handle_input_names: {
     [k: string]: string;
   };
+}
+/**
+ * One executable-name violation (codegen's naming rule), with its message.
+ */
+export interface PipelineNameViolation {
+  kind: 'duplicate' | 'reserved' | 'builtin' | 'reserved_input';
+  message: string;
+  name: string;
+  /**
+   * @minItems 1
+   */
+  parties: PipelineNameViolationParty[];
+}
+/**
+ * A node taking part in a name violation; ``submodel`` is its definition, if any.
+ */
+export interface PipelineNameViolationParty {
+  label: string;
+  node_id: string;
+  submodel: string | null;
 }
 /**
  * Either the rendered code with per-step line ranges or the failing step.

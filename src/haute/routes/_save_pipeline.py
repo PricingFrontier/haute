@@ -601,6 +601,8 @@ class SavePipelineService:
         drift onto separate structural validators.
         """
 
+        # Names first: flattening refuses a violation without the save wording.
+        self._validate_executable_names(graph)
         flattened = flatten_graph(graph)
         self._validate_singletons(flattened)
         self._validate_nothing_leaves_a_sink(flattened)
@@ -608,7 +610,6 @@ class SavePipelineService:
         self._validate_optimiser_input_selectors(flattened)
         self._validate_declared_config_keys(graph)
         self._validate_strict_node_configs(graph)
-        self._validate_executable_names(graph)
         self._validate_quote_input_tables_do_not_shadow_nodes(graph)
         self._validate_no_load_errors(graph)
         self._validate_global_constants(graph)

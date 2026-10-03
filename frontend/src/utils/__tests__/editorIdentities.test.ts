@@ -93,6 +93,7 @@ describe("editor identity resolution", () => {
       node("api", "Quotes", "apiInput"),
     ]
     const response: EditorIdentityBatchResponse = {
+      violations: null,
       identities: [
         {
           node_id: "ordinary",
@@ -147,6 +148,7 @@ describe("editor identity resolution", () => {
     const nodes = [node("source", "class", "polars")]
     const edges = [{ id: "edge", source: "source", target: "target" }]
     const resolve = vi.fn(async (): Promise<EditorIdentityBatchResponse> => ({
+      violations: null,
       identities: [{
         node_id: "source",
         function_name: "node_class",
@@ -183,6 +185,7 @@ describe("editor identity resolution", () => {
     }
     const root = node("instance", "Pricing", "submodel", { definitionId: "pricing", alias: "pricing" })
     const resolve = vi.fn(async (request): Promise<EditorIdentityBatchResponse> => ({
+      violations: null,
       identities: request.nodes.map((requestNode: EditorIdentityRequestNode) => ({
         node_id: requestNode.node_id,
         function_name: `fn_${requestNode.node_id}`,

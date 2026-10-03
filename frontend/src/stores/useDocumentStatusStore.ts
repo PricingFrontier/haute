@@ -5,8 +5,19 @@ import type {
   PipelineDocumentCapabilities,
   PipelineEditorDocument,
   PipelineLoadStatus,
+  PipelineNameViolation,
   PipelineNodeCompleteness,
 } from "../types/pipelineDocument"
+
+/**
+ * A ready document loaded with name violations: editable, but fenced from
+ * save, execution and preview until renames clear them. `lifted` is the fence
+ * once they are cleared: the ready document's own capabilities.
+ */
+interface NameFence {
+  fenced: PipelineDocumentCapabilities
+  lifted: PipelineDocumentCapabilities
+}
 
 interface DocumentStatusState {
   loadStatus: PipelineLoadStatus | null
@@ -15,6 +26,9 @@ interface DocumentStatusState {
   diagnosticsOmitted: number
   completeness: PipelineNodeCompleteness[]
   completenessOmitted: number
+  /** The document's remaining name violations, revalidated after each edit. */
+  nameViolations: PipelineNameViolation[]
+  nameFence: NameFence | null
   sourceRevision: string | null
   executionGeneration: number
   sourceText: string
@@ -51,6 +65,8 @@ export interface DocumentStatusStore extends DocumentStatusState {
     graphSynchronized: boolean,
     documentFingerprint: string,
   ) => void
+  /** The remaining name violations the server reported for the current graph. */
+  setNameViolations: (nameViolations: PipelineNameViolation[]) => void
   setGraphSynchronized: (graphSynchronized: boolean) => void
   setSystemFailure: (systemFailure: string) => void
   setSourceRevision: (sourceRevision: string | null) => void
@@ -66,6 +82,8 @@ function initialState(): DocumentStatusState {
     diagnosticsOmitted: 0,
     completeness: [],
     completenessOmitted: 0,
+    nameViolations: [],
+    nameFence: null,
     sourceRevision: null,
     executionGeneration: 0,
     sourceText: "",
@@ -77,6 +95,19 @@ function initialState(): DocumentStatusState {
     graphSynchronized: false,
     systemFailure: null,
     documentFingerprint: null,
+  }
+}
+
+function nameFence(document: PipelineEditorDocument): NameFence | null {
+  if (document.load_status !== "ready" || document.name_violations.length === 0) return null
+  return {
+    fenced: { ...document.capabilities },
+    lifted: {
+      ...document.capabilities,
+      can_save: true,
+      can_execute: true,
+      can_preview: document.source_selection_trusted,
+    },
   }
 }
 
@@ -96,6 +127,8 @@ function documentState(
     diagnosticsOmitted: document.diagnostics_omitted,
     completeness: document.completeness.map((entry) => ({ ...entry })),
     completenessOmitted: document.completeness_omitted,
+    nameViolations: document.name_violations,
+    nameFence: nameFence(document),
     sourceRevision: document.source_revision,
     executionGeneration,
     sourceText: document.source_text,
@@ -120,6 +153,13 @@ const useDocumentStatusStore = create<DocumentStatusStore>()((set) => ({
     set((state) => documentState(
       document, graphSynchronized, state.executionGeneration + 1, documentFingerprint,
     )),
+  setNameViolations: (nameViolations) => set((state) => {
+    // Only a document loaded with violations is fenced by them; any other
+    // document's names are checked as they are edited.
+    if (state.nameFence === null) return {}
+    const capabilities = nameViolations.length === 0 ? state.nameFence.lifted : state.nameFence.fenced
+    return { nameViolations, capabilities: { ...capabilities } }
+  }),
   setGraphSynchronized: (graphSynchronized) => set({ graphSynchronized }),
   // No document was accepted, so the next resync must ask for the current one.
   setSystemFailure: (systemFailure) => set({ systemFailure, graphSynchronized: false, documentFingerprint: null }),
@@ -145,6 +185,9 @@ export function documentReadOnlyReason(): string {
   }
   if (state.capabilities?.can_mutate === true && !state.graphSynchronized) {
     return "Pipeline changed on disk while you have unsaved changes. Reload the file or discard local edits first."
+  }
+  if (state.nameViolations.length > 0) {
+    return "Rename the nodes the name banner lists before saving or running the pipeline."
   }
   return "This pipeline is read-only until its load diagnostics are resolved."
 }

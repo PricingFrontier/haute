@@ -786,10 +786,26 @@
           },
           "title": "Identities",
           "type": "array"
+        },
+        "violations": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/PipelineNameViolation"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Violations"
         }
       },
       "required": [
-        "identities"
+        "identities",
+        "violations"
       ],
       "title": "EditorIdentitiesResponse",
       "type": "object"
@@ -10992,6 +11008,82 @@
         "execution_metrics"
       ],
       "title": "OptimiserStatusResponse",
+      "type": "object"
+    },
+    "PipelineNameViolation": {
+      "additionalProperties": false,
+      "description": "One executable-name violation (codegen's naming rule), with its message.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "duplicate",
+            "reserved",
+            "builtin",
+            "reserved_input"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "message": {
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "parties": {
+          "items": {
+            "$ref": "#/$defs/PipelineNameViolationParty"
+          },
+          "minItems": 1,
+          "title": "Parties",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "message",
+        "parties"
+      ],
+      "title": "PipelineNameViolation",
+      "type": "object"
+    },
+    "PipelineNameViolationParty": {
+      "additionalProperties": false,
+      "description": "A node taking part in a name violation; ``submodel`` is its definition, if any.",
+      "properties": {
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "node_id": {
+          "minLength": 1,
+          "title": "Node Id",
+          "type": "string"
+        },
+        "submodel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submodel"
+        }
+      },
+      "required": [
+        "node_id",
+        "label",
+        "submodel"
+      ],
+      "title": "PipelineNameViolationParty",
       "type": "object"
     },
     "PipelineSettingsAutomatic": {

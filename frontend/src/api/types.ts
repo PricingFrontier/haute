@@ -1,5 +1,7 @@
 /** Shared API response/request types for the Haute backend. */
 
+import type { toCanonicalGraphPayload } from "../utils/graphSnapshot"
+
 // Re-export canonical types from their source locations
 import type {
   BackendNodeStatus,
@@ -55,6 +57,8 @@ export interface EditorIdentityRequestNode {
 
 export interface EditorIdentityBatchRequest {
   nodes: EditorIdentityRequestNode[]
+  /** The document's naming context, as save receives it; the response then lists its violations. */
+  graph?: ReturnType<typeof toCanonicalGraphPayload>
 }
 
 // Editor identities, Polars step rendering and pipeline settings are generated.

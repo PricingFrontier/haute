@@ -803,6 +803,27 @@ class RecoverySubmodelDefinition(BaseModel):
         return self
 
 
+class PipelineNameViolationParty(BaseModel):
+    """A node taking part in a name violation; ``submodel`` is its definition, if any."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str = Field(min_length=1)
+    label: str
+    submodel: str | None = None
+
+
+class PipelineNameViolation(BaseModel):
+    """One executable-name violation (codegen's naming rule), with its message."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["duplicate", "reserved", "builtin", "reserved_input"]
+    name: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+    parties: list[PipelineNameViolationParty] = Field(min_length=1)
+
+
 class PipelineEditorDocument(BaseModel):
     """Versioned editor load result; never a canonical executable graph."""
 
@@ -832,6 +853,9 @@ class PipelineEditorDocument(BaseModel):
     diagnostics_omitted: int = Field(default=0, ge=0)
     completeness: list[PipelineNodeCompleteness] = Field(default_factory=list)
     completeness_omitted: int = Field(default=0, ge=0)
+    # The file's executable-name violations. While any remain the document is
+    # editable but cannot be saved, executed or previewed.
+    name_violations: list[PipelineNameViolation] = Field(default_factory=list)
     capabilities: PipelineDocumentCapabilities
 
 
@@ -884,6 +908,10 @@ class EditorIdentitiesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     nodes: list[EditorIdentityRequestNode] = Field(min_length=0, max_length=10_000)
+    # The editor document's naming context, in the representation save
+    # receives, with the request's nodes applied. When present the response
+    # carries the document's remaining name violations.
+    graph: Graph | None = None
 
     @field_validator("nodes")
     @classmethod
@@ -912,6 +940,7 @@ class EditorIdentitiesResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     identities: list[EditorIdentityResponseNode]
+    violations: list[PipelineNameViolation] | None = None
 
     @field_validator("identities")
     @classmethod

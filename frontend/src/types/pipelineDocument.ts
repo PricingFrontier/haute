@@ -139,6 +139,21 @@ export interface PipelineNodeCompleteness {
   message: string
 }
 
+/** A node taking part in a name violation; `submodel` is its definition id, if any. */
+export interface PipelineNameViolationParty {
+  node_id: string
+  label: string
+  submodel: string | null
+}
+
+/** One executable-name violation (codegen's naming rule) with the server's message. */
+export interface PipelineNameViolation {
+  kind: "duplicate" | "reserved" | "builtin" | "reserved_input"
+  name: string
+  message: string
+  parties: PipelineNameViolationParty[]
+}
+
 export interface PipelineDocumentCapabilities {
   can_mutate: boolean
   can_save: boolean
@@ -170,6 +185,7 @@ export interface PipelineEditorDocument extends RecoveryGraph {
   diagnostics_omitted: number
   completeness: PipelineNodeCompleteness[]
   completeness_omitted: number
+  name_violations: PipelineNameViolation[]
   capabilities: PipelineDocumentCapabilities
 }
 
@@ -610,6 +626,34 @@ export function parseNodeCompleteness(value: unknown, field: string): PipelineNo
   }
 }
 
+const NAME_VIOLATION_KINDS = ["duplicate", "reserved", "builtin", "reserved_input"] as const
+
+/** Parse a list of name violations: a document's, or an identity response's. */
+export function parseNameViolations(value: unknown, field: string): PipelineNameViolation[] {
+  return expectArray(PARSER, value, field).map((item, index) => {
+    const at = `${field}[${index}]`
+    const object = expectPlainObject(PARSER, item, at)
+    exactKeys(object, at, ["kind", "name", "message", "parties"])
+    const parties = expectArray(PARSER, object.parties, `${at}.parties`).map((party, partyIndex) => {
+      const partyAt = `${at}.parties[${partyIndex}]`
+      const partyObject = expectPlainObject(PARSER, party, partyAt)
+      exactKeys(partyObject, partyAt, ["node_id", "label", "submodel"])
+      return {
+        node_id: expectNonBlankString(PARSER, partyObject.node_id, `${partyAt}.node_id`),
+        label: expectString(PARSER, partyObject.label, `${partyAt}.label`),
+        submodel: nullableString(partyObject, "submodel", partyAt),
+      }
+    })
+    if (parties.length === 0) throw new Error(`${PARSER}: ${at}.parties must not be empty`)
+    return {
+      kind: expectStringLiteral(PARSER, object.kind, `${at}.kind`, NAME_VIOLATION_KINDS),
+      name: expectNonBlankString(PARSER, object.name, `${at}.name`),
+      message: expectNonBlankString(PARSER, object.message, `${at}.message`),
+      parties,
+    }
+  })
+}
+
 export function parsePipelineEditorDocument(value: unknown): PipelineEditorDocument {
   const object = expectPlainObject(PARSER, value)
   exactKeys(object, "document", [
@@ -637,6 +681,7 @@ export function parsePipelineEditorDocument(value: unknown): PipelineEditorDocum
     "diagnostics_omitted",
     "completeness",
     "completeness_omitted",
+    "name_violations",
     "capabilities",
   ])
   const graph = parseRecoveryGraph(
@@ -742,6 +787,7 @@ export function parsePipelineEditorDocument(value: unknown): PipelineEditorDocum
     diagnostics_omitted: diagnosticsOmitted,
     completeness,
     completeness_omitted: completenessOmitted,
+    name_violations: parseNameViolations(object.name_violations, "document.name_violations"),
     capabilities: {
       can_mutate: expectBoolean(PARSER, capabilities.can_mutate, "capabilities.can_mutate"),
       can_save: expectBoolean(PARSER, capabilities.can_save, "capabilities.can_save"),

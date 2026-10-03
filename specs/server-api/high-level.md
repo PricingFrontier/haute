@@ -174,7 +174,21 @@ sorted reserved API-input frame-label set. Prospective browser-created or rename
 nodes use the bounded, side-effect-free `POST /api/pipeline/editor-identities`
 contract. Submodel and drilled Input requests carry an exact handle-to-public-label
 map so the server, rather than the browser, derives their executable names. The
-response preserves request order and never reads or writes project state.
+response preserves request order and never reads or writes project state. The request may
+also carry the document's naming context: the whole graph, in the representation save
+receives, with the request's nodes applied. The response then lists the executable-name
+violations that remain in it (`violations`), as the document carries them.
+
+A file whose names break the codegen specification's executable-name rule in a way the
+parser can build a graph from (anything but a structural collision; expression-parsing)
+loads as a ready document listing them in `name_violations`, each with its kind, name,
+message and the nodes taking part (a submodel child names its definition). The document is
+editable (`can_mutate`), but while the list is non-empty `can_save`, `can_execute` and
+`can_preview` are false, and the server refuses save and execution with the same message:
+save through `validate_graph`, and every route that runs a browser graph through
+`flatten_executable_graph`, which refuses a graph with a violation before flattening it. Renames use the
+ordinary rename path, and the browser revalidates through the identity request until the list
+is empty.
 `POST /api/pipeline/save` is the single write path for a pipeline's `.py` source, its
 per-node config JSON sidecars, and its `.haute.json` position sidecar — described in detail
 below. Before changing an existing named document, Save and submodel create/dissolve reread

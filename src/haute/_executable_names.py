@@ -177,17 +177,11 @@ def _port_bindings(graph: PipelineGraph) -> dict[tuple[str, str], list[str]]:
     return bindings
 
 
-def _input_bindings(scoped: PipelineGraph, node: GraphNode) -> Iterator[tuple[str, str]]:
-    """Each name *node*'s body receives along its edges, with where it comes from.
-
-    The edge-derived names, as the executor derives them, and every logical
-    name ``inputMapping`` binds in their place (an instance's mapping binds
-    its original's names, which the original's own edges already give).
-    """
+def _edge_bindings(scoped: PipelineGraph) -> dict[str, list[tuple[str, str]]]:
+    """The edge-derived input names each node receives, as the executor derives them."""
     node_map = scoped.node_map
+    bindings: dict[str, list[tuple[str, str]]] = {}
     for edge in scoped.edges:
-        if edge.target != node.id:
-            continue
         source = node_map.get(edge.source)
         if source is None:
             continue
@@ -197,11 +191,21 @@ def _input_bindings(scoped: PipelineGraph, node: GraphNode) -> Iterator[tuple[st
             # A frame edge without its handle is refused where the edge is checked.
             continue
         if source.data.nodeType == NodeType.API_INPUT:
-            yield name, f"frame {name!r} of {source.data.label!r}"
+            origin = f"frame {name!r} of {source.data.label!r}"
         elif source.data.nodeType == NodeType.SUBMODEL:
-            yield name, f"output port {name!r} of {source.data.label!r}"
+            origin = f"output port {name!r} of {source.data.label!r}"
         else:
-            yield name, f"from {source.data.label!r}"
+            origin = f"from {source.data.label!r}"
+        bindings.setdefault(edge.target, []).append((name, origin))
+    return bindings
+
+
+def _mapping_bindings(node: GraphNode) -> Iterator[tuple[str, str]]:
+    """Every logical name ``inputMapping`` binds in place of an edge-derived one.
+
+    An instance's mapping binds its original's names, which the original's
+    own edges already give.
+    """
     mapping = node.data.config.get("inputMapping")
     if isinstance(mapping, dict):
         for logical, current in mapping.items():
@@ -218,11 +222,13 @@ def input_binding_violations(graph: PipelineGraph) -> list[NameViolation]:
     violations: list[NameViolation] = []
     ports = _port_bindings(graph)
     for module, scoped in _named_graphs(graph):
+        edges = _edge_bindings(scoped)
         for node in scoped.nodes:
             party = NameParty(node_id=node.id, label=node.data.label, module=module)
             seen: set[str] = set()
             bindings = [
-                *_input_bindings(scoped, node),
+                *edges.get(node.id, []),
+                *_mapping_bindings(node),
                 *(
                     (port, f"submodel input port {port!r}")
                     for port in ports.get((module, node.id), [])

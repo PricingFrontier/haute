@@ -194,6 +194,7 @@ describe("client runtime contracts", () => {
 
   it("resolveEditorNodeIdentities validates the complete strict response", async () => {
     mockFetch.mockReturnValue(jsonResponse({
+      violations: null,
       identities: [{
         node_id: "source",
         function_name: "node_class",
@@ -211,6 +212,7 @@ describe("client runtime contracts", () => {
         source_handles: [],
       }],
     })).resolves.toEqual({
+      violations: null,
       identities: [{
         node_id: "source",
         function_name: "node_class",
@@ -234,6 +236,7 @@ describe("client runtime contracts", () => {
 
   it("resolveEditorNodeIdentities rejects nested response drift", async () => {
     mockFetch.mockReturnValue(jsonResponse({
+      violations: null,
       identities: [{
         node_id: "source",
         function_name: "source",
@@ -264,6 +267,7 @@ describe("client runtime contracts", () => {
       config_reference: null,
     })
     mockFetch.mockReturnValue(jsonResponse({
+      violations: null,
       identities: responseNodeIds.map(identity),
     }))
 
@@ -279,6 +283,7 @@ describe("client runtime contracts", () => {
 
   it("resolveEditorNodeIdentities rejects incomplete source-handle identity coverage", async () => {
     mockFetch.mockReturnValue(jsonResponse({
+      violations: null,
       identities: [{
         node_id: "api",
         function_name: "api",
@@ -300,6 +305,7 @@ describe("client runtime contracts", () => {
 
   it("resolveEditorNodeIdentities rejects invalid default-identity nullability", async () => {
     mockFetch.mockReturnValue(jsonResponse({
+      violations: null,
       identities: [{
         node_id: "ordinary",
         function_name: "ordinary",
@@ -321,6 +327,7 @@ describe("client runtime contracts", () => {
 
   it("resolveEditorNodeIdentities rejects rewritten API frame identities", async () => {
     mockFetch.mockReturnValue(jsonResponse({
+      violations: null,
       identities: [{
         node_id: "api",
         function_name: "api",

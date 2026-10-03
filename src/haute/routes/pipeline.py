@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from haute._cache import GraphFingerprintMemo, canonical_json
 from haute._editor_identities import resolve_editor_identity
 from haute._env import int_env
+from haute._executable_names import executable_name_violations
 from haute._execution_admission import (
     ExecutionAdmissionError,
     IsolatedExecutionBudget,
@@ -34,6 +35,7 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
+from haute._flatten import flatten_executable_graph
 from haute._global_constants import reference_problem
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._graph_utils import upstream_node_ids
@@ -60,6 +62,7 @@ from haute._path_resolution import (
 )
 from haute._pipeline_recovery import (
     empty_pipeline_editor_document,
+    name_violations_payload,
     pipeline_document_fingerprint,
 )
 from haute._pipeline_repair import (
@@ -149,7 +152,6 @@ from haute.executor import (
 from haute.graph_utils import (
     NodeType,
     PipelineGraph,
-    flatten_graph,
     graph_fingerprint,
 )
 from haute.routes._contract_errors import (
@@ -257,7 +259,11 @@ router = APIRouter(prefix="/api", tags=["pipeline"])
 async def resolve_pipeline_editor_identities(
     body: EditorIdentitiesRequest,
 ) -> EditorIdentitiesResponse:
-    """Resolve editor identities without reading or writing project state."""
+    """Resolve editor identities without reading or writing project state.
+
+    With the document's naming context (``graph``), also report the name
+    violations that remain once the request's nodes are applied.
+    """
     try:
         identities: list[EditorIdentityResponseNode] = []
         for node in body.nodes:
@@ -278,7 +284,12 @@ async def resolve_pipeline_editor_identities(
             )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return EditorIdentitiesResponse(identities=identities)
+    violations = (
+        None
+        if body.graph is None
+        else name_violations_payload(executable_name_violations(body.graph))
+    )
+    return EditorIdentitiesResponse(identities=identities, violations=violations)
 
 
 @router.post("/pipeline/polars-steps/render", response_model=PolarsStepsRenderResponse)
@@ -562,7 +573,7 @@ def _prepare_data_output_request(
     node_id: str,
 ) -> tuple[PipelineGraph, Any, dict[str, Any], Path]:
     """Validate the graph/output target shared by destination preview and write."""
-    graph = flatten_graph(graph_payload)
+    graph = flatten_executable_graph(graph_payload)
     _ensure_source_file(graph)
     if not graph.nodes:
         raise HTTPException(status_code=400, detail="Empty graph")
@@ -809,7 +820,7 @@ def _prepare_runtime_graph(graph: PipelineGraph) -> PipelineGraph:
     ``source_file`` to redefine the process project root. Flattening first also
     ensures path-bearing nodes embedded in submodels receive the same check.
     """
-    prepared = flatten_graph(graph)
+    prepared = flatten_executable_graph(graph)
     _ensure_source_file(prepared)
     _validate_runtime_input_paths(prepared)
     return prepared
@@ -1352,7 +1363,7 @@ def _execute_trace_worker(
 @router.post("/pipeline/trace", response_model=TraceResponse)
 async def trace_row(body: TraceRequest) -> JSONResponse:
     """Trace a single row through the pipeline, returning per-node snapshots."""
-    graph = flatten_graph(body.graph)
+    graph = flatten_executable_graph(body.graph)
     _ensure_source_file(graph)
     if not graph.nodes:
         raise HTTPException(status_code=400, detail="Empty graph")
@@ -1540,7 +1551,7 @@ async def _preview_canonical_graph(
             preview_progress.report(request_id, progress)
 
     try:
-        graph = flatten_graph(body.graph)
+        graph = flatten_executable_graph(body.graph)
         _ensure_source_file(graph)
         if not graph.nodes:
             raise HTTPException(status_code=400, detail="Empty graph")
@@ -1755,7 +1766,7 @@ async def preview_inputs(body: PreviewInputsRequest) -> PreviewInputsResponse:
     and the preview itself reports that error at the node, as it always has.
     """
     try:
-        graph = flatten_graph(body.graph)
+        graph = flatten_executable_graph(body.graph)
     except (ParseError, ConfigError) as e:
         logger.info("preview_inputs_graph_invalid", error=str(e))
         return PreviewInputsResponse(input_node_ids=[])

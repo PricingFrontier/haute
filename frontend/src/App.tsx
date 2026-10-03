@@ -40,6 +40,10 @@ import RenameDialog from "./components/RenameDialog"
 import BackgroundJobPolling from "./components/BackgroundJobPolling"
 import PipelineLoadFailureView from "./components/PipelineLoadFailureView"
 import PipelineRecoveryBanner from "./components/PipelineRecoveryBanner"
+import NameViolationsBanner from "./components/NameViolationsBanner"
+import { useNameViolationRevalidation } from "./hooks/useNameViolationRevalidation"
+import { resolveGraphFromRefs } from "./utils/buildGraph"
+import type { PipelineNameViolation } from "./types/pipelineDocument"
 import type { PipelineRepairTarget } from "./components/PipelineRepairDialog"
 import SourceRecoveryView from "./components/SourceRecoveryView"
 import type { ComparisonInspect } from "./components/ComparisonView"
@@ -889,6 +893,15 @@ function FlowEditor() {
     ).nodes,
     [resolveCandidateGraphIdentities],
   )
+  useNameViolationRevalidation({
+    nodes,
+    edges,
+    submodels,
+    buildContextGraph: useCallback(
+      () => resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef),
+      [],
+    ),
+  })
   const documentSourceRevision = useDocumentStatusStore((s) => s.sourceRevision)
   const documentSourceFile = useDocumentStatusStore((s) => s.sourceFile)
   const documentGraphSynchronized = useDocumentStatusStore((s) => s.graphSynchronized)
@@ -1517,6 +1530,29 @@ function FlowEditor() {
     centreNode(node.id, NODE_SEARCH_FOCUS_ZOOM)
   }, [centreNode, setGitOpen, setConstantsOpen, setUtilityOpen])
 
+  // A name violation's nodes: those at the root, and the occurrences of a
+  // submodel holding the rest. The first is opened as a click would.
+  const handleSelectNameViolation = useCallback((violation: PipelineNameViolation) => {
+    const rootIds = new Set(
+      violation.parties.filter((party) => party.submodel === null).map((party) => party.node_id),
+    )
+    const definitions = new Set(
+      violation.parties.flatMap((party) => (party.submodel === null ? [] : [party.submodel])),
+    )
+    const selected = graphRef.current.nodes.filter((node) => (
+      rootIds.has(node.id)
+      || (node.data?.nodeType === "submodel"
+        && definitions.has(String((node.data?.config as Record<string, unknown> | undefined)?.definitionId)))
+    ))
+    if (selected.length === 0) return
+    onNodesChange(graphRef.current.nodes.map((node) => ({
+      type: "select" as const,
+      id: node.id,
+      selected: selected.includes(node),
+    })))
+    handleSelectRecoveryElement(selected[0].id)
+  }, [handleSelectRecoveryElement, onNodesChange])
+
   // Point the assistant at a failing node: select it alone, as a click would,
   // and open the panel with its preview error on the next message.
   const handleAskAssistantToFix = useCallback((nodeId: string) => {
@@ -1738,6 +1774,7 @@ function FlowEditor() {
 
         <main className="flex-1 flex flex-col min-w-0">
           <PipelineRecoveryBanner onSelectElement={handleSelectRecoveryElement} />
+          <NameViolationsBanner onSelectViolation={handleSelectNameViolation} />
           {sessionExpired && (
             <div
               role="alert"

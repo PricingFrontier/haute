@@ -11,12 +11,12 @@ import dataclasses
 
 from fastapi import APIRouter
 
+from haute._flatten import flatten_executable_graph
 from haute._node_snapshots import (
     CacheOwnerUsage,
     NodeSnapshotStore,
     pipeline_source_file_key,
 )
-from haute.graph_utils import flatten_graph
 from haute.routes._node_data_service import node_data_project_root
 from haute.routes.node_data import node_data_service
 from haute.routes.pipeline import _ensure_source_file, _validate_runtime_input_paths
@@ -147,7 +147,7 @@ def cache_nodes(body: CacheNodesRequest) -> CacheNodesResponse:
     they are cached — individually — rather than as the one node the canvas
     draws at this depth.
     """
-    graph = flatten_graph(body.graph)
+    graph = flatten_executable_graph(body.graph)
     _ensure_source_file(graph)
     _validate_runtime_input_paths(graph)
 

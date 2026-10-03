@@ -1996,7 +1996,7 @@ def test_unexpected_strict_parser_defect_is_not_laundered_as_authored_input(
         raise RuntimeError("private strict parser implementation detail")
 
     monkeypatch.setattr(
-        "haute._pipeline_recovery.parse_pipeline_source",
+        "haute._pipeline_recovery.parse_pipeline_source_with_name_violations",
         fail_strict_parse,
     )
 

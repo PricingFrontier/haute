@@ -26,7 +26,11 @@ from haute._ast_helpers import (
     _reject_reserved_global_constants_bindings,
 )
 from haute._config_io import parse_global_constants
-from haute._executable_names import executable_name_violations, format_name_violations
+from haute._executable_names import (
+    NameViolation,
+    executable_name_violations,
+    format_name_violations,
+)
 from haute._graph_builders import (
     _build_edges,
     _build_rf_nodes,
@@ -203,7 +207,44 @@ def parse_pipeline_source(
     _read_submodel_source: Callable[[Path], str] | None = None,
     _read_global_constants_bytes: Callable[[Path], bytes] | None = None,
 ) -> PipelineGraph:
-    """Parse pipeline source code and return a PipelineGraph.
+    """Parse pipeline source code strictly, refusing any executable-name violation.
+
+    The arguments are :func:`parse_pipeline_source_with_name_violations`'s.
+    ``haute run``, deploy and codegen's post-save parse use this form, so a
+    file whose names its own module cannot run is refused before anything runs.
+    """
+    graph, violations = parse_pipeline_source_with_name_violations(
+        source,
+        source_file,
+        flatten=flatten,
+        _base_dir=_base_dir,
+        _submodel_base_dir=_submodel_base_dir,
+        _read_submodel_source=_read_submodel_source,
+        _read_global_constants_bytes=_read_global_constants_bytes,
+    )
+    if violations:
+        raise ParseError(format_name_violations(violations), source_file=source_file or None)
+    return graph
+
+
+def parse_pipeline_source_with_name_violations(
+    source: str,
+    source_file: str = "",
+    *,
+    flatten: bool = False,
+    _base_dir: Path | None = None,
+    _submodel_base_dir: Path | None = None,
+    _read_submodel_source: Callable[[Path], str] | None = None,
+    _read_global_constants_bytes: Callable[[Path], bytes] | None = None,
+) -> tuple[PipelineGraph, list[NameViolation]]:
+    """Parse pipeline source code and return a PipelineGraph with its name violations.
+
+    Structural name collisions, where two entries would collapse into one
+    graph id (two functions of one name in a file, two occurrences of one
+    name, an occurrence named like a root node), still raise. Every other
+    executable-name violation (:mod:`haute._executable_names`) is collected
+    after the graph is built and returned beside it, so the editor can load
+    the file editable and let the user rename.
 
     Args:
         flatten: If True, dissolve submodels into flat graph.
@@ -402,8 +443,6 @@ def parse_pipeline_source(
         graph_label=graph.pipeline_name or source_file or "pipeline",
     )
     name_violations = executable_name_violations(graph)
-    if name_violations:
-        raise ParseError(format_name_violations(name_violations), source_file=source_file or None)
 
     logger.info(
         "pipeline_parsed",
@@ -412,4 +451,4 @@ def parse_pipeline_source(
         edge_count=len(graph.edges),
         pipeline_name=graph.pipeline_name,
     )
-    return graph
+    return graph, name_violations

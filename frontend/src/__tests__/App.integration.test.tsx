@@ -2064,6 +2064,7 @@ describe("App integration - apiInput emit-port edge reconciliation (Defect 1)", 
     const stateAfterNewerEdit = graphCommitStateBytes()
     await act(async () => {
       resolveIdentity({
+        violations: null,
         identities: [{
           node_id: "ordinary_source",
           function_name: "Renamed_Source",

@@ -397,6 +397,18 @@ class TestRun:
         assert "transform" in result.output
         assert "rows" in result.output
 
+    def test_run_refuses_a_file_with_a_name_violation(self, runner: CliRunner, project_dir: Path):
+        """A node named like what the module binds itself is refused before anything runs."""
+        main = project_dir / "main.py"
+        main.write_text(
+            main.read_text(encoding="utf-8")
+            + "\n\n@pipeline.polars\ndef pl() -> pl.LazyFrame:\n    return None\n",
+            encoding="utf-8",
+        )
+        result = runner.invoke(cli, ["run", str(main)])
+        assert result.exit_code == 1
+        assert "takes the name `pl`" in result.output
+
     def test_run_auto_discover(
         self, runner: CliRunner, project_dir: Path, monkeypatch: pytest.MonkeyPatch
     ):

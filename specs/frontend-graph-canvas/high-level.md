@@ -559,6 +559,15 @@ candidate, with the error toast.
   graph before either canvas renders; persisted history is not expected to
   contain transient `_functionName`, `_defaultInputName`, or
   `_sourceHandleInputNames` metadata.
+- **Name violations banner.** A ready document loaded with `name_violations` shows a
+  persistent banner listing each violation's message; clicking one selects its nodes (a
+  submodel child by the occurrences of its definition) and opens the first. Save, run and
+  preview are fenced while the list is non-empty. After each edit that could change a name
+  (positions excepted) the browser sends the whole graph, as save would, to the editor
+  identity request and adopts the violations it returns, a newer edit superseding an answer
+  in flight; the banner shrinks as renames fix them, and when the list is empty the fence
+  lifts to the ready document's own capabilities (preview still needing a trusted source
+  selection). A document loaded without violations is not revalidated this way.
 - **Recovery canvas rendering and minimal repair.** Unavailable and blocked nodes
   remain selectable and expose their diagnostics, source/config location, and
   deterministic blocking path instead of a normal editor. The recovery banner
