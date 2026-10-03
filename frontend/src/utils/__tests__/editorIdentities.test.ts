@@ -7,6 +7,7 @@ import type {
 } from "../../api/types"
 import type { SubmodelDefinition } from "../../types/node"
 import {
+  EditorNameCollisionError,
   applyEditorIdentityResponse,
   attachEditorEdgeIdentities,
   buildEditorIdentityRequest,
@@ -97,6 +98,9 @@ describe("editor identity resolution", () => {
       identities: [
         {
           node_id: "ordinary",
+          label: "class café",
+          alias: null,
+          collision: null,
           function_name: "node_class_cafe",
           config_reference: "config/polars/node_class_cafe.json",
           default_input_name: "node_class_cafe",
@@ -104,6 +108,9 @@ describe("editor identity resolution", () => {
         },
         {
           node_id: "api",
+          label: "Quotes",
+          alias: null,
+          collision: null,
           function_name: "quotes",
           config_reference: "config/quote_input/quotes.json",
           default_input_name: null,
@@ -151,6 +158,9 @@ describe("editor identity resolution", () => {
       violations: null,
       identities: [{
         node_id: "source",
+        label: "class",
+        alias: null,
+        collision: null,
         function_name: "node_class",
         config_reference: null,
         default_input_name: "node_class",
@@ -188,6 +198,9 @@ describe("editor identity resolution", () => {
       violations: null,
       identities: request.nodes.map((requestNode: EditorIdentityRequestNode) => ({
         node_id: requestNode.node_id,
+        label: requestNode.label,
+        alias: null,
+        collision: null,
         function_name: `fn_${requestNode.node_id}`,
         config_reference: null,
         default_input_name: `in_${requestNode.node_id}`,
@@ -248,5 +261,66 @@ describe("editor identity resolution", () => {
         RESERVED,
       ),
     ).toThrow("Cannot resolve editor identity for submodel pricing: malformed occurrence")
+  })
+})
+
+describe("naming against the document", () => {
+  const context = { nodes: [], edges: [], submodels: undefined, preamble: undefined }
+  const identity = (nodeId: string, label: string, alias: string | null, collision: string | null) => ({
+    node_id: nodeId,
+    label,
+    alias,
+    collision,
+    function_name: label.replaceAll(" ", "_"),
+    config_reference: null,
+    default_input_name: alias === null ? label.replaceAll(" ", "_") : null,
+    source_handle_input_names: {},
+  })
+
+  it("sends the naming context and applies the labels and aliases the server allocated", async () => {
+    const definition: SubmodelDefinition = {
+      definitionId: "rates",
+      file: "modules/rates.py",
+      graph: { nodes: [], edges: [] },
+      inputPorts: [],
+      outputPorts: [],
+    }
+    const copy = node("copy", "X copy", "polars")
+    const pasted = node("pasted", "rates copy", "submodel", { definitionId: "rates", alias: "rates" })
+    const resolve = vi.fn(async (): Promise<EditorIdentityBatchResponse> => ({
+      violations: [],
+      identities: [identity("copy", "X copy 2", null, null), identity("pasted", "rates_2", "rates_2", null)],
+    }))
+
+    const resolved = await resolveEditorGraphIdentities({
+      nodes: [copy, pasted],
+      edges: [],
+      submodels: { rates: definition },
+      reservedApiInputFrameLabels: RESERVED,
+      naming: { graph: context, allocate: true },
+      resolve,
+    })
+
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ graph: context, allocate: true }))
+    expect(resolved.nodes.map((n) => n.data.label)).toEqual(["X copy 2", "rates_2"])
+    expect(resolved.nodes[1].data.config).toMatchObject({ definitionId: "rates", alias: "rates_2" })
+  })
+
+  it("refuses the whole batch when the server names a collision", async () => {
+    const renamed = node("first", "pl", "polars")
+    const message = "Node 'pl' (the pipeline) takes the name `pl`, which the generated module binds to polars."
+    const resolve = vi.fn(async (): Promise<EditorIdentityBatchResponse> => ({
+      violations: [],
+      identities: [identity("first", "pl", null, message)],
+    }))
+
+    await expect(resolveEditorGraphIdentities({
+      nodes: [renamed],
+      edges: [],
+      submodels: {},
+      reservedApiInputFrameLabels: RESERVED,
+      naming: { graph: context, allocate: false },
+      resolve,
+    })).rejects.toEqual(new EditorNameCollisionError("first", message))
   })
 })

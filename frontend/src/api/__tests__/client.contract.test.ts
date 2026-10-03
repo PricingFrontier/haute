@@ -197,6 +197,9 @@ describe("client runtime contracts", () => {
       violations: null,
       identities: [{
         node_id: "source",
+        label: "label",
+        alias: null,
+        collision: null,
         function_name: "node_class",
         default_input_name: "node_class",
         source_handle_input_names: {},
@@ -215,6 +218,9 @@ describe("client runtime contracts", () => {
       violations: null,
       identities: [{
         node_id: "source",
+        label: "label",
+        alias: null,
+        collision: null,
         function_name: "node_class",
         default_input_name: "node_class",
         source_handle_input_names: {},
@@ -239,6 +245,9 @@ describe("client runtime contracts", () => {
       violations: null,
       identities: [{
         node_id: "source",
+        label: "label",
+        alias: null,
+        collision: null,
         function_name: "source",
         default_input_name: "source",
         source_handle_input_names: {},
@@ -261,6 +270,9 @@ describe("client runtime contracts", () => {
   ) => {
     const identity = (nodeId: string) => ({
       node_id: nodeId,
+      label: "label",
+      alias: null,
+      collision: null,
       function_name: `function_${nodeId}`,
       default_input_name: `input_${nodeId}`,
       source_handle_input_names: {},
@@ -286,6 +298,9 @@ describe("client runtime contracts", () => {
       violations: null,
       identities: [{
         node_id: "api",
+        label: "label",
+        alias: null,
+        collision: null,
         function_name: "api",
         default_input_name: null,
         source_handle_input_names: { quotes: "quotes" },
@@ -308,6 +323,9 @@ describe("client runtime contracts", () => {
       violations: null,
       identities: [{
         node_id: "ordinary",
+        label: "label",
+        alias: null,
+        collision: null,
         function_name: "ordinary",
         default_input_name: null,
         source_handle_input_names: {},
@@ -330,6 +348,9 @@ describe("client runtime contracts", () => {
       violations: null,
       identities: [{
         node_id: "api",
+        label: "label",
+        alias: null,
+        collision: null,
         function_name: "api",
         default_input_name: null,
         source_handle_input_names: { quotes: "rewritten_quotes" },

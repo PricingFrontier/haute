@@ -19,7 +19,12 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from haute._cache import GraphFingerprintMemo, canonical_json
-from haute._editor_identities import resolve_editor_identity
+from haute._editor_identities import (
+    NamedCandidate,
+    NamingCandidate,
+    name_candidates,
+    resolve_editor_identity,
+)
 from haute._env import int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
@@ -264,18 +269,37 @@ async def resolve_pipeline_editor_identities(
     With the document's naming context (``graph``), also report the name
     violations that remain once the request's nodes are applied.
     """
+    # The one project state this reads, with a naming context: the utility
+    # files the graph's support code star-imports, as save and the executor do.
+    read_utility = utility_reader(pipeline_dir(), Path.cwd().resolve())
     try:
+        candidates = [
+            NamingCandidate(
+                node_id=node.node_id, label=node.label, node_type=node.node_type, alias=node.alias
+            )
+            for node in body.nodes
+        ]
+        if body.graph is None:
+            named = [NamedCandidate(c.label, c.alias, None) for c in candidates]
+            graph = None
+        else:
+            named, graph = await run_in_threadpool(
+                name_candidates, body.graph, candidates, read_utility, allocate=body.allocate
+            )
         identities: list[EditorIdentityResponseNode] = []
-        for node in body.nodes:
+        for node, name in zip(body.nodes, named, strict=True):
             identity = resolve_editor_identity(
                 node_type=node.node_type,
-                label=node.label,
+                label=name.label,
                 source_handles=node.source_handles,
-                alias=node.alias,
+                alias=name.alias,
             )
             identities.append(
                 EditorIdentityResponseNode(
                     node_id=node.node_id,
+                    label=name.label,
+                    alias=name.alias,
+                    collision=name.collision,
                     function_name=identity.function_name,
                     config_reference=identity.config_reference,
                     default_input_name=identity.default_input_name,
@@ -284,12 +308,9 @@ async def resolve_pipeline_editor_identities(
             )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    violations = None
-    if body.graph is not None:
-        # The one project state this reads: the utility files the graph's
-        # support code star-imports, as save and the executor read them.
-        read_utility = utility_reader(pipeline_dir(), Path.cwd().resolve())
-        violations = name_violations_payload(name_violations(body.graph, read_utility))
+    violations = (
+        None if graph is None else name_violations_payload(name_violations(graph, read_utility))
+    )
     return EditorIdentitiesResponse(identities=identities, violations=violations)
 
 

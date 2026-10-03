@@ -87,8 +87,8 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/components/ConnectionDropMenu.tsx` | Add node menu opened by releasing a source-handle connection on empty canvas: Edge Join plus the palette types that take a data input (not Load File), occupied singletons disabled, viewport-clamped, arrow-key focus, Escape/outside-click close. |
 | `frontend/src/components/EdgeJoinInsertionFeedback.tsx` | Renders the conditional polite live-region status for a compatible edge-join insertion candidate. |
 | `frontend/src/components/PolarsIcon.tsx` | Memoized SVG icon for the Polars node type. |
-| `frontend/src/components/RenameDialog.tsx` | Node-rename modal with name-length and unsafe-character validation. |
-| `frontend/src/components/SubmodelDialog.tsx` | "Create submodel" name-entry modal. |
+| `frontend/src/components/RenameDialog.tsx` | Node-rename modal with the shared name-shape validation; shows the rename's refusal (including the server's collision) inline. |
+| `frontend/src/components/SubmodelDialog.tsx` | "Create submodel" name-entry modal; awaits the create, closing only on success and otherwise keeping the typed name with the refusal shown inline. |
 
 ## Key types and data structures
 

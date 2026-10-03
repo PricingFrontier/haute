@@ -54,7 +54,7 @@ import useGraphCanvasState from "./hooks/useGraphCanvasState"
 import useWebSocketSync from "./hooks/useWebSocketSync"
 import usePipelineAPI from "./hooks/usePipelineAPI"
 import useTracing, { type TraceRequestState } from "./hooks/useTracing"
-import useSubmodelNavigation from "./hooks/useSubmodelNavigation"
+import useSubmodelNavigation, { type SubmodelCreateResult } from "./hooks/useSubmodelNavigation"
 import useSubmodelBoundaryEditing from "./hooks/useSubmodelBoundaryEditing"
 import useKeyboardShortcuts from "./hooks/useKeyboardShortcuts"
 import useNodeHandlers from "./hooks/useNodeHandlers"
@@ -374,7 +374,7 @@ type FlowEditorOverlaysProps = {
   onGitModalConfirmed: () => void
   onSave: () => Promise<boolean>
   onMoveConfirmed: (saveFirst: boolean) => Promise<void>
-  onCreateSubmodel: (name: string, nodeIds: string[]) => void
+  onCreateSubmodel: (name: string, nodeIds: string[]) => Promise<SubmodelCreateResult>
   onRenameNode: (nodeId: string, label: string) => Promise<OnUpdateConfigResult>
   pipelineRepairTarget: PipelineRepairTarget | null
   documentSourceFile: string
@@ -471,9 +471,11 @@ function FlowEditorOverlays({
         <SubmodelDialog
           nodeCount={submodelDialog.nodeIds.length}
           onClose={() => setSubmodelDialog(null)}
-          onSubmit={(name) => {
-            onCreateSubmodel(name, submodelDialog.nodeIds)
-            setSubmodelDialog(null)
+          onSubmit={async (name) => {
+            const result = await onCreateSubmodel(name, submodelDialog.nodeIds)
+            // A refused name keeps the dialog open with it, showing why.
+            if (result.ok) setSubmodelDialog(null)
+            return result
           }}
         />
       )}
@@ -873,6 +875,14 @@ function FlowEditor() {
     () => new Set(documentCapabilities?.reserved_api_input_frame_labels ?? []),
     [documentCapabilities?.reserved_api_input_frame_labels],
   )
+  // The whole document as save would receive it: the naming context nodes
+  // being created or renamed are checked against.
+  const namingContextGraph = useCallback(
+    () => resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef),
+    [],
+  )
+  // Created nodes (palette and edge drops, duplicate, paste, Create Instance)
+  // take the first free name the server allocates.
   const resolveCandidateGraphIdentities = useCallback(
     async (
       candidateNodes: readonly Node[],
@@ -883,24 +893,47 @@ function FlowEditor() {
         edges: candidateEdges,
         submodels: submodelsRef.current,
         reservedApiInputFrameLabels,
+        naming: { graph: namingContextGraph(), allocate: true },
       })
     },
-    [reservedApiInputFrameLabels],
+    [namingContextGraph, reservedApiInputFrameLabels],
   )
-  const resolveNodeIdentities = useCallback(
+  const allocateNodeIdentities = useCallback(
     async (candidateNodes: readonly Node[]): Promise<Node[]> => (
       await resolveCandidateGraphIdentities(candidateNodes, [])
     ).nodes,
     [resolveCandidateGraphIdentities],
   )
+  // A config edit keeps the node's name, so it needs no naming context.
+  const resolveNodeIdentities = useCallback(
+    async (candidateNodes: readonly Node[]): Promise<Node[]> => (
+      await resolveEditorGraphIdentities({
+        nodes: candidateNodes,
+        edges: [],
+        submodels: submodelsRef.current,
+        reservedApiInputFrameLabels,
+      })
+    ).nodes,
+    [reservedApiInputFrameLabels],
+  )
+  // A rename is refused, never re-allocated: the server names the collision.
+  const resolveRenameIdentities = useCallback(
+    async (candidateNodes: readonly Node[]): Promise<Node[]> => (
+      await resolveEditorGraphIdentities({
+        nodes: candidateNodes,
+        edges: [],
+        submodels: submodelsRef.current,
+        reservedApiInputFrameLabels,
+        naming: { graph: namingContextGraph(), allocate: false },
+      })
+    ).nodes,
+    [namingContextGraph, reservedApiInputFrameLabels],
+  )
   useNameViolationRevalidation({
     nodes,
     edges,
     submodels,
-    buildContextGraph: useCallback(
-      () => resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef),
-      [],
-    ),
+    buildContextGraph: namingContextGraph,
   })
   const documentSourceRevision = useDocumentStatusStore((s) => s.sourceRevision)
   const documentSourceFile = useDocumentStatusStore((s) => s.sourceFile)
@@ -1164,6 +1197,7 @@ function FlowEditor() {
     readOnly: editingReadOnly && !scopedEditingActive,
     reservedApiInputFrameLabels,
     resolveNodeIdentities,
+    resolveRenameIdentities,
     commitGraph: setNodesAndEdgesAndSubmodels,
     setSelectedNode,
     addToast,
@@ -1290,7 +1324,7 @@ function FlowEditor() {
     setLastSelectedId,
     setPreviewData, fitView, getInternalNode,
     submodels,
-    resolveNodeIdentities,
+    resolveNodeIdentities: allocateNodeIdentities,
     commitSharedNodeDeletion,
   })
 

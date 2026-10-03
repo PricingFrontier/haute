@@ -66,8 +66,8 @@ One identity per submodel occurrence: the occurrence node id is its name
 alias and rebinds downstream consumers without code edits; as for an ordinary
 node, the React Flow node id stays until Save, when codegen emits the name and
 the reparse re-keys the id. It never renames the definition file. A proposed occurrence rename is refused early if
-the name is not a canonical identifier (error: `Occurrence names must be identifiers; use "<functionName>".`)
-or conflicts with an existing node id, label, or submodel alias (error: `"<name>" is already used by another node.`).
+the name is not a canonical identifier (error: `Occurrence names must be identifiers; use "<functionName>".`),
+and, like any rename, when the server's naming rule refuses it (below).
 Exactly one occurrence is the editable definition owner; created instances persist
 `instanceOf` pointing directly at the owner's occurrence name. Opening the owner
 navigates to the shared definition editor and shows that edits affect every
@@ -285,6 +285,24 @@ candidate, with the error toast.
   the currently active node, owns local UI state (selected node, context
   menu, dialogs), and gates Save/Commit behind the current
   version-control working-branch state before delegating to the save API.
+- **Names are allocated on create and checked on rename.** Every node-creating
+  gesture (palette drop, edge-drop, edge-join insertion, Duplicate, paste, Create
+  Instance) sends its new nodes, with the whole document as save would receive it
+  as naming context, to the editor identity request with `allocate`; each node takes
+  the label the server allocates, the first free one in request order (`X copy`,
+  then `X copy 2`; a default such as `Transform 7` gains a suffix when taken), and a
+  submodel occurrence the first free alias (`rates`, then `rates_2`), which is also
+  its label. The batch is applied together or not at all behind the existing
+  stale-request fences. A rename sends the same context without `allocate`; a name
+  the naming rule refuses (another node's name ignoring case, a reserved or built-in
+  name, a support-code helper) comes back as a collision whose message the rename
+  surface shows inline, and nothing is applied. The Rename dialog and the node
+  panel's header share one client validator for the label's shape
+  (`utils/nodeNameValidation.ts`: non-blank, at most 200 characters, no control
+  characters or backticks); the header shows its refusal inline too. A config edit
+  that does not rename keeps the node's name and sends no naming context. The Create
+  Submodel dialog stays open with the typed name and shows a refusal inline,
+  closing only on success.
 - **Node CRUD.** Deleting an ordinary node removes it and every edge touching
   it as one atomic undo step. Duplicating offsets the copy's position and is a
   no-op for singleton node types (Quote Input, Quote Response, and Source

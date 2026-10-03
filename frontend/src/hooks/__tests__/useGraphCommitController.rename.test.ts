@@ -3,6 +3,7 @@ import type { Edge, Node } from "@xyflow/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import useGraphCommitController from "../useGraphCommitController"
+import { EditorNameCollisionError } from "../../utils/editorIdentities"
 import { makeNode } from "../../test-utils/factories"
 
 function createController(
@@ -25,6 +26,7 @@ function createController(
       readOnly: false,
       reservedApiInputFrameLabels: new Set<string>(),
       resolveNodeIdentities,
+      resolveRenameIdentities: resolveNodeIdentities,
       commitGraph,
       setSelectedNode,
       addToast,
@@ -53,7 +55,7 @@ describe("useGraphCommitController submodel occurrence rename", () => {
     const hook = renderHook(() => useGraphCommitController({
       graphRef, submodelsRef: { current: {} },
       readDocumentIdentity: () => context.document, readOnly: context.readOnly,
-      reservedApiInputFrameLabels: new Set(), resolveNodeIdentities,
+      reservedApiInputFrameLabels: new Set(), resolveNodeIdentities, resolveRenameIdentities: resolveNodeIdentities,
       commitGraph, setSelectedNode: vi.fn(), addToast: vi.fn(),
     }))
     let pending!: ReturnType<typeof hook.result.current.onRenameNode>
@@ -213,84 +215,25 @@ describe("useGraphCommitController submodel occurrence rename", () => {
     expect(commitGraph).not.toHaveBeenCalled()
   })
 
-  it("refuses a name equal to another node's label, id, or submodel alias", async () => {
-    const submodelNode: Node = {
-      id: "sub_1",
-      type: "submodel",
-      position: { x: 0, y: 0 },
-      data: {
-        label: "pricing",
-        nodeType: "submodel",
-        config: { definitionId: "def_pricing", alias: "pricing" },
-        _functionName: "pricing",
-        _sourceHandleInputNames: { out__rates: "pricing" },
-      },
-    }
-
+  it("refuses a rename the server names a collision for, applying nothing", async () => {
     const otherNode = makeNode("other_node", "polars", {
-      data: {
-        label: "existing_label",
-        nodeType: "polars",
-      },
+      data: { label: "existing_label", nodeType: "polars" },
+    })
+    const renamed = makeNode("renamed", "polars", { data: { label: "first", nodeType: "polars" } })
+    const message =
+      "Nodes 'existing_label' (the pipeline) and 'existing_label' (the pipeline) take one name, "
+      + "`existing_label`; node names must differ by more than case across the pipeline and its submodels."
+    const resolveNodeIdentities = vi.fn(async (candidateNodes: readonly Node[]): Promise<Node[]> => {
+      throw new EditorNameCollisionError(candidateNodes[0].id, message)
     })
 
-    const siblingSubmodel: Node = {
-      id: "sub_2",
-      type: "submodel",
-      position: { x: 0, y: 100 },
-      data: {
-        label: "scoring",
-        nodeType: "submodel",
-        config: { definitionId: "def_scoring", alias: "scoring" },
-        _functionName: "scoring",
-      },
-    }
+    const { hook, commitGraph } = createController([renamed, otherNode], [], {}, resolveNodeIdentities)
 
-    const resolveNodeIdentities = vi.fn(async (candidateNodes: readonly Node[]) => {
-      return candidateNodes.map((n) => ({
-        ...n,
-        data: {
-          ...n.data,
-          _functionName: String(n.data.label),
-          _sourceHandleInputNames: {},
-        },
-      }))
-    })
-
-    const { hook, commitGraph } = createController(
-      [submodelNode, otherNode, siblingSubmodel],
-      [],
-      {},
-      resolveNodeIdentities,
-    )
-
-    let labelCollisionResult: unknown
+    let result: unknown
     await act(async () => {
-      labelCollisionResult = await hook.result.current.onRenameNode("sub_1", "existing_label")
+      result = await hook.result.current.onRenameNode("renamed", "existing_label")
     })
-    expect(labelCollisionResult).toEqual({
-      ok: false,
-      error: '"existing_label" is already used by another node.',
-    })
-
-    let idCollisionResult: unknown
-    await act(async () => {
-      idCollisionResult = await hook.result.current.onRenameNode("sub_1", "other_node")
-    })
-    expect(idCollisionResult).toEqual({
-      ok: false,
-      error: '"other_node" is already used by another node.',
-    })
-
-    let aliasCollisionResult: unknown
-    await act(async () => {
-      aliasCollisionResult = await hook.result.current.onRenameNode("sub_1", "scoring")
-    })
-    expect(aliasCollisionResult).toEqual({
-      ok: false,
-      error: '"scoring" is already used by another node.',
-    })
-
+    expect(result).toEqual({ ok: false, error: message })
     expect(commitGraph).not.toHaveBeenCalled()
   })
   function ordinarySource(): Node {

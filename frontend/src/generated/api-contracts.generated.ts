@@ -219,9 +219,12 @@ export interface EditorIdentitiesResponse {
   violations: PipelineNameViolation[] | null;
 }
 export interface EditorIdentityResponseNode {
+  alias: string | null;
+  collision: string | null;
   config_reference: string | null;
   default_input_name: string | null;
   function_name: string;
+  label: string;
   node_id: string;
   source_handle_input_names: {
     [k: string]: string;

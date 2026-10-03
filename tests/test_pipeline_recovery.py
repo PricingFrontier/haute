@@ -195,6 +195,9 @@ def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
     ]
     assert payload["identities"][0] == {
         "node_id": "ordinary",
+        "label": "class",
+        "alias": None,
+        "collision": None,
         "function_name": "node_class",
         "config_reference": None,
         "default_input_name": "node_class",
@@ -368,6 +371,9 @@ def test_recovery_submodel_definition_validates_input_port_identities(
 def test_editor_identities_response_rejects_duplicate_node_ids() -> None:
     identity = EditorIdentityResponseNode(
         node_id="same",
+        label="same",
+        alias=None,
+        collision=None,
         function_name="same",
         config_reference=None,
         default_input_name="same",

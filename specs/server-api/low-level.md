@@ -185,9 +185,18 @@ and handle rules; API-input handles must already be non-keyword ASCII identifier
 while submodel outputs use `out__<port_id>`. `EditorIdentitiesResponse` returns one exact-order identity per
 request node with non-empty function/default/handle identities and an optional
 config reference. The request's optional `graph` is the editor document's naming context (a
-`PipelineGraph`, as save receives it); with it the response's `violations` is
-`name_violations_payload(name_violations(graph, utility_reader(pipeline_dir(), cwd)))`, the
-executable-name and support-code violations, and without it `null`. Resolution without a
+`PipelineGraph`, as save receives it). The request's nodes are applied to it by id through
+`_editor_identities.name_candidates` (a node found in the root or a definition graph is
+renamed there, any other is added to the root), in request order. With `allocate` (which
+requires `graph`) each takes the first name the naming rule allows, trying its label and
+then `<label> 2`, `<label> 3`, … (an occurrence its alias, then `<alias>_2`, …), counting
+the names earlier nodes took; without it each keeps its name and gets as `collision` the
+message of the first violation of its own name (duplicate, reserved, built-in or
+support-code collision) naming it. The identities are resolved for the resolved names. With
+a naming context the response's `violations` is
+`name_violations_payload(name_violations(graph, utility_reader(pipeline_dir(), cwd)))` over
+the graph after the nodes are applied, the executable-name and support-code violations, and
+without it `null`. Resolution without a
 naming context is pure and performs no project I/O; with one it reads the utility files the
 graph's support code star-imports and nothing else. Save's `validate_graph` runs
 `_validate_support_code_names` (the same check, reading from the pipeline root, then the
@@ -238,7 +247,7 @@ when a path/query/body fails model validation):
 | `GET /api/pipelines` | No body | `list[PipelineSummary]`; each item carries `{name, description, file, node_count, load_status, diagnostic_count}`. |
 | `GET /api/pipeline` | No body | First discovered authored `PipelineEditorDocument`, irrespective of load status; a new empty ready document only when no authored document exists. Readable authored errors remain HTTP 200. The `x-haute-document-fingerprint` header carries `pipeline_document_fingerprint` of the returned document. |
 | `GET /api/pipeline/{name}` | Pipeline name path parameter | Named `PipelineEditorDocument`; a readable non-ready document is found by recovered metadata or file stem and remains HTTP 200. Carries the same `x-haute-document-fingerprint` header. |
-| `POST /api/pipeline/editor-identities` | `EditorIdentitiesRequest {nodes:[{node_id,label,node_type,source_handles}], graph?}` | `EditorIdentitiesResponse {identities:[{node_id,function_name,config_reference,default_input_name,source_handle_input_names}], violations}` in exact request order; public handles are sanitised server-side, `violations` lists the naming context's name violations (`null` without one), and the operation has no project-state side effects. |
+| `POST /api/pipeline/editor-identities` | `EditorIdentitiesRequest {nodes:[{node_id,label,node_type,source_handles}], graph?, allocate=false}` | `EditorIdentitiesResponse {identities:[{node_id,label,alias,collision,function_name,config_reference,default_input_name,source_handle_input_names}], violations}` in exact request order; public handles are sanitised server-side, each node's `label`/`alias` is its resolved name (allocated with `allocate`), `collision` is the naming rule's refusal of it (only with a naming context and without `allocate`), `violations` lists the naming context's name violations after the nodes are applied (`null` without one), and the operation writes no project state. |
 | `POST /api/pipeline/save` | `SavePipelineRequest {name="main", description="", graph={}, preamble=null, preserved_blocks=[], source_file="", sources=["live"], active_source="live", base_revision}`; `base_revision` is a required `RevisionToken | null` | `SavePipelineResponse {status="saved", file, pipeline_name, source_revision, warnings=[], git_sha=null, identity_required=false}`, or `409` with a flat `detail` beginning `stale_document_revision:` when `base_revision` does not equal the on-disk `source_revision` (`null` versus an existing file, or a token versus a missing file, are mismatches) |
 | `POST /api/pipeline/read-json` | `ReadJsonRequest {path}` | `ReadJsonResponse`, a root JSON object (arrays/scalars are rejected) |
 | `POST /api/pipeline/polars-steps/render` | `PolarsStepsRenderRequest {steps:[object], input_names:[str], start:"input"|"frame"}` (`start` is required: `input` renders a transform's list, `frame` a surface whose `df` is already bound) | `PolarsStepsRenderResponse {ok, code, step_lines:[[start,end]], step_index, message}`; a step validation failure is `ok: false` with HTTP 200, an empty frame-mode list is `ok: true` with empty code, and the call touches no project state and executes no authored code |

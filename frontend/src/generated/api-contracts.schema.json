@@ -813,6 +813,29 @@
     "EditorIdentityResponseNode": {
       "additionalProperties": false,
       "properties": {
+        "alias": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Alias"
+        },
+        "collision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Collision"
+        },
         "config_reference": {
           "anyOf": [
             {
@@ -842,6 +865,11 @@
           "title": "Function Name",
           "type": "string"
         },
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
         "node_id": {
           "minLength": 1,
           "title": "Node Id",
@@ -861,6 +889,9 @@
       },
       "required": [
         "node_id",
+        "label",
+        "alias",
+        "collision",
         "function_name",
         "config_reference",
         "default_input_name",

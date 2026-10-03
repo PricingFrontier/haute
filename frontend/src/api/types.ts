@@ -59,6 +59,8 @@ export interface EditorIdentityBatchRequest {
   nodes: EditorIdentityRequestNode[]
   /** The document's naming context, as save receives it; the response then lists its violations. */
   graph?: ReturnType<typeof toCanonicalGraphPayload>
+  /** Give each node, in order, the first free name instead of reporting a collision. */
+  allocate?: boolean
 }
 
 // Editor identities, Polars step rendering and pipeline settings are generated.

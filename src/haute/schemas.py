@@ -924,9 +924,19 @@ class EditorIdentitiesRequest(BaseModel):
 
     nodes: list[EditorIdentityRequestNode] = Field(min_length=0, max_length=10_000)
     # The editor document's naming context, in the representation save
-    # receives, with the request's nodes applied. When present the response
+    # receives. The request's nodes are applied to it by id (added when
+    # absent), each is checked against the naming rule, and the response
     # carries the document's remaining name violations.
     graph: Graph | None = None
+    # Give each request node, in order, the first free name instead of
+    # reporting a collision. Requires ``graph``.
+    allocate: bool = False
+
+    @model_validator(mode="after")
+    def _allocation_needs_context(self) -> EditorIdentitiesRequest:
+        if self.allocate and self.graph is None:
+            raise ValueError("allocate requires the document's naming context (graph).")
+        return self
 
     @field_validator("nodes")
     @classmethod
@@ -942,6 +952,11 @@ class EditorIdentityResponseNode(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     node_id: Annotated[str, Field(min_length=1)]
+    # The node's resolved name: its own, or the one allocation gave it.
+    label: Annotated[str, Field(min_length=1)]
+    alias: Annotated[str, Field(min_length=1)] | None
+    # Why the naming rule refuses the node's name (never with ``allocate``).
+    collision: str | None
     function_name: Annotated[str, Field(min_length=1)]
     config_reference: Annotated[str, Field(min_length=1)] | None
     default_input_name: Annotated[str, Field(min_length=1)] | None

@@ -145,17 +145,13 @@ describe("useSubmodelNavigation", () => {
     })
     const { result } = renderHook(() => useSubmodelNavigation(params))
 
+    let outcome: unknown
     await act(async () => {
-      await result.current.handleCreateSubmodel("pricing", ["n1", "n2"])
+      outcome = await result.current.handleCreateSubmodel("pricing", ["n1", "n2"])
     })
 
     expect(mockCreate).not.toHaveBeenCalled()
-    expect(useToastStore.getState().toasts).toEqual([
-      expect.objectContaining({
-        type: "error",
-        text: expect.stringContaining("main pipeline"),
-      }),
-    ])
+    expect(outcome).toEqual({ ok: false, error: expect.stringContaining("main pipeline") })
   })
 
   it("does not apply a create response after a position-only canonical-store edit", async () => {
@@ -167,13 +163,14 @@ describe("useSubmodelNavigation", () => {
     const pending = result.current.handleCreateSubmodel("pricing", ["n1", "n2"])
     act(() => useGraphStore.getState().setNodesRaw((nodes) => nodes.map((node) =>
       node.id === "n1" ? { ...node, position: { x: 99, y: 0 } } : node)))
+    let outcome: unknown
     await act(async () => {
       resolve(makeCreateResponse({ nodes: [], edges: [], submodels: {} }))
-      await pending
+      outcome = await pending
     })
     expect(useGraphStore.getState().nodes.find((node) => node.id === "n1")?.position.x).toBe(99)
     expect(params.graphRef.current.nodes.map((node) => node.id)).toContain("n1")
-    expect(useToastStore.getState().toasts.at(-1)?.text).toContain("workspace changed")
+    expect(outcome).toEqual({ ok: false, error: expect.stringContaining("workspace changed") })
   })
 
   it("keeps a create transform atomic when identity resolution fails", async () => {
@@ -191,8 +188,9 @@ describe("useSubmodelNavigation", () => {
     const originalSubmodels = params.submodelsRef.current
     const { result } = renderHook(() => useSubmodelNavigation(params))
 
+    let outcome: unknown
     await act(async () => {
-      await result.current.handleCreateSubmodel("pricing", ["n1", "n2"])
+      outcome = await result.current.handleCreateSubmodel("pricing", ["n1", "n2"])
     })
 
     expect(params.graphRef.current).toBe(originalGraph)
@@ -202,9 +200,9 @@ describe("useSubmodelNavigation", () => {
       "n2",
       INSTANCE_ID,
     ])
-    expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
-      type: "error",
-      text: "Create submodel failed: identity service unavailable",
+    expect(outcome).toEqual({
+      ok: false,
+      error: "Create submodel failed: identity service unavailable",
     })
   })
 
@@ -237,22 +235,20 @@ describe("useSubmodelNavigation", () => {
     await vi.waitFor(() => expect(resolveCanonicalIdentities).toHaveBeenCalledOnce())
     act(() => useGraphStore.getState().setNodesRaw((nodes) => nodes.map((node) =>
       node.id === "n1" ? { ...node, position: { x: 123, y: 0 } } : node)))
+    let outcome: unknown
     await act(async () => {
       resolveIdentities({
         nodes: [makeNode("resolved_replacement")],
         edges: [],
         submodels: {},
       })
-      await pending
+      outcome = await pending
     })
 
     expect(params.graphRef.current).toBe(originalGraph)
     expect(params.submodelsRef.current).toBe(originalSubmodels)
     expect(useGraphStore.getState().nodes.find((node) => node.id === "n1")?.position.x).toBe(123)
-    expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
-      type: "error",
-      text: expect.stringContaining("workspace changed"),
-    })
+    expect(outcome).toEqual({ ok: false, error: expect.stringContaining("workspace changed") })
   })
 
   it("does not apply a dissolve response after a submodel-only canonical-store edit", async () => {
@@ -295,13 +291,14 @@ describe("useSubmodelNavigation", () => {
     const { result } = renderHook(() => useSubmodelNavigation(params))
     const pending = result.current.handleCreateSubmodel("pricing", ["n1", "n2"])
     params.sourceRevisionRef.current = "parent-rev-2"
+    let outcome: unknown
     await act(async () => {
       resolve(makeCreateResponse({ nodes: [], edges: [], submodels: {} }))
-      await pending
+      outcome = await pending
     })
     expect(useGraphStore.getState().nodes.map((node) => node.id)).toContain("n1")
     expect(params.graphRef.current.nodes.map((node) => node.id)).toContain("n1")
-    expect(useToastStore.getState().toasts.at(-1)?.text).toContain("workspace changed")
+    expect(outcome).toEqual({ ok: false, error: expect.stringContaining("workspace changed") })
   })
 
   it("lets only the newest overlapping transform commit", async () => {
@@ -507,15 +504,15 @@ describe("useSubmodelNavigation", () => {
     expect(params.sourceRevisionRef.current).toBe("parent-rev-1")
   })
 
-  it("handleCreateSubmodel shows error toast on failure", async () => {
+  it("handleCreateSubmodel returns the failure for its dialog to show", async () => {
     mockCreate.mockRejectedValue(new Error("Create failed"))
     const params = makeParams()
     const { result } = renderHook(() => useSubmodelNavigation(params))
+    let outcome: unknown
     await act(async () => {
-      await result.current.handleCreateSubmodel("test", ["n1"])
+      outcome = await result.current.handleCreateSubmodel("test", ["n1"])
     })
-    const toasts = useToastStore.getState().toasts
-    expect(toasts.some((t) => t.type === "error" && t.text.includes("Create submodel failed"))).toBe(true)
+    expect(outcome).toEqual({ ok: false, error: "Create submodel failed: Create failed" })
   })
 
   it("handleDrillIntoSubmodel loads submodel and pushes view stack", async () => {
