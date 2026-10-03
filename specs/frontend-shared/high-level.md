@@ -256,19 +256,18 @@ keystroke.
 
 **Global constants pane.** The toolbar's Constants button, under Utility, opens the Global
 Constants pane in the right-hand panel; it edits the pipeline's
-[global constants](../pipeline-config/high-level.md#behaviour). It is laid out as the Banding
-and Rating Step editors are: a searchable list of the constants in file order (drag, or
-Alt+Up/Down, reorders them), each row with a health dot, the constant's type and its value (or
-how many sources hold one) and a bin that deletes it, above the selected constant's editor. The
-editor shows its name, its type as a choice of Integer, Decimal, Text, True/false and Date, its
-value under a "Split by source" switch (one value for a uniform constant, or a source/value
-table in the toolbar's source order for a split one), and the nodes that read it. The list's Add
-button, or the empty pane's, appends an empty uniform `float` (Decimal) constant with a generated
-free name (`constant_1`, `constant_2`, …) and selects it. Values are edited with the input that
-fits the type (a number field, text, true/false, a date). The pane validates as the analyst types, and marks each invalid name, duplicate name and invalid
-value with its reason. It marks a split constant's source value as missing when the source has
-none, or has an empty one for a type other than text (an empty text value is a value), and the
-toolbar's Save stays available. Save is refused while any constant is invalid.
+[global constants](../pipeline-config/high-level.md#behaviour). It is one table, so every
+constant's value for every source shows at once: a row per constant in file order, with columns
+for its name, its type (Integer, Decimal, Text, True/false or Date), a "Split by source" switch,
+one column per pipeline source in the toolbar's source order, the number of nodes that read it
+(naming them on hover) and a bin that deletes it. A uniform constant's one value spans every
+source column; a split constant has a cell per source. Add constant appends an empty uniform
+`float` (Decimal) constant with a generated free name (`constant_1`, `constant_2`, …). Values
+are edited with the input that fits the type (a number field, text, true/false, a date). The pane validates as the analyst types, and marks each invalid name, duplicate name and invalid
+value, outlining the cell and listing the reason under the table. It marks a split constant's
+source value as missing (a dashed cell, also listed) when the source has none, or has an empty one
+for a type other than text (an empty text value is a value), and the toolbar's Save stays
+available. Save is refused while any constant is invalid.
 
 - Switching "Split by source" on fills every source's value with the uniform value. Switching it
   off keeps the `live` value; when another source's value differs, the pane first asks for

@@ -1,11 +1,7 @@
-import { useMemo, useState, type CSSProperties, type ReactNode } from "react"
-import { AlertTriangle, Plus, Variable } from "lucide-react"
+import { useMemo, useState, type CSSProperties } from "react"
+import { AlertTriangle, Plus, Trash2, Variable } from "lucide-react"
 import PanelShell from "./PanelShell"
 import { INPUT_STYLE } from "./editors/_shared"
-import SearchableItemList from "./editors/shared/SearchableItemList"
-import { useSearchableList, type SearchableListItem } from "./editors/shared/useSearchableList"
-import ToggleButtonGroup from "../components/ToggleButtonGroup"
-import { EditorLabel } from "../components/form"
 import { isPlainObject } from "../types/guards"
 import useGraphStore from "../stores/useGraphStore"
 import useSettingsStore from "../stores/useSettingsStore"
@@ -14,7 +10,6 @@ import {
   MISSING_VALUE,
   constantIssues,
   constantReaders,
-  holdsSourceValue,
   joinSources,
   newConstantDraft,
   splitBySource,
@@ -33,9 +28,6 @@ interface GlobalConstantsPanelProps {
 
 type ReaderNode = { id: string; data: Record<string, unknown> }
 
-/** The app accent (`--accent`) as a hex value, which the list and type buttons tint with. */
-const ACCENT = "#3b82f6"
-
 const TYPE_LABELS: Record<GlobalConstantType, string> = {
   integer: "Integer",
   float: "Decimal",
@@ -44,7 +36,10 @@ const TYPE_LABELS: Record<GlobalConstantType, string> = {
   date: "Date",
 }
 
-const INPUT_CLASS = "w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2 disabled:opacity-60"
+const CELL_INPUT = "w-full min-w-0 px-2 py-1 text-xs font-mono rounded-md focus:outline-none focus:ring-2 disabled:opacity-60"
+const HEADER_CELL = "px-2 py-1.5 text-left text-[11px] font-bold uppercase tracking-[0.08em] whitespace-nowrap"
+/** A source column's header: the source's own name, as the toolbar shows it. */
+const SOURCE_HEADER_CELL = "px-2 py-1.5 text-left text-[11px] font-mono font-bold whitespace-nowrap"
 
 /** Every node of the canvas and of each submodel definition, once. */
 function allReaderNodes(nodes: readonly ReaderNode[], submodels: Record<string, unknown>): ReaderNode[] {
@@ -62,61 +57,40 @@ function allReaderNodes(nodes: readonly ReaderNode[], submodels: Record<string, 
   return [...byId.values()]
 }
 
-function inputStyle(problem: string | undefined): CSSProperties {
-  return problem && problem !== MISSING_VALUE ? { ...INPUT_STYLE, border: "1px solid var(--danger)" } : INPUT_STYLE
+function cellStyle(problem: string | undefined): CSSProperties {
+  if (problem === MISSING_VALUE) return { ...INPUT_STYLE, border: "1px dashed var(--warning)" }
+  if (problem) return { ...INPUT_STYLE, border: "1px solid var(--danger)" }
+  return INPUT_STYLE
 }
 
-/** The problems that make a constant need attention, for the list's health dot and tooltip. */
-function problemsOf(issues: GlobalConstantIssues): string[] {
-  return [
-    ...(issues.name ? [issues.name] : []),
-    ...(issues.value ? [issues.value] : []),
-    ...Object.entries(issues.bySource).map(([source, problem]) =>
-      problem === MISSING_VALUE ? `No ${source} value` : `${source}: ${problem}`,
-    ),
-  ]
-}
-
-/** The list badge for a constant's value: the value, or how many sources hold one. */
-function valueBadge(draft: GlobalConstantDraft, sources: readonly string[]): string {
-  if (!draft.split) return draft.value === "" ? "—" : draft.value
-  const held = sources.filter((source) => holdsSourceValue(draft, source)).length
-  return `${held}/${sources.length} sources`
-}
-
-function Problem({ text, testId }: { text: string | undefined; testId: string }) {
-  if (!text) return null
-  const missing = text === MISSING_VALUE
-  return (
-    <p data-testid={testId} className="m-0 mt-1 text-[11px]" style={{ color: missing ? "var(--warning)" : "var(--danger)" }}>
-      {missing ? "Missing" : text}
-    </p>
-  )
-}
-
-interface ValueInputProps {
+interface ValueCellProps {
   type: GlobalConstantType
   value: string
   disabled: boolean
   problem: string | undefined
   testId: string
   label: string
+  /** Shown while the cell is empty and nothing is wrong with it. */
+  placeholder?: string
   onChange: (value: string) => void
 }
 
-function ValueInput({ type, value, disabled, problem, testId, label, onChange }: ValueInputProps) {
+/** One value as a table cell: the input that fits the type, marked when invalid or missing. */
+function ValueCell({ type, value, disabled, problem, testId, label, placeholder, onChange }: ValueCellProps) {
+  const title = problem === MISSING_VALUE ? "Missing" : problem
   if (type === "boolean") {
     return (
       <select
         data-testid={testId}
         aria-label={label}
+        title={title}
         value={value}
         disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
-        className={INPUT_CLASS}
-        style={inputStyle(problem)}
+        className={CELL_INPUT}
+        style={cellStyle(problem)}
       >
-        <option value="">Choose…</option>
+        <option value="">{problem === MISSING_VALUE ? "missing" : "—"}</option>
         <option value="true">true</option>
         <option value="false">false</option>
       </select>
@@ -126,29 +100,44 @@ function ValueInput({ type, value, disabled, problem, testId, label, onChange }:
     <input
       data-testid={testId}
       aria-label={label}
+      title={title}
       type={type === "date" ? "date" : "text"}
       inputMode={type === "integer" || type === "float" ? "decimal" : undefined}
+      placeholder={problem === MISSING_VALUE ? "missing" : placeholder}
       value={value}
       disabled={disabled}
       aria-invalid={problem && problem !== MISSING_VALUE ? true : undefined}
       onChange={(event) => onChange(event.target.value)}
-      className={INPUT_CLASS}
-      style={{ ...inputStyle(problem), colorScheme: "dark" }}
+      className={CELL_INPUT}
+      style={{ ...cellStyle(problem), colorScheme: "dark" }}
     />
   )
 }
 
-/** A field's uppercase label, with optional content on the right of the same line. */
-function SectionLabel({ children, htmlFor, aside }: { children: ReactNode; htmlFor?: string; aside?: ReactNode }) {
+function SplitSwitch({ on, disabled, testId, label, onToggle }: { on: boolean; disabled: boolean; testId: string; label: string; onToggle: () => void }) {
   return (
-    <div className="flex items-center justify-between gap-2 mb-1">
-      <EditorLabel htmlFor={htmlFor}>{children}</EditorLabel>
-      {aside}
-    </div>
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
+      title={on ? "One value per source" : "One value for every source"}
+      data-testid={testId}
+      disabled={disabled}
+      onClick={onToggle}
+      className="shrink-0 relative w-7 h-4 rounded-full transition-colors disabled:opacity-50"
+      style={{ background: on ? "var(--accent)" : "var(--chrome-border)" }}
+    >
+      <span
+        aria-hidden="true"
+        className="absolute top-0.5 w-3 h-3 rounded-full transition-[left]"
+        style={{ left: on ? "14px" : "2px", background: "var(--bg-elevated)" }}
+      />
+    </button>
   )
 }
 
-interface ConstantDetailProps {
+interface ConstantRowProps {
   index: number
   draft: GlobalConstantDraft
   issues: GlobalConstantIssues
@@ -158,9 +147,10 @@ interface ConstantDetailProps {
   onChange: (draft: GlobalConstantDraft) => void
   /** False when the analyst declines the rename. */
   onRename: (name: string) => boolean
+  onDelete: () => void
 }
 
-function ConstantDetail({ index, draft, issues, sources, readers, disabled, onChange, onRename }: ConstantDetailProps) {
+function ConstantRow({ index, draft, issues, sources, readers, disabled, onChange, onRename, onDelete }: ConstantRowProps) {
   // The name commits on blur or Enter, so a rename of a constant that is read
   // asks once rather than on every keystroke.
   const [name, setName] = useState(draft.name)
@@ -187,14 +177,14 @@ function ConstantDetail({ index, draft, issues, sources, readers, disabled, onCh
     }
     onChange(joinSources(draft))
   }
-  const nameId = `constant-name-${index}`
+  const label = draft.name || "constant"
   return (
-    <div className="space-y-3" data-testid={`constant-row-${index}`}>
-      <div>
-        <SectionLabel htmlFor={nameId}>Name</SectionLabel>
+    <tr data-testid={`constant-row-${index}`} className="group" style={{ borderTop: "1px solid var(--border-subtle)" }}>
+      <td className="px-2 py-1.5 align-top">
         <input
-          id={nameId}
-          data-testid={nameId}
+          data-testid={`constant-name-${index}`}
+          aria-label={`Constant ${index + 1} name`}
+          title={issues.name}
           value={name}
           disabled={disabled}
           aria-invalid={issues.name ? true : undefined}
@@ -203,120 +193,120 @@ function ConstantDetail({ index, draft, issues, sources, readers, disabled, onCh
           onKeyDown={(event) => {
             if (event.key === "Enter") event.currentTarget.blur()
           }}
-          className={INPUT_CLASS}
-          style={inputStyle(issues.name)}
+          className={CELL_INPUT}
+          style={cellStyle(issues.name)}
         />
-        <Problem text={issues.name} testId={`constant-name-issue-${index}`} />
-      </div>
-
-      <div>
-        <SectionLabel>Type</SectionLabel>
-        <div data-testid={`constant-type-${index}`} className={disabled ? "pointer-events-none opacity-60" : undefined}>
-          <ToggleButtonGroup
-            value={draft.type}
-            onChange={(type) => onChange(withType(draft, type))}
-            options={GLOBAL_CONSTANT_TYPES.map((type) => ({ key: type, label: TYPE_LABELS[type], disabled }))}
-            accentColor={ACCENT}
-            ariaLabel="Type"
+      </td>
+      <td className="px-2 py-1.5 align-top">
+        <select
+          data-testid={`constant-type-${index}`}
+          aria-label={`${label} type`}
+          value={draft.type}
+          disabled={disabled}
+          onChange={(event) => onChange(withType(draft, event.target.value as GlobalConstantType))}
+          className={`${CELL_INPUT} font-sans`}
+          style={INPUT_STYLE}
+        >
+          {GLOBAL_CONSTANT_TYPES.map((type) => (
+            <option key={type} value={type}>{TYPE_LABELS[type]}</option>
+          ))}
+        </select>
+      </td>
+      <td className="px-2 py-1.5 align-top">
+        <div className="flex h-[26px] items-center justify-center">
+          <SplitSwitch
+            on={draft.split}
+            disabled={disabled}
+            testId={`constant-split-${index}`}
+            label={`Split ${label} by source`}
+            onToggle={toggleSplit}
           />
         </div>
-      </div>
-
-      <div>
-        <SectionLabel
-          aside={
-            <label className="flex items-center gap-2 text-[11px]" style={{ color: "var(--text-secondary)" }}>
-              Split by source
-              <button
-                type="button"
-                role="switch"
-                aria-checked={draft.split}
-                aria-label="Split by source"
-                data-testid={`constant-split-${index}`}
-                disabled={disabled}
-                onClick={toggleSplit}
-                className="shrink-0 relative w-7 h-4 rounded-full transition-colors disabled:opacity-50"
-                style={{ background: draft.split ? "var(--accent)" : "var(--chrome-border)" }}
-              >
-                <span
-                  aria-hidden="true"
-                  className="absolute top-0.5 w-3 h-3 rounded-full transition-[left]"
-                  style={{ left: draft.split ? "14px" : "2px", background: "var(--bg-elevated)" }}
-                />
-              </button>
-            </label>
-          }
-        >
-          {draft.split ? "Values" : "Value"}
-        </SectionLabel>
-        {draft.split ? (
-          <div className="rounded-lg overflow-hidden" style={{ background: "var(--bg-panel)", border: "1px solid var(--border)" }}>
-            <div className="grid grid-cols-[minmax(5rem,auto)_1fr] gap-x-2 px-2 py-1.5 text-[11px]" style={{ color: "var(--text-muted)", borderBottom: "1px solid var(--border-subtle)" }}>
-              <span>Source</span>
-              <span>Value</span>
-            </div>
-            {sources.map((source) => (
-              <div
-                key={source}
-                className="grid grid-cols-[minmax(5rem,auto)_1fr] items-start gap-x-2 px-2 py-1.5 last:border-b-0"
-                style={{ borderBottom: "1px solid var(--border-subtle)" }}
-              >
-                <span className="flex items-center gap-1.5 pt-1.5 text-xs font-mono" style={{ color: "var(--text-secondary)" }}>
-                  {source === "live"
-                    ? <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
-                    : <span aria-hidden="true" className="w-1.5 shrink-0" />}
-                  {source}
-                </span>
-                <div>
-                  <ValueInput
-                    type={draft.type}
-                    value={draft.bySource[source] ?? ""}
-                    disabled={disabled}
-                    problem={issues.bySource[source]}
-                    testId={`constant-value-${index}-${source}`}
-                    label={`${draft.name} ${source} value`}
-                    onChange={(value) => onChange({ ...draft, bySource: { ...draft.bySource, [source]: value } })}
-                  />
-                  <Problem text={issues.bySource[source]} testId={`constant-value-issue-${index}-${source}`} />
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <>
-            <ValueInput
+      </td>
+      {draft.split ? (
+        sources.map((source) => (
+          <td key={source} className="px-2 py-1.5 align-top">
+            <ValueCell
               type={draft.type}
-              value={draft.value}
+              value={draft.bySource[source] ?? ""}
               disabled={disabled}
-              problem={issues.value}
-              testId={`constant-value-${index}`}
-              label={`${draft.name} value`}
-              onChange={(value) => onChange({ ...draft, value })}
+              problem={issues.bySource[source]}
+              testId={`constant-value-${index}-${source}`}
+              label={`${label} ${source} value`}
+              onChange={(value) => onChange({ ...draft, bySource: { ...draft.bySource, [source]: value } })}
             />
-            <Problem text={issues.value} testId={`constant-value-issue-${index}`} />
-          </>
+          </td>
+        ))
+      ) : (
+        <td colSpan={sources.length} className="px-2 py-1.5 align-top">
+          <ValueCell
+            type={draft.type}
+            value={draft.value}
+            disabled={disabled}
+            problem={issues.value}
+            testId={`constant-value-${index}`}
+            label={`${label} value`}
+            placeholder={sources.length > 1 ? "same value for every source" : undefined}
+            onChange={(value) => onChange({ ...draft, value })}
+          />
+        </td>
+      )}
+      <td className="px-2 py-1.5 align-top text-center">
+        <span
+          data-testid={`constant-readers-${index}`}
+          aria-label={readers.length ? `Read by ${readers.join(", ")}` : "Not read"}
+          title={readers.length ? `Read by ${readers.join(", ")}` : "No node reads it"}
+          className="inline-flex h-[26px] items-center text-[11px] font-mono"
+          style={{ color: readers.length ? "var(--text-secondary)" : "var(--text-muted)" }}
+        >
+          {readers.length || "—"}
+        </span>
+      </td>
+      <td className="px-1 py-1.5 align-top">
+        {!disabled && (
+          <button
+            type="button"
+            data-testid={`constant-delete-${index}`}
+            onClick={onDelete}
+            aria-label={`Remove ${label}`}
+            title={`Remove ${label}`}
+            className="flex h-[26px] items-center p-1 rounded opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity hover:text-[var(--danger)] focus-visible:text-[var(--danger)]"
+            style={{ color: "var(--text-muted)" }}
+          >
+            <Trash2 size={12} />
+          </button>
         )}
-      </div>
+      </td>
+    </tr>
+  )
+}
 
-      <div>
-        <SectionLabel>Read by</SectionLabel>
-        <div data-testid={`constant-readers-${index}`} className="flex flex-wrap gap-1.5">
-          {readers.length > 0 ? (
-            readers.map((reader) => (
-              <span
-                key={reader}
-                className="rounded-md px-2 py-0.5 text-[11px] font-mono"
-                style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-secondary)" }}
-              >
-                {reader}
-              </span>
-            ))
-          ) : (
-            <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>No node reads it</span>
-          )}
-        </div>
-      </div>
-    </div>
+/** The reasons under the table: each invalid name or value, and each missing source value. */
+function Problems({ drafts, issues }: { drafts: readonly GlobalConstantDraft[]; issues: readonly GlobalConstantIssues[] }) {
+  const entries = drafts.flatMap((draft, index) => {
+    const issue = issues[index]
+    const label = draft.name || `Constant ${index + 1}`
+    return [
+      ...(issue.name ? [{ testId: `constant-name-issue-${index}`, label, text: issue.name, missing: false }] : []),
+      ...(issue.value ? [{ testId: `constant-value-issue-${index}`, label, text: issue.value, missing: false }] : []),
+      ...Object.entries(issue.bySource).map(([source, problem]) => ({
+        testId: `constant-value-issue-${index}-${source}`,
+        label: `${label} · ${source}`,
+        text: problem === MISSING_VALUE ? "Missing" : problem,
+        missing: problem === MISSING_VALUE,
+      })),
+    ]
+  })
+  if (entries.length === 0) return null
+  return (
+    <ul className="m-0 p-0 list-none space-y-0.5" aria-label="Constant problems">
+      {entries.map((entry) => (
+        <li key={entry.testId} data-testid={entry.testId} className="text-[11px]">
+          <span className="font-mono" style={{ color: "var(--text-secondary)" }}>{entry.label}</span>
+          <span style={{ color: entry.missing ? "var(--warning)" : "var(--danger)" }}> — {entry.text}</span>
+        </li>
+      ))}
+    </ul>
   )
 }
 
@@ -327,8 +317,6 @@ export default function GlobalConstantsPanel({ onClose, readOnly = false }: Glob
   const submodels = useGraphStore((s) => s.submodels)
   const sources = useSettingsStore((s) => s.sources)
   const disabled = readOnly || loadError !== null
-  const [selected, setSelected] = useState(0)
-  const selectedIndex = Math.min(selected, Math.max(drafts.length - 1, 0))
   const issues = useMemo(() => constantIssues(drafts, sources), [drafts, sources])
   const readerNodes = useMemo(
     () => allReaderNodes(nodes as unknown as ReaderNode[], submodels),
@@ -339,27 +327,11 @@ export default function GlobalConstantsPanel({ onClose, readOnly = false }: Glob
     [drafts, readerNodes],
   )
   const unknownSources = useMemo(() => unknownSourceKeys(drafts, sources), [drafts, sources])
-  const items: SearchableListItem[] = drafts.map((draft, index) => {
-    const problems = problemsOf(issues[index])
-    return {
-      index,
-      name: draft.name || "(unnamed)",
-      searchTerms: [TYPE_LABELS[draft.type]],
-      healthy: problems.length === 0,
-      issues: problems,
-      badges: [TYPE_LABELS[draft.type], valueBadge(draft, sources)],
-    }
-  })
-  const list = useSearchableList(items, selectedIndex, setSelected, drafts.length > 0)
 
   const setDrafts = (next: GlobalConstantDraft[]) => useGraphStore.getState().setGlobalConstantsRaw(next)
   const replace = (index: number, draft: GlobalConstantDraft) =>
     setDrafts(drafts.map((current, at) => (at === index ? draft : current)))
-  const add = () => {
-    list.reset()
-    setDrafts([...drafts, newConstantDraft(drafts)])
-    setSelected(drafts.length)
-  }
+  const add = () => setDrafts([...drafts, newConstantDraft(drafts)])
   const rename = (index: number, name: string): boolean => {
     const draft = drafts[index]
     const readBy = readers[index]
@@ -376,14 +348,6 @@ export default function GlobalConstantsPanel({ onClose, readOnly = false }: Glob
     const readBy = readers[index]
     if (readBy.length > 0 && !window.confirm(`Delete ${draft.name}? ${readBy.join(", ")} read it.`)) return
     setDrafts(drafts.filter((_, at) => at !== index))
-    if (selectedIndex >= index && selectedIndex > 0) setSelected(selectedIndex - 1)
-  }
-  const move = (from: number, to: number) => {
-    const next = [...drafts]
-    const [moved] = next.splice(from, 1)
-    next.splice(to, 0, moved)
-    setDrafts(next)
-    setSelected(to)
   }
   const removeUnknownSources = () =>
     setDrafts(drafts.map((draft) => {
@@ -393,6 +357,19 @@ export default function GlobalConstantsPanel({ onClose, readOnly = false }: Glob
       )
       return { ...draft, bySource }
     }))
+
+  const addButton = !disabled && (
+    <button
+      type="button"
+      onClick={add}
+      aria-label="Add constant"
+      className="add-row-btn flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg"
+      style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}
+    >
+      <Plus size={12} />
+      Add constant
+    </button>
+  )
 
   return (
     <PanelShell
@@ -438,55 +415,49 @@ export default function GlobalConstantsPanel({ onClose, readOnly = false }: Glob
             style={{ background: "var(--bg-panel)", border: "1px dashed var(--border)" }}
           >
             <span className="text-[12px]" style={{ color: "var(--text-muted)" }}>No constants yet</span>
-            {!disabled && (
-              <button
-                type="button"
-                onClick={add}
-                aria-label="Add constant"
-                className="add-row-btn flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg"
-                style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}
-              >
-                <Plus size={12} />
-                Add constant
-              </button>
-            )}
+            {addButton}
           </div>
         ) : (
           <>
-            <SearchableItemList
-              list={list}
-              selectedIndex={selectedIndex}
-              onSelect={setSelected}
-              onAdd={disabled ? undefined : add}
-              onRemove={disabled ? undefined : remove}
-              onMove={disabled ? undefined : move}
-              labels={{
-                list: "Global constants",
-                search: "Search constants",
-                add: "Add constant",
-                remove: (name) => `Remove ${name}`,
-                status: (healthy) => (healthy ? "complete" : "needs attention"),
-                empty: "No matching constants",
-              }}
-              accentColor={ACCENT}
-            />
-            {list.noneVisible ? (
-              <div className="px-2 py-4 text-center text-[11px]" style={{ color: "var(--text-muted)" }}>
-                Select a matching constant to edit it
-              </div>
-            ) : (
-              <ConstantDetail
-                key={selectedIndex}
-                index={selectedIndex}
-                draft={drafts[selectedIndex]}
-                issues={issues[selectedIndex]}
-                sources={sources}
-                readers={readers[selectedIndex]}
-                disabled={disabled}
-                onChange={(next) => replace(selectedIndex, next)}
-                onRename={(name) => rename(selectedIndex, name)}
-              />
-            )}
+            <div className="overflow-x-auto rounded-lg" style={{ background: "var(--bg-panel)", border: "1px solid var(--border)" }}>
+              <table className="w-full border-collapse" aria-label="Global constants">
+                <thead>
+                  <tr style={{ color: "var(--text-muted)" }}>
+                    <th scope="col" className={`${HEADER_CELL} min-w-32`}>Name</th>
+                    <th scope="col" className={`${HEADER_CELL} w-28`}>Type</th>
+                    <th scope="col" className={`${HEADER_CELL} w-12 text-center`} title="One value per source">Split</th>
+                    {sources.map((source) => (
+                      <th key={source} scope="col" className={`${SOURCE_HEADER_CELL} min-w-28`}>
+                        <span className="inline-flex items-center gap-1.5">
+                          {source === "live" && <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-green-400" />}
+                          {source}
+                        </span>
+                      </th>
+                    ))}
+                    <th scope="col" className={`${HEADER_CELL} w-14 text-center`} title="How many nodes read it">Used by</th>
+                    <th scope="col" className="w-7"><span className="sr-only">Remove</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {drafts.map((draft, index) => (
+                    <ConstantRow
+                      key={index}
+                      index={index}
+                      draft={draft}
+                      issues={issues[index]}
+                      sources={sources}
+                      readers={readers[index]}
+                      disabled={disabled}
+                      onChange={(next) => replace(index, next)}
+                      onRename={(name) => rename(index, name)}
+                      onDelete={() => remove(index)}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <Problems drafts={drafts} issues={issues} />
+            {addButton && <div>{addButton}</div>}
           </>
         )}
       </div>

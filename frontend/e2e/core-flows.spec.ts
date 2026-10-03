@@ -456,7 +456,7 @@ test.describe("core browser flows", () => {
     await page.getByTestId("constant-split-0").click()
     await page.getByTestId("constant-value-0-live").fill("1.5")
     await page.getByTestId("constant-value-0-nb_batch").fill("2.5")
-    await expect(page.getByTestId("constant-readers-0")).toHaveText("enriched")
+    await expect(page.getByTestId("constant-readers-0")).toHaveAttribute("title", "Read by enriched")
 
     await page.getByRole("button", { name: /enriched/i }).click()
     await page.getByRole("button", { name: "Refresh" }).click()
