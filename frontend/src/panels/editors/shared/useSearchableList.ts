@@ -31,7 +31,10 @@ export interface SearchableList {
 /**
  * The search and filter state of a {@link SearchableItemList}. When they hide
  * the selected item, the first visible one is selected instead, so the editor
- * never edits an item the list does not show.
+ * never edits an item the list does not show. Under the Issues filter, an item
+ * that had issues when it was selected stays listed after an edit fixes them,
+ * until another item is selected or the filter changes, so fixing an item never
+ * moves the editor away from it mid-edit.
  */
 export function useSearchableList(
   items: SearchableListItem[],
@@ -41,9 +44,15 @@ export function useSearchableList(
 ): SearchableList {
   const [search, setSearch] = useState("")
   const [filter, setFilter] = useState<SearchableListFilter>("all")
+  const selectedItem = items.find((item) => item.index === selectedIndex)
+  const keepFor = selectedItem !== undefined && !selectedItem.healthy ? selectedIndex : null
+  const [kept, setKept] = useState({ selectedIndex, filter, index: keepFor })
+  const keptCurrent = kept.selectedIndex === selectedIndex && kept.filter === filter
+  if (!keptCurrent) setKept({ selectedIndex, filter, index: keepFor })
+  const keptIndex = keptCurrent ? kept.index : keepFor
   const query = search.trim().toLowerCase()
   const visible = items.filter((item) => {
-    if (filter === "problems" && item.healthy) return false
+    if (filter === "problems" && item.healthy && item.index !== keptIndex) return false
     if (!query) return true
     return [item.name, ...item.searchTerms].some((text) => text.toLowerCase().includes(query))
   })

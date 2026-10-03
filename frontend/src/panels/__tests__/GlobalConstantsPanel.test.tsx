@@ -113,6 +113,25 @@ describe("GlobalConstantsPanel", () => {
     expect(screen.getByTestId("constant-readers-1")).toHaveTextContent("No node reads it")
   })
 
+  it("keeps editing a constant under the Issues filter as typing fixes it", () => {
+    load([uniform("done", "1"), uniform("todo", "")])
+    render(<GlobalConstantsPanel onClose={vi.fn()} />)
+    fireEvent.click(screen.getByRole("button", { name: /^Issues/ }))
+    expect(screen.getByTestId("constant-name-1")).toHaveValue("todo")
+
+    const value = screen.getByTestId("constant-value-1")
+    for (const typed of ["1", "10", "100"]) fireEvent.change(value, { target: { value: typed } })
+
+    expect(constants()[1].value).toBe("100")
+    expect(screen.getByTestId("constant-value-1")).toBe(value)
+    expect(screen.getByRole("button", { name: "todo complete" })).toBeInTheDocument()
+
+    // Choosing the filter again applies it afresh: the fixed constant leaves.
+    fireEvent.click(screen.getByRole("button", { name: "All" }))
+    fireEvent.click(screen.getByRole("button", { name: /^Issues/ }))
+    expect(screen.queryByRole("button", { name: "todo complete" })).not.toBeInTheDocument()
+  })
+
   it("moves a constant within the list", () => {
     load([uniform("first", "1"), uniform("second", "2")])
     render(<GlobalConstantsPanel onClose={vi.fn()} />)
