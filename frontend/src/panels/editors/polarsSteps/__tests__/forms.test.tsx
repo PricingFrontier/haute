@@ -515,7 +515,7 @@ describe("step forms only build schema-valid payloads", () => {
     )
     const input = screen.getByRole("combobox", { name: "Formula" })
     fireEvent.change(input, { target: { value: "pre" } })
-    const list = screen.getByRole("listbox", { name: "Matching columns and functions" })
+    const list = screen.getByRole("listbox", { name: "Matching columns, constants and functions" })
     expect(within(list).getAllByRole("option").map((o) => o.textContent)).toEqual(["premium", "premium_net"])
     expect(within(list).getByRole("option", { name: "premium" })).toHaveAttribute("aria-selected", "true")
     fireEvent.keyDown(input, { key: "ArrowDown" })
@@ -533,6 +533,35 @@ describe("step forms only build schema-valid payloads", () => {
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
     fireEvent.keyDown(input, { key: "Enter" })
     expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ expr: expect.objectContaining({ text: "premium_net * ra" }) }))
+  })
+
+  it("offers and reads a global constant by its bare name in the formula box", () => {
+    const spy = vi.fn()
+    const step: Step = {
+      id: "w",
+      kind: "with_column",
+      name: "x",
+      expr: { type: "binary", left: { kind: "column", name: "a" }, op: "+", right: { kind: "literal", type: "number", value: 1 }, text: "" },
+    }
+    const withConstants: StepFormContext = { ...ctx, columns: ["voluntary_excess"], constants: ["constant_1"] }
+    render(<StepForm step={step} onChange={(next) => spy(next)} ctx={withConstants} />)
+    const input = screen.getByRole("combobox", { name: "Formula" })
+
+    fireEvent.change(input, { target: { value: "voluntary_excess * const" } })
+    const option = within(screen.getByRole("listbox")).getByRole("option", { name: "constant_1" })
+    expect(option).toHaveTextContent("global constant")
+    fireEvent.keyDown(input, { key: "Tab" })
+    expect(input).toHaveValue("voluntary_excess * constant_1")
+    fireEvent.keyDown(input, { key: "Enter" })
+
+    expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({
+      expr: expect.objectContaining({
+        left: { kind: "column", name: "voluntary_excess" },
+        right: { kind: "constant", name: "constant_1" },
+        text: "voluntary_excess * constant_1",
+      }),
+    }))
+    expect(screen.queryByText(/is not a column/)).not.toBeInTheDocument()
   })
 
   it("completes colliding columns as columns and plain variables as variables", () => {

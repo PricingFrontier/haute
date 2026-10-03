@@ -384,6 +384,23 @@ test.describe("Transform step builder journey", () => {
     await page.getByRole("button", { name: "Refresh" }).click()
     await expect(previewTable.locator("tbody tr")).toHaveCount(8)
 
+    // A formula reads the constant by its bare name, offered as the word is typed.
+    await editor.getByRole("button", { name: "Add step" }).click()
+    await editor.getByRole("menu", { name: "Add step" }).getByRole("menuitem", { name: "Add column" }).click()
+    const columnName = editor.getByLabel("Column name")
+    await columnName.fill("scaled")
+    await columnName.press("Enter")
+    const formula = editor.getByRole("combobox", { name: "Formula" })
+    await formula.fill("value * thres")
+    await expect(editor.getByRole("option", { name: "threshold" })).toContainText("global constant")
+    await formula.press("Tab")
+    await expect(formula).toHaveValue("value * threshold")
+    await formula.press("Enter")
+    await expect(editor.getByTestId("polars-generated-code")).toContainText('(pl.col("value") * global_constants.threshold).alias("scaled")')
+    await page.getByRole("button", { name: "Refresh" }).click()
+    // The 8 rows above 100 under live, with the computed column added to the sample's six.
+    await expect(page.getByText("8 rows · 7 cols")).toBeVisible()
+
     // Saving keeps the operand in the sidecar and writes the constants file.
     await save(page)
     const inputSidecarPath = resolve(e2eProjectRoot, "rating", "config", "data_input", "constant_filter.json")

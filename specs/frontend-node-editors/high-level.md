@@ -384,7 +384,9 @@ value, is left alone. Conditions read under a lead that says what they do: a fil
 offers Value, Formula, Function, If-then, Window and Join text; a new column starts in
 Formula, its name field taking focus first. A formula is edited as text
 (`(premium + tax) * 1.05 / 12`, `round(premium / sum_insured * 1000, 3)`: columns by name or
-in backticks, earlier variables by name, global constants as `global_constants.<name>`, quoted
+in backticks, earlier variables by name, global constants by name or as `global_constants.<name>`
+(a bare name is an earlier variable first, then a constant, then a column; backticks always name
+a column), quoted
 text, `true`/`false`/`null`,
 `date('YYYY-MM-DD')`, Python operator precedence with `**` right-associative (power
 binds before a leading sign, while negative exponents are accepted: `-2 ** 2` is
@@ -405,7 +407,7 @@ can replace the last valid expression. A new formula box starts empty
 (a placeholder tree keeps the step renderable until something is typed) showing an example
 formula as its placeholder, as a tooltip on the box and on an info icon beside its label, and
 grows onto more lines as the formula lengthens (Enter still commits); as a name is typed the
-columns (with their types) and earlier variables starting with it are listed under the box,
+columns (with their types), earlier variables and global constants starting with it are listed under the box,
 then the catalogue's functions, marked `ƒ` with what they do (Up/Down move, Tab, Enter or a
 click takes the active entry, a column backticked when it is not an identifier, a function
 arriving as `name()` with the caret between the brackets; a word that already is a name is
