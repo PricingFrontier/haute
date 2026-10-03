@@ -140,8 +140,9 @@ Out of scope (owned by neighbouring components):
   - a support-code binding of a reserved name, apart from `import haute` and
     `import polars as pl`;
   - whatever keeps the inventory incomplete, naming the statement: a computed `__all__`, one
-    changed after it is defined (`__all__.append(...)`), or one naming what the module does not
-    bind, a utility file that is not valid Python, a binding inside a block at module level in a
+    changed other than by a single top-level literal assignment (`__all__.append(...)`, a slice
+    or augmented assignment, any binding inside a block), or one naming what the module does
+    not bind, a utility file that is not valid Python, a binding inside a block at module level in a
     star-imported utility, a star import of a module outside `utility`, a star import of a
     utility file that does not exist, or a cycle of utility star imports.
 

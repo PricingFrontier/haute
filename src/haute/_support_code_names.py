@@ -131,15 +131,42 @@ def _block_target_names(stmt: ast.stmt) -> Iterator[str]:
                 yield from _target_names(item.optional_vars)
 
 
+def _module_level_nodes(stmt: ast.stmt) -> Iterator[ast.AST]:
+    """*stmt* and everything it runs at module level (not inside a def, class or lambda)."""
+    pending: list[ast.AST] = [stmt]
+    while pending:
+        node = pending.pop()
+        yield node
+        for child in ast.iter_child_nodes(node):
+            if not isinstance(
+                child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda
+            ):
+                pending.append(child)
+
+
+def _is_all(node: ast.AST) -> bool:
+    return isinstance(node, ast.Name) and node.id == "__all__"
+
+
 def _mutates_all(stmt: ast.stmt) -> bool:
-    """Whether *stmt* calls a method on ``__all__`` (``append``, ``extend``, ...)."""
-    return (
-        isinstance(stmt, ast.Expr)
-        and isinstance(stmt.value, ast.Call)
-        and isinstance(stmt.value.func, ast.Attribute)
-        and isinstance(stmt.value.func.value, ast.Name)
-        and stmt.value.func.value.id == "__all__"
-    )
+    """Whether *stmt* changes ``__all__`` other than by one top-level assignment.
+
+    A method call (``__all__.append(...)``), an item or slice assignment, an
+    augmented assignment, or any binding of ``__all__`` inside a block, all at
+    module level: what the module exports then depends on running it.
+    """
+    for node in _module_level_nodes(stmt):
+        if isinstance(node, ast.Attribute) and _is_all(node.value):
+            return True
+        if isinstance(node, ast.Subscript) and _is_all(node.value):
+            if isinstance(node.ctx, ast.Store | ast.Del):
+                return True
+        if isinstance(node, ast.AugAssign) and _is_all(node.target):
+            return True
+        if node is not stmt and isinstance(node, ast.Name) and node.id == "__all__":
+            if isinstance(node.ctx, ast.Store) and not isinstance(stmt, ast.Assign | ast.AnnAssign):
+                return True
+    return False
 
 
 def _literal_all(value: ast.expr) -> list[str] | None:

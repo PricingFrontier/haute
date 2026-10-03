@@ -296,7 +296,8 @@ candidate, with the error toast.
   submodel occurrence the first free alias (`rates`, then `rates_2`), which is also
   its label. The batch is applied together or not at all behind the existing
   stale-request fences. A rename sends the same context without `allocate`, and is judged
-  again when any other name or the preamble changed while the server judged it; a name
+  again when any other name or the preamble changed while the server judged it, whether the
+  verdict accepted or refused it; a name
   the naming rule refuses (another node's name ignoring case, a reserved or built-in
   name, a support-code helper) comes back as a collision whose message the rename
   surface shows inline, and nothing is applied. The Rename dialog and the node

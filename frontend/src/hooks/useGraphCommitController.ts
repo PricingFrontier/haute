@@ -276,7 +276,17 @@ export default function useGraphCommitController({
           const isSubmodel = isOccurrence(currentNode)
           const request = beginRequest(nodeId)
           const namingKey = readNamingContextKey()
-          const resolved = await resolveRenameIdentities([candidateFor(currentNode)])
+          let resolved: Node[]
+          try {
+            resolved = await resolveRenameIdentities([candidateFor(currentNode)])
+          } catch (error: unknown) {
+            // A refusal judged against names that have since changed may no
+            // longer hold: the other node may have been renamed away.
+            if (error instanceof EditorNameCollisionError && readNamingContextKey() !== namingKey) {
+              continue
+            }
+            throw error
+          }
           if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
             throw new Error("identity resolver returned an invalid node")
           }

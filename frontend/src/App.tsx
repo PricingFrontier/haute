@@ -43,8 +43,7 @@ import PipelineRecoveryBanner from "./components/PipelineRecoveryBanner"
 import NameViolationsBanner from "./components/NameViolationsBanner"
 import { useNameViolationRevalidation } from "./hooks/useNameViolationRevalidation"
 import { resolveGraphFromRefs } from "./utils/buildGraph"
-import { toCanonicalGraphPayload } from "./utils/graphSnapshot"
-import type { PipelineEdge } from "./types/node"
+import { namingContextGraph as buildNamingContextGraph } from "./utils/namingContext"
 import type { PipelineNameViolation } from "./types/pipelineDocument"
 import type { PipelineRepairTarget } from "./components/PipelineRepairDialog"
 import SourceRecoveryView from "./components/SourceRecoveryView"
@@ -882,26 +881,13 @@ function FlowEditor() {
   // Inside a drilled submodel the live child graph replaces its definition's,
   // and new or renamed nodes are scoped to that definition.
   const namingScope = activeSubmodelIdentity?.definitionId ?? null
-  const namingContextGraph = useCallback(() => {
-    const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
-    const definition = namingScope === null ? undefined : graph.submodels?.[namingScope]
-    const submodels = definition && typeof definition === "object"
-      ? {
-          ...graph.submodels,
-          [namingScope as string]: {
-            ...definition,
-            graph: {
-              ...(definition as { graph: object }).graph,
-              ...toCanonicalGraphPayload({
-                nodes: graphRef.current.nodes.filter((node) => node.type !== NODE_TYPES.SUBMODEL_PORT),
-                edges: graphRef.current.edges as PipelineEdge[],
-              }),
-            },
-          },
-        }
-      : graph.submodels
-    return { ...graph, submodels, preserved_blocks: preservedBlocksRef.current }
-  }, [namingScope])
+  const namingContextGraph = useCallback(() => buildNamingContextGraph({
+    graph: resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef),
+    preservedBlocks: preservedBlocksRef.current,
+    drilledDefinition: namingScope,
+    liveNodes: graphRef.current.nodes,
+    liveEdges: graphRef.current.edges,
+  }), [namingScope])
   const readNamingContextKey = useCallback(() => JSON.stringify([
     graphRef.current.nodes.map((node) => [node.id, node.data?.label, (node.data?.config as Record<string, unknown> | undefined)?.alias]),
     parentGraphRef.current?.nodes.map((node) => [node.id, node.data?.label]),

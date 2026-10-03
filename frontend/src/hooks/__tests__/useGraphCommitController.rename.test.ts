@@ -249,6 +249,42 @@ describe("useGraphCommitController submodel occurrence rename", () => {
     expect(commitGraph).toHaveBeenCalledOnce()
   })
 
+  it("judges a refused rename again when the other node gave up the name meanwhile", async () => {
+    const first = makeNode("first", "polars", { data: { label: "first", nodeType: "polars" } })
+    const graphRef = { current: { nodes: [first], edges: [] as Edge[] } }
+    let namingKey = "taken"
+    const resolveRenameIdentities = vi.fn(async (candidateNodes: readonly Node[]) => {
+      if (resolveRenameIdentities.mock.calls.length === 1) {
+        namingKey = "freed"
+        throw new EditorNameCollisionError("first", "Nodes 'second' and 'renamed' take one name.")
+      }
+      return candidateNodes.map((n) => ({ ...n, data: { ...n.data, _functionName: String(n.data.label) } }))
+    })
+    const commitGraph = vi.fn()
+    const { result } = renderHook(() => useGraphCommitController({
+      graphRef,
+      submodelsRef: { current: {} },
+      readDocumentIdentity: () => "doc-1",
+      readOnly: false,
+      reservedApiInputFrameLabels: new Set<string>(),
+      resolveNodeIdentities: resolveRenameIdentities,
+      resolveRenameIdentities,
+      readNamingContextKey: () => namingKey,
+      commitGraph,
+      setSelectedNode: vi.fn(),
+      addToast: vi.fn(),
+    }))
+
+    let outcome: unknown
+    await act(async () => {
+      outcome = await result.current.onRenameNode("first", "renamed")
+    })
+
+    expect(outcome).toEqual({ ok: true })
+    expect(resolveRenameIdentities).toHaveBeenCalledTimes(2)
+    expect(commitGraph).toHaveBeenCalledOnce()
+  })
+
   it("refuses a rename the server names a collision for, applying nothing", async () => {
     const otherNode = makeNode("other_node", "polars", {
       data: { label: "existing_label", nodeType: "polars" },

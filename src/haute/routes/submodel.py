@@ -131,14 +131,21 @@ def _refuse_new_name_violations(
     included), and grouping must not add any other violation. Violations the
     graph already had are the editor's to fix and do not block grouping.
     """
+    from haute._executable_names import NameViolation
     from haute._support_code_names import name_violations, utility_reader
 
+    def identity(violation: NameViolation) -> tuple[object, ...]:
+        # Grouping moves nodes into the new definition, which changes the
+        # module a violation names but not the violation itself.
+        labels = sorted(party.label for party in violation.parties)
+        return (violation.kind, violation.name, tuple(labels))
+
     read_utility = utility_reader(pipeline_dir(), project_root)
-    existing = {violation.message() for violation in name_violations(before, read_utility)}
+    existing = {identity(violation) for violation in name_violations(before, read_utility)}
     added = [
         violation.message()
         for violation in name_violations(after, read_utility)
-        if violation.message() not in existing
+        if identity(violation) not in existing
     ]
     if added:
         raise HTTPException(

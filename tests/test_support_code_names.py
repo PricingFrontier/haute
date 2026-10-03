@@ -220,11 +220,23 @@ def test_block_targets_in_a_preamble_are_bindings(preamble: str, name: str) -> N
     assert _violations(graph) == [("support_collision", name)]
 
 
-def test_a_mutated_all_in_a_utility_cannot_be_checked() -> None:
-    graph = PipelineGraph(nodes=[], edges=[], preamble="from utility.rates import *\n")
-    rates = "__all__ = []\n__all__.append('helper')\n\ndef helper():\n    pass\n"
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param("__all__.append('helper')\n", id="method-call"),
+        pytest.param("if True:\n    __all__.append('helper')\n", id="method-call-in-a-block"),
+        pytest.param("__all__[:] = ['helper']\n", id="slice-assignment"),
+        pytest.param("__all__ += ['helper']\n", id="augmented-assignment"),
+        pytest.param("if True:\n    __all__ = ['helper']\n", id="assignment-in-a-block"),
+    ],
+)
+def test_a_changed_all_in_a_utility_cannot_be_checked(change: str) -> None:
+    graph = PipelineGraph(
+        nodes=[_node("helper")], edges=[], preamble="from utility.rates import *\n"
+    )
+    rates = "__all__ = []\n" + change + "\ndef helper():\n    pass\n"
 
-    assert _violations(graph, rates=rates) == [("support_unsupported", "")]
+    assert ("support_unsupported", "") in _violations(graph, rates=rates)
 
 
 def test_a_utility_that_does_not_parse_is_reported_not_raised() -> None:
