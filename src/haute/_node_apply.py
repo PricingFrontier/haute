@@ -45,13 +45,23 @@ def constant_frame(values: list[Mapping[str, Any]]) -> pl.LazyFrame:
 
     Each named value becomes a column, as a number when it reads as one and as
     the raw value otherwise; an entry without a name is skipped, and a node
-    with no named values yields the single column ``constant``.
+    with no named values yields the single column ``constant``. Two entries
+    with one name are refused rather than the later value replacing the
+    earlier.
     """
+    from haute.errors import NodeConfigError
+
     data: dict[str, list[Any]] = {}
     for entry in values:
         name = entry.get("name", "")
         if not name:
             continue
+        if name in data:
+            raise NodeConfigError(
+                f"Constant name {name!r} is used by more than one value; "
+                "give each value its own name.",
+                setting="values",
+            )
         value = entry.get("value", "")
         try:
             data[name] = [float(value)]

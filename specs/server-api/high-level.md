@@ -174,7 +174,26 @@ sorted reserved API-input frame-label set. Prospective browser-created or rename
 nodes use the bounded, side-effect-free `POST /api/pipeline/editor-identities`
 contract. Submodel and drilled Input requests carry an exact handle-to-public-label
 map so the server, rather than the browser, derives their executable names. The
-response preserves request order and never reads or writes project state.
+response preserves request order and never reads or writes project state. The request may
+also carry the document's naming context, and it then stops being pure: its verdict is a
+function of the request and of the project's saved utility files, which it reads (and only
+those) to resolve `utility.<module>` star imports, from where the executor imports them. The
+naming context is the whole graph, in the representation save receives, with the request's
+nodes applied. The response then lists the name violations (executable names and support
+code) that remain in it (`violations`), as the document carries them. Utility files reach the
+disk only through the utility routes, and save, preview and the deployed scorer read the same
+files, so the editor and save judge one set of utility contents.
+
+A file whose names break the codegen specification's executable-name rule in a way the
+parser can build a graph from (anything but a structural collision; expression-parsing)
+loads as a ready document listing them in `name_violations`, each with its kind, name,
+message and the nodes taking part (a submodel child names its definition). The document is
+editable (`can_mutate`), but while the list is non-empty `can_save`, `can_execute` and
+`can_preview` are false, and the server refuses save and execution with the same message:
+save through `validate_graph`, and every route that runs a browser graph through
+`flatten_executable_graph`, which refuses a graph with a violation before flattening it. Renames use the
+ordinary rename path, and the browser revalidates through the identity request until the list
+is empty.
 `POST /api/pipeline/save` is the single write path for a pipeline's `.py` source, its
 per-node config JSON sidecars, and its `.haute.json` position sidecar — described in detail
 below. Before changing an existing named document, Save and submodel create/dissolve reread
@@ -262,7 +281,16 @@ disconnects.
 **Utility scripts.** `GET/POST/PUT/DELETE /api/utility[/{module}]` manage Python files under
 the project's `utility/` directory — reusable helpers a pipeline's preamble imports via
 `from utility.<module> import *`. Every write is AST-syntax-checked before landing on disk;
-a syntax error is rejected with a line-numbered message, never written half-valid.
+a syntax error is rejected with a line-numbered message, never written half-valid. Create
+also refuses a module name that is a Python hard keyword (`from utility.class import *` cannot
+be written) or a Windows device name (`CON`, `NUL`, `COM1`), with HTTP 400, and one equal to an
+existing module's ignoring case (HTTP 409), on every platform whatever its file system allows,
+so a checkout made on Linux still works on Windows and macOS. Create and
+update also parse every project pipeline that mentions `utility` twice, with its support code
+read as it is and with the module holding the new content, and refuse (HTTP 400, nothing
+written) any name violation the edit adds (codegen "Names cannot collide with support code"),
+naming the pipeline and the colliding node; a pipeline that does not parse is skipped, since
+it fails on its own.
 
 **OUTPUT assembly dry-run.** `POST /api/output-assemble/dry-run` lets the OUTPUT node editor
 preview the assembled JSON response from an *in-progress, unsaved* field→path mapping: it
@@ -434,9 +462,10 @@ files. A Quote Input table labelled like another node is refused there, naming t
 Quote Input and the node, because a parameter of that name would read both and the saved
 file would not reload. It rejects any edge out of a node type that has no output
 (`haute._types.SINK_ONLY_NODE_TYPES`: Quote Response, Data Output, Explore, Model
-Training and Optimisation), and it runs codegen's own function-name collision
-check (`haute.codegen.check_function_name_collisions`), so a submodel occurrence
-named like a node inside its definition fails here rather than at codegen. Edge Join validation uses the canonical backend join validators, not a
+Training and Optimisation), and it runs codegen's executable-name check
+(`haute.codegen.check_executable_names`, the codegen specification's naming rule), so
+two names equal ignoring case, a reserved or built-in node name, or a reserved node input
+fails here, every violation listed, rather than at codegen. Edge Join validation uses the canonical backend join validators, not a
 save- or assistant-specific approximation. Save invokes it before any write,
 so the validation paths cannot drift.
 

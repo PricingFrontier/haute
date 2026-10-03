@@ -216,15 +216,50 @@ export interface TableItem {
 }
 export interface EditorIdentitiesResponse {
   identities: EditorIdentityResponseNode[];
+  violations: PipelineNameViolation[] | null;
 }
 export interface EditorIdentityResponseNode {
+  alias: string | null;
+  collision: string | null;
   config_reference: string | null;
   default_input_name: string | null;
   function_name: string;
+  label: string;
   node_id: string;
   source_handle_input_names: {
     [k: string]: string;
   };
+}
+/**
+ * One name violation (codegen's naming rule, or support code's), with its message.
+ *
+ * A support-code violation that involves no node (two helpers binding one
+ * name, a statement the inventory cannot read) has no parties, and an
+ * unreadable statement has no name.
+ */
+export interface PipelineNameViolation {
+  kind:
+    | 'duplicate'
+    | 'reserved'
+    | 'builtin'
+    | 'reserved_input'
+    | 'support_collision'
+    | 'support_input'
+    | 'support_conflict'
+    | 'support_reserved'
+    | 'support_unsupported'
+    | 'output_destination';
+  message: string;
+  name: string;
+  parties: PipelineNameViolationParty[];
+}
+/**
+ * A node taking part in a name violation; ``submodel`` is its definition, if any.
+ */
+export interface PipelineNameViolationParty {
+  label: string;
+  node_id: string;
+  submodel: string | null;
 }
 /**
  * Either the rendered code with per-step line ranges or the failing step.

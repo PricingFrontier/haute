@@ -602,6 +602,21 @@ def _extract_global_constants_declaration(tree: ast.Module, *, receiver: str) ->
     return False
 
 
+def _is_receiver_node_def(statement: ast.stmt, receiver: str) -> bool:
+    """Whether *statement* defines a node: a function decorated ``@<receiver>.<kind>``."""
+    if not isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
+        return False
+    for decorator in statement.decorator_list:
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        if (
+            isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == receiver
+        ):
+            return True
+    return False
+
+
 def _reject_reserved_global_constants_bindings(tree: ast.Module, *, receiver: str) -> None:
     """Raise ``ParseError`` for a module-level binding of the reserved name.
 
@@ -610,7 +625,11 @@ def _reject_reserved_global_constants_bindings(tree: ast.Module, *, receiver: st
     function named ``global_constants`` and one in the preamble included,
     would shadow the pipeline's global constants.
     """
-    lines = module_binding_lines(tree.body, receiver=receiver)
+    # A node function named ``global_constants`` is refused by the naming rule
+    # (codegen), which the editor reports as a renameable violation instead of
+    # failing the whole parse.
+    statements = [stmt for stmt in tree.body if not _is_receiver_node_def(stmt, receiver)]
+    lines = module_binding_lines(statements, receiver=receiver)
     if lines:
         where = (
             f"line {lines[0]} binds"

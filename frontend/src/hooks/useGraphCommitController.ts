@@ -1,4 +1,5 @@
 import { useCallback, useLayoutEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react"
+import { EditorNameCollisionError } from "../utils/editorIdentities"
 import type { Edge, Node } from "@xyflow/react"
 
 import type { OnUpdateConfigResult } from "../panels/editors/_shared"
@@ -35,6 +36,12 @@ export type UseGraphCommitControllerOptions = {
   readOnly: boolean
   reservedApiInputFrameLabels: ReadonlySet<string>
   resolveNodeIdentities: (candidateNodes: readonly Node[]) => Promise<Node[]>
+  /** Resolves a renamed node against the whole document, throwing
+   *  `EditorNameCollisionError` for a name the naming rule refuses. */
+  resolveRenameIdentities: (candidateNodes: readonly Node[]) => Promise<Node[]>
+  /** A key of everything a rename's verdict depends on (every name, the support
+   *  code); a rename resolved against an older key is resolved again. */
+  readNamingContextKey: () => string
   commitGraph: (
     nodes: Node[],
     edges: Edge[],
@@ -62,6 +69,8 @@ export default function useGraphCommitController({
   readOnly,
   reservedApiInputFrameLabels,
   resolveNodeIdentities,
+  resolveRenameIdentities,
+  readNamingContextKey,
   commitGraph,
   setSelectedNode,
   addToast,
@@ -266,7 +275,26 @@ export default function useGraphCommitController({
           if (!currentNode) return { ok: false, error: `Cannot rename missing node "${nodeId}".` }
           const isSubmodel = isOccurrence(currentNode)
           const request = beginRequest(nodeId)
-          const resolved = await resolveNodeIdentities([candidateFor(currentNode)])
+          const namingKey = readNamingContextKey()
+          let resolved: Node[]
+          try {
+            resolved = await resolveRenameIdentities([candidateFor(currentNode)])
+          } catch (error: unknown) {
+            // A newer edit or another document supersedes a refusal as it
+            // would an acceptance; only then may a stale refusal be retried.
+            if (requestInvalidated(request)) {
+              return {
+                ok: false,
+                error: "Rename was not applied because the document, editing capability, or a newer node edit superseded it.",
+              }
+            }
+            // A refusal judged against names that have since changed may no
+            // longer hold: the other node may have been renamed away.
+            if (error instanceof EditorNameCollisionError && readNamingContextKey() !== namingKey) {
+              continue
+            }
+            throw error
+          }
           if (resolved.length !== 1 || resolved[0]?.id !== nodeId) {
             throw new Error("identity resolver returned an invalid node")
           }
@@ -277,32 +305,15 @@ export default function useGraphCommitController({
             }
           }
           if (requestIsStale(request)) continue
+          // Another node's name or the support code changed while the server
+          // judged this one: its verdict no longer holds.
+          if (readNamingContextKey() !== namingKey) continue
           if (isSubmodel) {
             const resolvedFn = resolved[0].data?._functionName
             if (resolvedFn !== label) {
               return {
                 ok: false,
                 error: `Occurrence names must be identifiers; use "${resolvedFn ?? ""}".`,
-              }
-            }
-            const isUsed = graphRef.current.nodes.some((other) => {
-              if (other.id === nodeId) return false
-              if (other.id === label) return true
-              if (other.data?.label === label) return true
-              const otherConfig = other.data?.config
-              if (
-                other.data?.nodeType === NODE_TYPES.SUBMODEL
-                && isSubmodelInstanceConfig(otherConfig)
-                && otherConfig.alias === label
-              ) {
-                return true
-              }
-              return false
-            })
-            if (isUsed) {
-              return {
-                ok: false,
-                error: `"${label}" is already used by another node.`,
               }
             }
           }
@@ -316,6 +327,8 @@ export default function useGraphCommitController({
           error: "Rename was not applied because the graph kept changing while identity resolution was running.",
         }
       } catch (error: unknown) {
+        // The server's own wording names the other node, helper or reserved name.
+        if (error instanceof EditorNameCollisionError) return { ok: false, error: error.message }
         return {
           ok: false,
           error: `Rename failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -324,7 +337,7 @@ export default function useGraphCommitController({
     })()
     registerPendingCommit(pending)
     return pending
-  }, [beginRequest, commit, graphRef, prepare, registerPendingCommit, requestIsStale, requestInvalidated, resolveNodeIdentities])
+  }, [beginRequest, commit, graphRef, prepare, readNamingContextKey, registerPendingCommit, requestIsStale, requestInvalidated, resolveRenameIdentities])
 
   return { onUpdateNode, onRenameNode, waitForPendingCommits }
 }

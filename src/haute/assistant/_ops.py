@@ -34,6 +34,7 @@ from haute._code_extraction import normalise_user_code
 from haute._config_builder import _EXTRACTION_KIND_BY_CODE_TYPE
 from haute._config_io import NODE_TYPE_TO_FOLDER, palette_default_config
 from haute._config_validation import VALID_KEYS
+from haute._executable_names import function_name_problem
 from haute._graph_utils import (
     _edge_id,
     _sanitize_func_name,
@@ -511,6 +512,13 @@ def _apply_add_node(
             f"Cannot add node {op.name!r}: sanitized id {node_id!r} already exists",
             where={"node": node_id},
             fix=f"Choose another name, or change {node_id!r} with update_node.",
+        )
+    problem = function_name_problem(graph, node_id)
+    if problem is not None:
+        _invalid(
+            f"Cannot add node {op.name!r}: {problem}",
+            where={"node": node_id},
+            fix="Choose another name.",
         )
     _check_stepped_write(op.node_type, node_id, None, op.config)
     written = _resolve_output_rows(op.node_type, op.config, refs, graph)
@@ -1061,6 +1069,11 @@ def _apply_rename_node(
             f"Cannot rename node: sanitized id {new_id!r} already exists",
             where={"node": old_id},
             fix=f"Choose a new name whose id is not {new_id!r}.",
+        )
+    problem = function_name_problem(graph, new_id, excluding_node_id=old_id)
+    if problem is not None:
+        _invalid(
+            f"Cannot rename node: {problem}", where={"node": old_id}, fix="Choose another name."
         )
 
     node = graph.nodes[index]

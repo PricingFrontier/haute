@@ -803,6 +803,43 @@ class RecoverySubmodelDefinition(BaseModel):
         return self
 
 
+class PipelineNameViolationParty(BaseModel):
+    """A node taking part in a name violation; ``submodel`` is its definition, if any."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str = Field(min_length=1)
+    label: str
+    submodel: str | None = None
+
+
+class PipelineNameViolation(BaseModel):
+    """One name violation (codegen's naming rule, or support code's), with its message.
+
+    A support-code violation that involves no node (two helpers binding one
+    name, a statement the inventory cannot read) has no parties, and an
+    unreadable statement has no name.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal[
+        "duplicate",
+        "reserved",
+        "builtin",
+        "reserved_input",
+        "support_collision",
+        "support_input",
+        "support_conflict",
+        "support_reserved",
+        "support_unsupported",
+        "output_destination",
+    ]
+    name: str
+    message: str = Field(min_length=1)
+    parties: list[PipelineNameViolationParty]
+
+
 class PipelineEditorDocument(BaseModel):
     """Versioned editor load result; never a canonical executable graph."""
 
@@ -832,6 +869,9 @@ class PipelineEditorDocument(BaseModel):
     diagnostics_omitted: int = Field(default=0, ge=0)
     completeness: list[PipelineNodeCompleteness] = Field(default_factory=list)
     completeness_omitted: int = Field(default=0, ge=0)
+    # The file's executable-name violations. While any remain the document is
+    # editable but cannot be saved, executed or previewed.
+    name_violations: list[PipelineNameViolation] = Field(default_factory=list)
     capabilities: PipelineDocumentCapabilities
 
 
@@ -844,6 +884,9 @@ class EditorIdentityRequestNode(BaseModel):
     label: str = Field(min_length=1, max_length=2048)
     node_type: NodeType
     alias: Annotated[str, Field(min_length=1, max_length=512)] | None = Field(default=None)
+    # The submodel definition the node belongs to in the naming context, or
+    # ``None`` for the pipeline itself. Ids are unique only within one graph.
+    submodel: Annotated[str, Field(min_length=1, max_length=512)] | None = None
     source_handles: list[Annotated[str, Field(min_length=1, max_length=512)]] = Field(
         default_factory=list,
         max_length=1024,
@@ -884,6 +927,20 @@ class EditorIdentitiesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     nodes: list[EditorIdentityRequestNode] = Field(min_length=0, max_length=10_000)
+    # The editor document's naming context, in the representation save
+    # receives. The request's nodes are applied to it by id (added when
+    # absent), each is checked against the naming rule, and the response
+    # carries the document's remaining name violations.
+    graph: Graph | None = None
+    # Give each request node, in order, the first free name instead of
+    # reporting a collision. Requires ``graph``.
+    allocate: bool = False
+
+    @model_validator(mode="after")
+    def _allocation_needs_context(self) -> EditorIdentitiesRequest:
+        if self.allocate and self.graph is None:
+            raise ValueError("allocate requires the document's naming context (graph).")
+        return self
 
     @field_validator("nodes")
     @classmethod
@@ -899,6 +956,11 @@ class EditorIdentityResponseNode(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     node_id: Annotated[str, Field(min_length=1)]
+    # The node's resolved name: its own, or the one allocation gave it.
+    label: Annotated[str, Field(min_length=1)]
+    alias: Annotated[str, Field(min_length=1)] | None
+    # Why the naming rule refuses the node's name (never with ``allocate``).
+    collision: str | None
     function_name: Annotated[str, Field(min_length=1)]
     config_reference: Annotated[str, Field(min_length=1)] | None
     default_input_name: Annotated[str, Field(min_length=1)] | None
@@ -912,6 +974,7 @@ class EditorIdentitiesResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     identities: list[EditorIdentityResponseNode]
+    violations: list[PipelineNameViolation] | None = None
 
     @field_validator("identities")
     @classmethod

@@ -17,6 +17,42 @@ if TYPE_CHECKING:
 logger = get_logger(component="deploy.bundler")
 
 
+class ArtifactKeys(dict[str, Path]):
+    """The bundle's ``<node>__<filename>`` artifact keys, refusing a collision.
+
+    The key scheme is not injective (node ``a`` with ``b__c.pkl`` and node
+    ``a__b`` with ``c.pkl`` both give ``a__b__c.pkl``), and keys equal
+    ignoring case clobber each other on a case-insensitive file system, so
+    a plain dict would keep the later artifact. :meth:`add` refuses either,
+    naming both nodes and files, before anything is uploaded; adding the
+    same file under the same key again is accepted.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._owners: dict[str, tuple[str, str]] = {}
+
+    def add(self, node_id: str, key: str, path: Path) -> None:
+        folded = key.casefold()
+        owner = self._owners.get(folded)
+        if owner is not None:
+            other_node, other_key = owner
+            if other_key == key and self[other_key] == path:
+                return
+            raise DeployError(
+                f"Deploy artifacts {other_key!r} (node {other_node!r}, file "
+                f"{self[other_key].name!r}) and {key!r} (node {node_id!r}, file {path.name!r}) "
+                "would share one bundle key"
+                + ("" if other_key == key else " on a case-insensitive file system")
+                + ". Rename one of the nodes or files.",
+                node_id=node_id,
+                other_node_id=other_node,
+                artifact_key=key,
+            )
+        self._owners[folded] = (node_id, key)
+        self[key] = path
+
+
 def collect_artifacts(
     pruned_graph: PipelineGraph,
     input_node_ids: list[str],
@@ -55,7 +91,7 @@ def collect_artifacts(
     """
     input_set = set(input_node_ids)
     project_root = (project_root or pipeline_dir).resolve()
-    artifacts: dict[str, Path] = {}
+    artifacts = ArtifactKeys()
 
     for node in pruned_graph.nodes:
         nid = node.id
@@ -69,7 +105,7 @@ def collect_artifacts(
             abs_path = _resolve_path(raw_path, pipeline_dir, project_root, nid, "path")
             artifact_name = _artifact_name(nid, abs_path)
             _check_exists(abs_path, nid, "externalFile")
-            artifacts[artifact_name] = abs_path
+            artifacts.add(nid, artifact_name, abs_path)
 
         elif node_type == NodeType.OPTIMISER_APPLY:
             source_type = config.get("sourceType", "")
@@ -83,7 +119,7 @@ def collect_artifacts(
             abs_path = _resolve_path(raw_path, pipeline_dir, project_root, nid, "artifact_path")
             artifact_name = _artifact_name(nid, abs_path)
             _check_exists(abs_path, nid, "optimiserApply")
-            artifacts[artifact_name] = abs_path
+            artifacts.add(nid, artifact_name, abs_path)
 
         elif node_type == NodeType.MODEL_SCORE:
             source_type = config.get("sourceType", "run")
@@ -104,7 +140,7 @@ def collect_artifacts(
                     explicit_contract, pipeline_dir, project_root, nid, "feature_contract_path"
                 )
                 _check_exists(contract_path, nid, "modelScore feature contract")
-                artifacts[f"{nid}__feature_contract.json"] = contract_path
+                artifacts.add(nid, f"{nid}__feature_contract.json", contract_path)
 
             # The node's stored destination ("" = local) is resolved to exactly
             # one backend, after the skip guards so an unconfigured node stays a
@@ -160,7 +196,7 @@ def collect_artifacts(
             # Patch config so the scorer can build a matching artifact key
             config["artifact_path"] = Path(artifact_path).name
             artifact_name = f"{nid}__{config['artifact_path']}"
-            artifacts[artifact_name] = local_path
+            artifacts.add(nid, artifact_name, local_path)
 
             # Bundle the feature contract alongside the model so the deploy
             # scorer can verify train-vs-score drift at load time.
@@ -175,8 +211,10 @@ def collect_artifacts(
 
                 from haute._mlflow_io import _resolve_run_contract
 
-                artifacts[f"{nid}__feature_contract.json"] = Path(
-                    _resolve_run_contract(mlflow, backend, run_id, artifact_path)
+                artifacts.add(
+                    nid,
+                    f"{nid}__feature_contract.json",
+                    Path(_resolve_run_contract(mlflow, backend, run_id, artifact_path)),
                 )
             elif explicit_contract is None:
                 _bundle_feature_contract(nid, local_path, artifacts)
@@ -198,7 +236,7 @@ def collect_artifacts(
 def _bundle_feature_contract(
     node_id: str,
     model_path: Path,
-    artifacts: dict[str, Path],
+    artifacts: ArtifactKeys,
 ) -> None:
     """Add the model's feature contract (if present) to the bundle.
 
@@ -219,14 +257,14 @@ def _bundle_feature_contract(
             looked_at=str(contract_path),
         )
         return
-    artifacts[f"{node_id}__feature_contract.json"] = contract_path
+    artifacts.add(node_id, f"{node_id}__feature_contract.json", contract_path)
 
 
 def _collect_static_data_input(
     node_id: str,
     config: dict,
     pipeline_dir: Path,
-    artifacts: dict[str, Path],
+    artifacts: ArtifactKeys,
     *,
     project_root: Path,
     resources: ExitStack | None,
@@ -251,7 +289,7 @@ def _collect_static_data_input(
                 pipeline_dir,
                 project_root,
             )
-            artifacts[_artifact_name(node_id, source_path)] = source_path
+            artifacts.add(node_id, _artifact_name(node_id, source_path), source_path)
             return
 
         from haute._input_providers import source_cache_identity
@@ -267,8 +305,8 @@ def _collect_static_data_input(
         identity = source_cache_identity(validated, base_dir=pipeline_dir)
         generation = resources.enter_context(SourceCacheStore(_get_project_root()).lease(identity))
         for path in generation.data_paths:
-            artifacts[f"{node_id}__snapshot.{path.name}"] = path
-        artifacts[f"{node_id}__snapshot.meta.json"] = generation.metadata_path
+            artifacts.add(node_id, f"{node_id}__snapshot.{path.name}", path)
+        artifacts.add(node_id, f"{node_id}__snapshot.meta.json", generation.metadata_path)
         if snapshot_provenance is not None:
             snapshot_provenance[node_id] = {
                 "provider": identity.provider,

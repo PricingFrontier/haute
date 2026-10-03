@@ -26,6 +26,12 @@ from haute._ast_helpers import (
     _reject_reserved_global_constants_bindings,
 )
 from haute._config_io import parse_global_constants
+from haute._executable_names import (
+    NameViolation,
+    executable_name_violations,
+    format_name_violations,
+)
+from haute._flatten import flatten_graph
 from haute._graph_builders import (
     _build_edges,
     _build_rf_nodes,
@@ -49,6 +55,7 @@ from haute._parser_submodels import merge_submodels as _merge_submodels
 from haute._parser_submodels import parse_submodel_source as _parse_submodel_source
 from haute._project import get_project_root
 from haute._submodel_paths import resolve_submodel_reference
+from haute._support_code_names import UtilityReader, support_code_violations, utility_reader
 from haute._types import GLOBAL_CONSTANTS_FILE, GlobalConstant
 from haute.errors import ConfigError, ParseError
 from haute.graph_utils import PipelineGraph
@@ -202,7 +209,45 @@ def parse_pipeline_source(
     _read_submodel_source: Callable[[Path], str] | None = None,
     _read_global_constants_bytes: Callable[[Path], bytes] | None = None,
 ) -> PipelineGraph:
-    """Parse pipeline source code and return a PipelineGraph.
+    """Parse pipeline source code strictly, refusing any executable-name violation.
+
+    The arguments are :func:`parse_pipeline_source_with_name_violations`'s.
+    ``haute run``, deploy and codegen's post-save parse use this form, so a
+    file whose names its own module cannot run is refused before anything runs.
+    """
+    graph, violations = parse_pipeline_source_with_name_violations(
+        source,
+        source_file,
+        flatten=flatten,
+        _base_dir=_base_dir,
+        _submodel_base_dir=_submodel_base_dir,
+        _read_submodel_source=_read_submodel_source,
+        _read_global_constants_bytes=_read_global_constants_bytes,
+    )
+    if violations:
+        raise ParseError(format_name_violations(violations), source_file=source_file or None)
+    return graph
+
+
+def parse_pipeline_source_with_name_violations(
+    source: str,
+    source_file: str = "",
+    *,
+    flatten: bool = False,
+    _base_dir: Path | None = None,
+    _submodel_base_dir: Path | None = None,
+    _read_submodel_source: Callable[[Path], str] | None = None,
+    _read_global_constants_bytes: Callable[[Path], bytes] | None = None,
+    _read_utility_source: UtilityReader | None = None,
+) -> tuple[PipelineGraph, list[NameViolation]]:
+    """Parse pipeline source code and return a PipelineGraph with its name violations.
+
+    Structural name collisions, where two entries would collapse into one
+    graph id (two functions of one name in a file, two occurrences of one
+    name, an occurrence named like a root node), still raise. Every other
+    executable-name violation (:mod:`haute._executable_names`) is collected
+    after the graph is built and returned beside it, so the editor can load
+    the file editable and let the user rename.
 
     Args:
         flatten: If True, dissolve submodels into flat graph.
@@ -374,12 +419,15 @@ def parse_pipeline_source(
 
         submodel_occurrence_paths = list(submodel_paths)
         submodel_names = {registration.name for registration in registrations}
+        # Names are checked on the hierarchical graph, where each node is one
+        # authored definition; flattening (below) copies a definition's
+        # children once per occurrence.
         graph = _merge_submodels(
             graph,
             submodel_graphs,
             submodel_files,
             explicit_connects,
-            flatten=flatten,
+            flatten=False,
             registrations=registrations,
             registration_definitions=registration_definitions,
         )
@@ -400,6 +448,19 @@ def parse_pipeline_source(
         graph,
         graph_label=graph.pipeline_name or source_file or "pipeline",
     )
+    name_violations = executable_name_violations(graph)
+    if _read_utility_source is None and _base_dir is not None:
+        # Support code is checked against the utility files the executor would
+        # import: the pipeline directory's, then the project's.
+        utility_dirs = [_base_dir]
+        if _submodel_base_dir is not None and _submodel_base_dir != _base_dir:
+            utility_dirs.append(_submodel_base_dir)
+        _read_utility_source = utility_reader(*utility_dirs)
+    if _read_utility_source is not None:
+        name_violations += support_code_violations(graph, _read_utility_source)
+    if flatten and graph.submodels:
+        graph = flatten_graph(graph)
+        graph._parser_global_constants_declared = declares_global_constants
 
     logger.info(
         "pipeline_parsed",
@@ -408,4 +469,4 @@ def parse_pipeline_source(
         edge_count=len(graph.edges),
         pipeline_name=graph.pipeline_name,
     )
-    return graph
+    return graph, name_violations

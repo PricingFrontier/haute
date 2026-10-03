@@ -218,7 +218,21 @@ submodel constructor that declares constants are `ParseError`s naming the line.
   missing canonical identity fields, invalid structured public ports, or a
   nested submodel
   reference, an exact duplicate edge identity, or any node/edge/handle identity rejected by the
-  conservation gate. A parse that silently returned a plausible-but-incomplete graph here would
+  conservation gate.
+- Name checks are of two kinds. A *structural* collision of canonical graph identities within
+  one graph stays a `ParseError`, because the colliding entries would collapse into one node
+  id: two functions of one name in a file, two submodel occurrences of one name, an
+  occurrence named like a root node. Such a file goes to editor recovery. Every other
+  violation of the codegen specification's executable-name rule (`haute._executable_names`:
+  names equal ignoring case across the root and submodel graphs, a reserved or built-in node
+  name, a reserved node input, and, when the parse has a base directory to read utility files
+  from, the support-code collisions of the codegen specification) is *semantic*: it is
+  collected after the graph is built,
+  without discarding the graph. `parse_pipeline_source_with_name_violations` returns the
+  graph with its violations; `parse_pipeline_source` and `parse_pipeline_file` (the strict
+  form `haute run`, deploy and codegen's post-save parse use) raise one `ParseError` listing
+  every violation, so those refuse such a file before running anything. The editor document
+  loader takes the graph and its violations (server-api). A parse that silently returned a plausible-but-incomplete graph here would
   corrupt the file on the next save, which this codebase treats as strictly worse than a loud
   failure.
 - Config sidecar load/validation failures are raised as `ConfigError`. Editor-only recovery

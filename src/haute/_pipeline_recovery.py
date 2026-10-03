@@ -30,6 +30,7 @@ from haute._editor_identities import (
     recoverable_api_input_source_handles,
     resolve_editor_identity,
 )
+from haute._executable_names import RESERVED_NAMES, ROOT_MODULE, NameViolation
 from haute._graph_builders import (
     PipelineNodeSkeleton,
     _edge_param_names_for_node,
@@ -66,7 +67,7 @@ from haute.errors import ConfigError, HauteError, ParseError
 from haute.parser import (
     _infer_parse_base_dir,
     load_declared_global_constants,
-    parse_pipeline_source,
+    parse_pipeline_source_with_name_violations,
 )
 from haute.schemas import (
     PipelineDiagnosticScope,
@@ -74,6 +75,8 @@ from haute.schemas import (
     PipelineEditorDocument,
     PipelineElementAvailability,
     PipelineLoadStatus,
+    PipelineNameViolation,
+    PipelineNameViolationParty,
     PipelineNodeCompleteness,
     PipelineRecoveryDiagnostic,
     RecoveryGraphSnapshot,
@@ -1689,20 +1692,42 @@ def _recovery_artifacts(
     return artifacts
 
 
+def name_violations_payload(violations: Sequence[NameViolation]) -> list[PipelineNameViolation]:
+    """The wire form of executable-name violations, each party with its submodel."""
+    return [
+        PipelineNameViolation(
+            kind=violation.kind,
+            name=violation.name,
+            message=violation.message(),
+            parties=[
+                PipelineNameViolationParty(
+                    node_id=party.node_id,
+                    label=party.label,
+                    submodel=None if party.module == ROOT_MODULE else party.module,
+                )
+                for party in violation.parties
+            ],
+        )
+        for violation in violations
+    ]
+
+
 def _capabilities(
     status: PipelineLoadStatus,
     *,
     source_selection_trusted: bool,
+    names_valid: bool = True,
 ) -> PipelineDocumentCapabilities:
+    """The admission fence; a file with name violations is editable but not runnable."""
     ready = status == "ready"
     return PipelineDocumentCapabilities(
         can_mutate=ready,
-        can_save=ready,
-        can_execute=ready,
-        can_preview=status != "source_only" and source_selection_trusted,
+        can_save=ready and names_valid,
+        can_execute=ready and names_valid,
+        can_preview=status != "source_only" and source_selection_trusted and names_valid,
         can_manage_submodels=ready,
         can_repair=status == "degraded",
-        reserved_api_input_frame_labels=sorted(keyword.kwlist),
+        reserved_api_input_frame_labels=sorted({*keyword.kwlist, *RESERVED_NAMES}),
     )
 
 
@@ -1848,11 +1873,12 @@ def _load_readable_pipeline_editor_document(
 
     strict_failure: BaseException | None = None
     strict_graph: PipelineGraph | None = None
+    name_violations: list[NameViolation] = []
     try:
         # Parse the exact bytes this document presents. Re-reading the file
         # here could straddle a concurrent external edit and silently disagree
         # with ``source_text`` and the recovery pass.
-        strict_graph = parse_pipeline_source(
+        strict_graph, name_violations = parse_pipeline_source_with_name_violations(
             source,
             source_file=str(path),
             _base_dir=path.parent,
@@ -2077,9 +2103,11 @@ def _load_readable_pipeline_editor_document(
         diagnostics_omitted=max(0, len(diagnostics) - len(kept_diagnostics)),
         completeness=kept_completeness,
         completeness_omitted=max(0, len(completeness) - len(kept_completeness)),
+        name_violations=name_violations_payload(name_violations),
         capabilities=_capabilities(
             load_status,
             source_selection_trusted=source_selection_trusted,
+            names_valid=not name_violations,
         ),
     )
 

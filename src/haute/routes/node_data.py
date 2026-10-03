@@ -6,7 +6,7 @@ from typing import TypeVar
 
 from fastapi import APIRouter
 
-from haute.graph_utils import flatten_graph
+from haute._flatten import flatten_executable_graph
 from haute.routes._job_store import get_job_store
 from haute.routes._node_data_service import NodeDataService
 from haute.routes.pipeline import _ensure_source_file, _validate_runtime_input_paths
@@ -38,7 +38,7 @@ def node_data_service() -> NodeDataService:
 
 
 def _prepared(body: RequestT) -> RequestT:
-    graph = flatten_graph(body.graph)
+    graph = flatten_executable_graph(body.graph)
     _ensure_source_file(graph)
     _validate_runtime_input_paths(graph)
     return body.model_copy(update={"graph": graph})

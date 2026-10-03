@@ -194,8 +194,12 @@ describe("client runtime contracts", () => {
 
   it("resolveEditorNodeIdentities validates the complete strict response", async () => {
     mockFetch.mockReturnValue(jsonResponse({
+      violations: null,
       identities: [{
         node_id: "source",
+        label: "label",
+        alias: null,
+        collision: null,
         function_name: "node_class",
         default_input_name: "node_class",
         source_handle_input_names: {},
@@ -211,8 +215,12 @@ describe("client runtime contracts", () => {
         source_handles: [],
       }],
     })).resolves.toEqual({
+      violations: null,
       identities: [{
         node_id: "source",
+        label: "label",
+        alias: null,
+        collision: null,
         function_name: "node_class",
         default_input_name: "node_class",
         source_handle_input_names: {},
@@ -234,8 +242,12 @@ describe("client runtime contracts", () => {
 
   it("resolveEditorNodeIdentities rejects nested response drift", async () => {
     mockFetch.mockReturnValue(jsonResponse({
+      violations: null,
       identities: [{
         node_id: "source",
+        label: "label",
+        alias: null,
+        collision: null,
         function_name: "source",
         default_input_name: "source",
         source_handle_input_names: {},
@@ -258,12 +270,16 @@ describe("client runtime contracts", () => {
   ) => {
     const identity = (nodeId: string) => ({
       node_id: nodeId,
+      label: "label",
+      alias: null,
+      collision: null,
       function_name: `function_${nodeId}`,
       default_input_name: `input_${nodeId}`,
       source_handle_input_names: {},
       config_reference: null,
     })
     mockFetch.mockReturnValue(jsonResponse({
+      violations: null,
       identities: responseNodeIds.map(identity),
     }))
 
@@ -279,8 +295,12 @@ describe("client runtime contracts", () => {
 
   it("resolveEditorNodeIdentities rejects incomplete source-handle identity coverage", async () => {
     mockFetch.mockReturnValue(jsonResponse({
+      violations: null,
       identities: [{
         node_id: "api",
+        label: "label",
+        alias: null,
+        collision: null,
         function_name: "api",
         default_input_name: null,
         source_handle_input_names: { quotes: "quotes" },
@@ -300,8 +320,12 @@ describe("client runtime contracts", () => {
 
   it("resolveEditorNodeIdentities rejects invalid default-identity nullability", async () => {
     mockFetch.mockReturnValue(jsonResponse({
+      violations: null,
       identities: [{
         node_id: "ordinary",
+        label: "label",
+        alias: null,
+        collision: null,
         function_name: "ordinary",
         default_input_name: null,
         source_handle_input_names: {},
@@ -321,8 +345,12 @@ describe("client runtime contracts", () => {
 
   it("resolveEditorNodeIdentities rejects rewritten API frame identities", async () => {
     mockFetch.mockReturnValue(jsonResponse({
+      violations: null,
       identities: [{
         node_id: "api",
+        label: "label",
+        alias: null,
+        collision: null,
         function_name: "api",
         default_input_name: null,
         source_handle_input_names: { quotes: "rewritten_quotes" },

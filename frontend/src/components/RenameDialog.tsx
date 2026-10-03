@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import ModalShell from "./ModalShell"
+import { validateNodeName } from "../utils/nodeNameValidation"
 
 interface RenameDialogProps {
   defaultValue: string
@@ -7,35 +8,6 @@ interface RenameDialogProps {
     { ok: true } | { ok: false; error: string }
   >
   onCancel: () => void
-}
-
-/** Maximum allowed length for a rename. Longer names break the breadcrumb
- *  bar, context menu, and code generation downstream. */
-const MAX_NAME_LENGTH = 200
-
-/** Unsafe characters. These would corrupt the generated Python code, break
- *  markdown rendering, or produce invisible (control) glyphs:
- *    - `\u0000-\u001f` — all C0 control characters (includes \n, \t, \r, \0)
- *    - `\u007f`        — DEL control char
- *    - `` ` ``         — breaks markdown code spans and our template strings
- *
- *  Unicode letters, digits, punctuation, spaces, dashes, etc. are allowed
- *  freely — sanitisation for code-gen happens in a separate backend identity
- *  step (not here). */
-// eslint-disable-next-line no-control-regex -- deliberately matching control chars
-const UNSAFE_CHAR_REGEX = /[\u0000-\u001f\u007f`]/
-
-/**
- * Validate a human-visible node label.
- *
- * @returns The trimmed value if valid; otherwise null.
- */
-function validateName(raw: string): string | null {
-  const trimmed = raw.trim()
-  if (trimmed.length === 0) return null
-  if (trimmed.length > MAX_NAME_LENGTH) return null
-  if (UNSAFE_CHAR_REGEX.test(trimmed)) return null
-  return trimmed
 }
 
 export default function RenameDialog({ defaultValue, onConfirm, onCancel }: RenameDialogProps) {
@@ -59,12 +31,12 @@ export default function RenameDialog({ defaultValue, onConfirm, onCancel }: Rena
     }
   }, [])
 
-  const validated = validateName(value)
+  const validated = validateNodeName(value)
   const canSubmit = validated !== null
 
   const submit = async () => {
     if (pending) return
-    const result = validateName(value)
+    const result = validateNodeName(value)
     if (result === null) return
     setPending(true)
     setError(null)

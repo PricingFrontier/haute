@@ -40,6 +40,11 @@ import RenameDialog from "./components/RenameDialog"
 import BackgroundJobPolling from "./components/BackgroundJobPolling"
 import PipelineLoadFailureView from "./components/PipelineLoadFailureView"
 import PipelineRecoveryBanner from "./components/PipelineRecoveryBanner"
+import NameViolationsBanner from "./components/NameViolationsBanner"
+import { useNameViolationRevalidation } from "./hooks/useNameViolationRevalidation"
+import { resolveGraphFromRefs } from "./utils/buildGraph"
+import { namingContextGraph as buildNamingContextGraph } from "./utils/namingContext"
+import type { PipelineNameViolation } from "./types/pipelineDocument"
 import type { PipelineRepairTarget } from "./components/PipelineRepairDialog"
 import SourceRecoveryView from "./components/SourceRecoveryView"
 import type { ComparisonInspect } from "./components/ComparisonView"
@@ -50,7 +55,7 @@ import useGraphCanvasState from "./hooks/useGraphCanvasState"
 import useWebSocketSync from "./hooks/useWebSocketSync"
 import usePipelineAPI from "./hooks/usePipelineAPI"
 import useTracing, { type TraceRequestState } from "./hooks/useTracing"
-import useSubmodelNavigation from "./hooks/useSubmodelNavigation"
+import useSubmodelNavigation, { type SubmodelCreateResult } from "./hooks/useSubmodelNavigation"
 import useSubmodelBoundaryEditing from "./hooks/useSubmodelBoundaryEditing"
 import useKeyboardShortcuts from "./hooks/useKeyboardShortcuts"
 import useNodeHandlers from "./hooks/useNodeHandlers"
@@ -370,7 +375,7 @@ type FlowEditorOverlaysProps = {
   onGitModalConfirmed: () => void
   onSave: () => Promise<boolean>
   onMoveConfirmed: (saveFirst: boolean) => Promise<void>
-  onCreateSubmodel: (name: string, nodeIds: string[]) => void
+  onCreateSubmodel: (name: string, nodeIds: string[]) => Promise<SubmodelCreateResult>
   onRenameNode: (nodeId: string, label: string) => Promise<OnUpdateConfigResult>
   pipelineRepairTarget: PipelineRepairTarget | null
   documentSourceFile: string
@@ -467,9 +472,11 @@ function FlowEditorOverlays({
         <SubmodelDialog
           nodeCount={submodelDialog.nodeIds.length}
           onClose={() => setSubmodelDialog(null)}
-          onSubmit={(name) => {
-            onCreateSubmodel(name, submodelDialog.nodeIds)
-            setSubmodelDialog(null)
+          onSubmit={async (name) => {
+            const result = await onCreateSubmodel(name, submodelDialog.nodeIds)
+            // A refused name keeps the dialog open with it, showing why.
+            if (result.ok) setSubmodelDialog(null)
+            return result
           }}
         />
       )}
@@ -869,6 +876,26 @@ function FlowEditor() {
     () => new Set(documentCapabilities?.reserved_api_input_frame_labels ?? []),
     [documentCapabilities?.reserved_api_input_frame_labels],
   )
+  // The whole document as save would receive it: the naming context nodes
+  // being created or renamed are checked against.
+  // Inside a drilled submodel the live child graph replaces its definition's,
+  // and new or renamed nodes are scoped to that definition.
+  const namingScope = activeSubmodelIdentity?.definitionId ?? null
+  const namingContextGraph = useCallback(() => buildNamingContextGraph({
+    graph: resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef),
+    preservedBlocks: preservedBlocksRef.current,
+    drilledDefinition: namingScope,
+    liveNodes: graphRef.current.nodes,
+    liveEdges: graphRef.current.edges,
+  }), [namingScope])
+  const readNamingContextKey = useCallback(() => JSON.stringify([
+    graphRef.current.nodes.map((node) => [node.id, node.data?.label, (node.data?.config as Record<string, unknown> | undefined)?.alias]),
+    parentGraphRef.current?.nodes.map((node) => [node.id, node.data?.label]),
+    submodelsRef.current,
+    preambleRef.current,
+  ]), [])
+  // Created nodes (palette and edge drops, duplicate, paste, Create Instance)
+  // take the first free name the server allocates.
   const resolveCandidateGraphIdentities = useCallback(
     async (
       candidateNodes: readonly Node[],
@@ -879,16 +906,49 @@ function FlowEditor() {
         edges: candidateEdges,
         submodels: submodelsRef.current,
         reservedApiInputFrameLabels,
+        naming: { graph: namingContextGraph(), allocate: true, scope: namingScope },
       })
     },
-    [reservedApiInputFrameLabels],
+    [namingContextGraph, namingScope, reservedApiInputFrameLabels],
   )
-  const resolveNodeIdentities = useCallback(
+  const allocateNodeIdentities = useCallback(
     async (candidateNodes: readonly Node[]): Promise<Node[]> => (
       await resolveCandidateGraphIdentities(candidateNodes, [])
     ).nodes,
     [resolveCandidateGraphIdentities],
   )
+  // A config edit keeps the node's name, so it needs no naming context.
+  const resolveNodeIdentities = useCallback(
+    async (candidateNodes: readonly Node[]): Promise<Node[]> => (
+      await resolveEditorGraphIdentities({
+        nodes: candidateNodes,
+        edges: [],
+        submodels: submodelsRef.current,
+        reservedApiInputFrameLabels,
+      })
+    ).nodes,
+    [reservedApiInputFrameLabels],
+  )
+  // A rename is refused, never re-allocated: the server names the collision.
+  const resolveRenameIdentities = useCallback(
+    async (candidateNodes: readonly Node[]): Promise<Node[]> => (
+      await resolveEditorGraphIdentities({
+        nodes: candidateNodes,
+        edges: [],
+        submodels: submodelsRef.current,
+        reservedApiInputFrameLabels,
+        naming: { graph: namingContextGraph(), allocate: false, scope: namingScope },
+      })
+    ).nodes,
+    [namingContextGraph, namingScope, reservedApiInputFrameLabels],
+  )
+  useNameViolationRevalidation({
+    nodes,
+    edges,
+    submodels,
+    preamble,
+    buildContextGraph: namingContextGraph,
+  })
   const documentSourceRevision = useDocumentStatusStore((s) => s.sourceRevision)
   const documentSourceFile = useDocumentStatusStore((s) => s.sourceFile)
   const documentGraphSynchronized = useDocumentStatusStore((s) => s.graphSynchronized)
@@ -1151,6 +1211,8 @@ function FlowEditor() {
     readOnly: editingReadOnly && !scopedEditingActive,
     reservedApiInputFrameLabels,
     resolveNodeIdentities,
+    resolveRenameIdentities,
+    readNamingContextKey,
     commitGraph: setNodesAndEdgesAndSubmodels,
     setSelectedNode,
     addToast,
@@ -1277,7 +1339,7 @@ function FlowEditor() {
     setLastSelectedId,
     setPreviewData, fitView, getInternalNode,
     submodels,
-    resolveNodeIdentities,
+    resolveNodeIdentities: allocateNodeIdentities,
     commitSharedNodeDeletion,
   })
 
@@ -1517,6 +1579,29 @@ function FlowEditor() {
     centreNode(node.id, NODE_SEARCH_FOCUS_ZOOM)
   }, [centreNode, setGitOpen, setConstantsOpen, setUtilityOpen])
 
+  // A name violation's nodes: those at the root, and the occurrences of a
+  // submodel holding the rest. The first is opened as a click would.
+  const handleSelectNameViolation = useCallback((violation: PipelineNameViolation) => {
+    const rootIds = new Set(
+      violation.parties.filter((party) => party.submodel === null).map((party) => party.node_id),
+    )
+    const definitions = new Set(
+      violation.parties.flatMap((party) => (party.submodel === null ? [] : [party.submodel])),
+    )
+    const selected = graphRef.current.nodes.filter((node) => (
+      rootIds.has(node.id)
+      || (node.data?.nodeType === "submodel"
+        && definitions.has(String((node.data?.config as Record<string, unknown> | undefined)?.definitionId)))
+    ))
+    if (selected.length === 0) return
+    onNodesChange(graphRef.current.nodes.map((node) => ({
+      type: "select" as const,
+      id: node.id,
+      selected: selected.includes(node),
+    })))
+    handleSelectRecoveryElement(selected[0].id)
+  }, [handleSelectRecoveryElement, onNodesChange])
+
   // Point the assistant at a failing node: select it alone, as a click would,
   // and open the panel with its preview error on the next message.
   const handleAskAssistantToFix = useCallback((nodeId: string) => {
@@ -1738,6 +1823,7 @@ function FlowEditor() {
 
         <main className="flex-1 flex flex-col min-w-0">
           <PipelineRecoveryBanner onSelectElement={handleSelectRecoveryElement} />
+          <NameViolationsBanner onSelectViolation={handleSelectNameViolation} />
           {sessionExpired && (
             <div
               role="alert"

@@ -41,14 +41,14 @@ describe("ConstantEditor", () => {
     expect(screen.getByDisplayValue("100")).toBeTruthy()
   })
 
-  it("add button adds a new row with default name constant_N+1", () => {
+  it("add button adds a new row named the first free constant_<n>", () => {
     const onUpdate = vi.fn()
     const existing = [{ name: "rate", value: "0.05" }]
     render(<ConstantEditor config={{ values: existing }} onUpdate={onUpdate} />)
     fireEvent.click(screen.getByText("Add value"))
     expect(onUpdate).toHaveBeenCalledWith("values", [
       ...existing,
-      { name: "constant_2", value: "0" },
+      { name: "constant_1", value: "0" },
     ])
   })
 
@@ -92,6 +92,41 @@ describe("ConstantEditor", () => {
     expect(onUpdate).toHaveBeenCalledWith("values", [
       { name: "cap", value: "100" },
     ])
+  })
+
+  it("marks both rows of a name two values share", () => {
+    const values = [
+      { name: "rate", value: "1" },
+      { name: "rate", value: "2" },
+      { name: "cap", value: "100" },
+    ]
+    render(<ConstantEditor config={{ values }} onUpdate={vi.fn()} />)
+    expect(screen.getByTestId("constant-name-0-error")).toHaveTextContent("Another value is named rate")
+    expect(screen.getByTestId("constant-name-1-error")).toHaveTextContent("Another value is named rate")
+    expect(screen.queryByTestId("constant-name-2-error")).toBeNull()
+  })
+
+  it("refuses a typed name another value uses, keeping it on screen", () => {
+    const onUpdate = vi.fn()
+    const values = [
+      { name: "rate", value: "1" },
+      { name: "cap", value: "100" },
+    ]
+    render(<ConstantEditor config={{ values }} onUpdate={onUpdate} />)
+    const nameInput = screen.getByDisplayValue("cap")
+    fireEvent.change(nameInput, { target: { value: "rate" } })
+    fireEvent.blur(nameInput)
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(nameInput).toHaveValue("rate")
+    expect(screen.getByTestId("constant-name-1-error")).toHaveTextContent("Another value is named rate")
+  })
+
+  it("offers the first free name after a deletion", () => {
+    const onUpdate = vi.fn()
+    const values = [{ name: "constant_2", value: "0" }]
+    render(<ConstantEditor config={{ values }} onUpdate={onUpdate} />)
+    fireEvent.click(screen.getByText("Add value"))
+    expect(onUpdate).toHaveBeenCalledWith("values", [...values, { name: "constant_1", value: "0" }])
   })
 
   it("multiple adds increment the counter", () => {

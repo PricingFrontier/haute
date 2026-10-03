@@ -144,6 +144,8 @@ type ValidatedTextFieldProps = {
   /** A non-blocking advisory, shown only when there is no error. */
   warning?: string | null
   dataTestId: string
+  /** The input's id, for a `<label htmlFor>` outside the field. */
+  id?: string
   containerClassName: string
   className: string
   style: CSSProperties
@@ -163,6 +165,7 @@ export function ValidatedTextField({
   commitError = null,
   warning = null,
   dataTestId,
+  id,
   containerClassName,
   className,
   style,
@@ -176,6 +179,7 @@ export function ValidatedTextField({
     <div className={containerClassName}>
       <input
         data-testid={dataTestId}
+        id={id}
         type="text"
         value={shown}
         aria-invalid={error !== null ? true : undefined}

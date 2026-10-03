@@ -17,6 +17,33 @@ export function inferBandingType(colName: string, colMap: Record<string, string>
   return isNumericDtype(dtype) || isTemporalDtype(dtype) ? "breakpoints" : "categorical"
 }
 
+/** Whether execution applies the factor rather than skipping it as a draft
+ *  (the backend's `banding_factor_is_active`). */
+export function bandingFactorIsActive(factor: BandingFactor): boolean {
+  return Boolean(factor.column && factor.outputColumn && (factor.rules ?? []).length > 0)
+}
+
+/** For each active factor, the other active factors writing its output column,
+ *  which execution refuses; a draft writes nothing and is left out. */
+export function bandingOutputCollisions(factors: BandingFactor[]): Map<number, number[]> {
+  const writers = new Map<string, number[]>()
+  factors.forEach((factor, index) => {
+    if (!bandingFactorIsActive(factor)) return
+    writers.set(factor.outputColumn, [...(writers.get(factor.outputColumn) ?? []), index])
+  })
+  const collisions = new Map<number, number[]>()
+  for (const indices of writers.values()) {
+    if (indices.length < 2) continue
+    for (const index of indices) collisions.set(index, indices.filter((other) => other !== index))
+  }
+  return collisions
+}
+
+/** The message for a factor whose output column other factors also write. */
+export function bandingOutputCollisionMessage(others: number[], outputColumn: string): string {
+  return others.map((other) => `Factor ${other + 1} also writes ${outputColumn}`).join("; ")
+}
+
 // ---------------------------------------------------------------------------
 // Categorical duplicate detection
 // ---------------------------------------------------------------------------

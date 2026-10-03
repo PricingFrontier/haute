@@ -317,6 +317,11 @@ The cause node joins the requested and boundary nodes in the canvas warning stat
    state updates verify both mounted state and the module still selected, dropping stale replies.
 4. Delete explicitly cancels a pending save for the deleted file. Create refreshes the list,
    loads the new module and passes the server-returned import line back to the preamble owner.
+   The typed name stays in the create field until a create succeeds; a refused create (a
+   keyword, a Windows device name, a case-variant of an existing module, a syntax error) shows
+   its message under the file selector (`utility-create-error`) in every state, the empty
+   panel and the Imports view included, and blurring the field keeps it while the refusal is
+   shown.
 
 ## Edge cases and invariants
 

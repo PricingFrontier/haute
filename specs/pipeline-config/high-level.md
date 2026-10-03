@@ -595,7 +595,16 @@ Using a folder-backed node type without a `config=` sidecar raises, naming the c
 config folder and suggesting `haute init`. A JSON sidecar with a repeated key is rejected at
 read time rather than silently keeping the last value. Two node functions sharing a name are
 rejected, both at live decorator-registration time and again at static parse time (the
-function name becomes the graph node id, so a silent collision would drop a node). An
+function name becomes the graph node id, so a silent collision would drop a node).
+Registration also applies the codegen specification's executable-name rule, naming the node:
+a reserved or built-in name, a name equal ignoring case to another node or submodel
+occurrence, and a module-level function whose name the module already binds to something
+else (a preamble helper, an import) are refused, while `pipeline.polars(f)` on an
+already-defined `f` registers it. A
+Constant node whose `values` hold two entries with one non-empty name is refused with a
+node-config error naming the name, wherever its frame is built (`constant_frame`, which
+canvas execution and a standalone run share), rather than keeping the second value; an
+entry without a name is skipped, as before. An
 `async def` node body is rejected at parse time. A user-declared `contract=` that disagrees
 with the contract derived from the rest of the node's config raises, naming which side
 (inputs/outputs) mismatched and what was missing or extra on each. Ambiguous or absent
@@ -612,4 +621,6 @@ a bad or duplicate name, a value that does not fit its type, both or neither of 
 `by_source`) is a load error naming the file and the entry: the pipeline still parses, with a
 graph warning, and no save rewrites or deletes the file. A constructor keyword naming any other
 path, a submodel constructor that names one, and any other binding of `global_constants` are
-parse errors naming the line.
+parse errors naming the line, apart from a node function of that name: it breaks the codegen
+naming rule like a node named `pl`, which the strict parse refuses and the editor load reports
+as a renameable name violation.

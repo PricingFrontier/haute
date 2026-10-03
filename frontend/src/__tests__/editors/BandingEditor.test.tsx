@@ -439,6 +439,41 @@ describe("BandingEditor", () => {
       expect(screen.getByLabelText("Output Column")).toHaveValue("cover_band")
     })
 
+    it("marks both active factors that write one output column", () => {
+      const config = { factors: [factor("age", "age_band"), factor("driver_age", "age_band"), factor("region", "r")] }
+      renderEditor(<BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />)
+      fireEvent.click(screen.getByRole("button", { name: "Issues 2" }))
+      const rows = within(columnList()).getAllByRole("button", { name: /complete$/ })
+      expect(rows.map((row) => row.getAttribute("title"))).toEqual([
+        "Factor 2 also writes age_band",
+        "Factor 1 also writes age_band",
+      ])
+    })
+
+    it("refuses an output column another active factor writes, keeping the typed name", () => {
+      const onUpdate = vi.fn()
+      const config = { factors: [factor("age", "age_band"), factor("driver_age", "driver_band")] }
+      renderEditor(<BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />)
+      fireEvent.click(rowOf("driver_band"))
+      const output = screen.getByLabelText("Output Column")
+      fireEvent.change(output, { target: { value: "age_band" } })
+      fireEvent.blur(output)
+      expect(onUpdate).not.toHaveBeenCalled()
+      expect(output).toHaveValue("age_band")
+      expect(screen.getByTestId("banding-output-column-error")).toHaveTextContent("Factor 1 also writes age_band")
+    })
+
+    it("lets a draft factor share an output column, since it writes nothing", () => {
+      const onUpdate = vi.fn()
+      const config = { factors: [factor("age", "age_band"), { ...factor("driver_age", ""), rules: [] }] }
+      renderEditor(<BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />)
+      fireEvent.click(rowOf("driver_age"))
+      const output = screen.getByLabelText("Output Column")
+      fireEvent.change(output, { target: { value: "age_band" } })
+      fireEvent.blur(output)
+      expect(outputs(onUpdate)).toEqual(["age_band", "age_band"])
+    })
+
     it("shows only incomplete factors under Issues", () => {
       const config = { factors: [factor("age", "first"), { ...factor("region", "second"), rules: [] }] }
       renderEditor(<BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />)

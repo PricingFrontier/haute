@@ -225,7 +225,12 @@ must resolve the original pipeline-owned sidecars.
   submission time; an effect-mirrored ref is never the source of a create
   request.  Creation sets the occurrence node id to the sanitised name (`node.id = sm_name`);
   the initial definition id and alias are the sanitised name, and the occurrence config is exactly
-  `{definitionId, alias}`. Cross-boundary edges are grouped into stable public
+  `{definitionId, alias}`. A grouping whose result breaks the codegen naming rule where the
+  submitted graph did not (a reserved or built-in name, a name a selected child or another node
+  takes) is refused with HTTP 400 and the rule's messages, and nothing changes. Violations are
+  compared by kind, name and the labels involved, so one the graph already had does not block
+  grouping when its node moves into the new definition; the Create
+  Submodel dialog shows the refusal with the typed name. Cross-boundary edges are grouped into stable public
   ports: each logical input created by extraction records one or more ordered
   internal targets and each output records one internal source. Parent handles are
   `in__<name>`/`out__<name>`, never internal node ids, and each logical

@@ -28,6 +28,7 @@ from haute._execution_admission import (
     isolated_execution_budget,
 )
 from haute._execution_context import ExecutionProfile
+from haute._flatten import flatten_executable_graph
 from haute._interactive_workers import (
     InteractiveWorkerCrashedError,
     InteractiveWorkerMemoryLimitError,
@@ -42,7 +43,7 @@ from haute._pipeline_settings import project_pipeline_settings
 from haute._worker_isolation import resolve_worker_memory_enforcement
 from haute.errors import ConfigError, ContractMismatchError
 from haute.executor import execute_graph
-from haute.graph_utils import NodeType, flatten_graph
+from haute.graph_utils import NodeType
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_http_exception,
@@ -135,7 +136,7 @@ async def output_assemble_dry_run(
     except OutputMappingSchemaError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    graph = flatten_graph(body.graph)
+    graph = flatten_executable_graph(body.graph)
     if not graph.nodes:
         raise HTTPException(status_code=400, detail="Empty graph")
     node = graph.node_map.get(body.node_id)

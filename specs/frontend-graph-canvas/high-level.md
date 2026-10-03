@@ -66,8 +66,8 @@ One identity per submodel occurrence: the occurrence node id is its name
 alias and rebinds downstream consumers without code edits; as for an ordinary
 node, the React Flow node id stays until Save, when codegen emits the name and
 the reparse re-keys the id. It never renames the definition file. A proposed occurrence rename is refused early if
-the name is not a canonical identifier (error: `Occurrence names must be identifiers; use "<functionName>".`)
-or conflicts with an existing node id, label, or submodel alias (error: `"<name>" is already used by another node.`).
+the name is not a canonical identifier (error: `Occurrence names must be identifiers; use "<functionName>".`),
+and, like any rename, when the server's naming rule refuses it (below).
 Exactly one occurrence is the editable definition owner; created instances persist
 `instanceOf` pointing directly at the owner's occurrence name. Opening the owner
 navigates to the shared definition editor and shows that edits affect every
@@ -285,6 +285,28 @@ candidate, with the error toast.
   the currently active node, owns local UI state (selected node, context
   menu, dialogs), and gates Save/Commit behind the current
   version-control working-branch state before delegating to the save API.
+- **Names are allocated on create and checked on rename.** Every node-creating
+  gesture (palette drop, edge-drop, edge-join insertion, Duplicate, paste, Create
+  Instance) sends its new nodes, with the whole document as save would receive it
+  (preserved blocks included; inside a drilled submodel, the live child graph in place of its
+  definition's, and every node scoped to that definition) as naming context, to the editor
+  identity request with `allocate`; each node takes
+  the label the server allocates, the first free one in request order (`X copy`,
+  then `X copy 2`; a default such as `Transform 7` gains a suffix when taken), and a
+  submodel occurrence the first free alias (`rates`, then `rates_2`), which is also
+  its label. The batch is applied together or not at all behind the existing
+  stale-request fences. A rename sends the same context without `allocate`, and is judged
+  again when any other name or the preamble changed while the server judged it, whether the
+  verdict accepted or refused it; a name
+  the naming rule refuses (another node's name ignoring case, a reserved or built-in
+  name, a support-code helper) comes back as a collision whose message the rename
+  surface shows inline, and nothing is applied. The Rename dialog and the node
+  panel's header share one client validator for the label's shape
+  (`utils/nodeNameValidation.ts`: non-blank, at most 200 characters, no control
+  characters or backticks); the header shows its refusal inline too. A config edit
+  that does not rename keeps the node's name and sends no naming context. The Create
+  Submodel dialog stays open with the typed name and shows a refusal inline,
+  closing only on success.
 - **Node CRUD.** Deleting an ordinary node removes it and every edge touching
   it as one atomic undo step. Duplicating offsets the copy's position and is a
   no-op for singleton node types (Quote Input, Quote Response, and Source
@@ -559,6 +581,15 @@ candidate, with the error toast.
   graph before either canvas renders; persisted history is not expected to
   contain transient `_functionName`, `_defaultInputName`, or
   `_sourceHandleInputNames` metadata.
+- **Name violations banner.** A ready document loaded with `name_violations` shows a
+  persistent banner listing each violation's message; clicking one selects its nodes (a
+  submodel child by the occurrences of its definition) and opens the first. Save, run and
+  preview are fenced while the list is non-empty. After each edit that could change a name
+  (positions excepted; preamble edits included) the browser sends the whole graph, as save would, to the editor
+  identity request and adopts the violations it returns, a newer edit superseding an answer
+  in flight; the banner shrinks as renames fix them, and when the list is empty the fence
+  lifts to the ready document's own capabilities (preview still needing a trusted source
+  selection). A document loaded without violations is not revalidated this way.
 - **Recovery canvas rendering and minimal repair.** Unavailable and blocked nodes
   remain selectable and expose their diagnostics, source/config location, and
   deterministic blocking path instead of a normal editor. The recovery banner
@@ -614,8 +645,10 @@ candidate, with the error toast.
   *no* handle at all rather than a fabricated one — consistent with the
   codebase-wide preference for loud failure over a fallback that's wrong and
   hard to notice. The editor mirrors the backend's identifier rule exactly
-  (ASCII identifier `/^[A-Za-z_][A-Za-z0-9_]*$/`, no Python hard keyword)
-  before commit, because the label is also the downstream code argument
+  (ASCII identifier `/^[A-Za-z_][A-Za-z0-9_]*$/`, none of the server's reserved labels: the
+  Python hard keywords and the names generated code binds itself, `haute`, `pl`, `pipeline`,
+  `submodel` and `global_constants`, served as the document capability
+  `reserved_api_input_frame_labels`) before commit, because the label is also the downstream code argument
   name; the backend rule is ASCII-only precisely so this mirror can be
   exact rather than an approximation of Unicode `str.isidentifier()`.
 - **Connections that would duplicate an input name are rejected at drag

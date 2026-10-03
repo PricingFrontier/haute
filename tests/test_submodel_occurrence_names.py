@@ -334,9 +334,7 @@ def test_alias_colliding_with_root_node_function_name_fails_codegen() -> None:
         submodels={"def_pricing": _make_definition()},
     )
 
-    with pytest.raises(
-        ParseError, match="Multiple node labels sanitize to the same Python function name"
-    ):
+    with pytest.raises(ParseError, match="take one name, `pricing`"):
         graph_to_code_multi(
             graph,
             pipeline_name="main",

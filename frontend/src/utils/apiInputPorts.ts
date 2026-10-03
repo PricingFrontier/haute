@@ -552,7 +552,7 @@ export function apiInputLabelIssueMessage(issue: ApiInputLabelIssue | null): str
       return "A label is required - it names this table's frame."
     case "identifier":
       return issue.reason === "keyword"
-        ? "A frame label cannot be a Python hard keyword."
+        ? "A frame label cannot be a Python hard keyword or a name node code binds itself (such as pl or pipeline)."
         : "A frame label must be an ASCII identifier (letters, digits, and underscores only)."
     case "duplicate":
       return `Duplicate label: "${issue.other}" is already used by another table.`

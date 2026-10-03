@@ -178,6 +178,25 @@ describe("UtilityPanel", () => {
     expect(screen.queryByText("Saved")).toBeNull()
   })
 
+  it("shows a refused create in the empty panel, keeping the typed name", async () => {
+    mockListFiles.mockResolvedValue({ files: [] })
+    mockCreateFile.mockRejectedValue(
+      new MockApiError("Invalid module name: 'class' is a Python keyword", 400),
+    )
+
+    render(<UtilityPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByText("No utility files yet.")).toBeInTheDocument())
+    fireEvent.click(screen.getByText("Create one"))
+    const input = screen.getByPlaceholderText("module_name")
+    fireEvent.change(input, { target: { value: "class" } })
+    fireEvent.submit(input.closest("form")!)
+
+    expect(await screen.findByTestId("utility-create-error")).toHaveTextContent("is a Python keyword")
+    expect(screen.getByPlaceholderText("module_name")).toHaveValue("class")
+    fireEvent.blur(screen.getByPlaceholderText("module_name"))
+    expect(screen.getByPlaceholderText("module_name")).toHaveValue("class")
+  })
+
   it("calls onImportAdded on create", async () => {
     mockListFiles.mockResolvedValue({ files: [] })
     mockCreateFile.mockResolvedValue({

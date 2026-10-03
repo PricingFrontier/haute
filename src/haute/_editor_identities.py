@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import keyword
 import re
 from collections.abc import Mapping
@@ -9,8 +10,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from haute._config_io import config_path_for_node, has_config_folder
+from haute._executable_names import ROOT_MODULE
 from haute._graph_utils import _sanitize_func_name, executable_input_name
-from haute._types import NodeType
+from haute._support_code_names import UtilityReader, name_violations
+from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 
 
 @dataclass(frozen=True)
@@ -104,3 +107,125 @@ def resolve_editor_identity(
         default_input_name=default_input_name,
         source_handle_input_names=mapping,
     )
+
+
+@dataclass(frozen=True)
+class NamingCandidate:
+    """A node being created or renamed, as the editor would apply it."""
+
+    node_id: str
+    label: str
+    node_type: NodeType
+    alias: str | None
+    #: The definition holding the node, or ``None`` for the pipeline itself.
+    submodel: str | None = None
+
+
+@dataclass(frozen=True)
+class NamedCandidate:
+    """A candidate's resolved name, and why it may not have it (without allocation)."""
+
+    label: str
+    alias: str | None
+    collision: str | None
+
+
+#: The violation kinds a node's own name causes, which renaming it resolves.
+_NAME_KINDS = frozenset({"duplicate", "reserved", "builtin", "support_collision"})
+
+#: How many suffixes allocation tries before giving up on a base name.
+_MAX_ALLOCATION_ATTEMPTS = 10_000
+
+
+def _located(graph: PipelineGraph, candidate: NamingCandidate) -> str:
+    """The module a candidate belongs to: the pipeline, or the definition it names."""
+    if candidate.submodel is None:
+        return ROOT_MODULE
+    if candidate.submodel not in (graph.submodels or {}):
+        raise ValueError(f"Submodel {candidate.submodel!r} is not in the naming context.")
+    return candidate.submodel
+
+
+def _with_name(graph: PipelineGraph, candidate: NamingCandidate, label: str) -> PipelineGraph:
+    """*graph* with the candidate present under *label* (and alias, for an occurrence)."""
+    alias = label if candidate.node_type == NodeType.SUBMODEL else None
+
+    def renamed(node: GraphNode) -> GraphNode:
+        config = dict(node.data.config)
+        if alias is not None:
+            config["alias"] = alias
+        data = node.data.model_copy(update={"label": label, "config": config})
+        return node.model_copy(update={"data": data})
+
+    module = _located(graph, candidate)
+    scoped = graph if module == ROOT_MODULE else (graph.submodels or {})[module].graph
+    if candidate.node_id in scoped.node_map:
+        nodes = [renamed(n) if n.id == candidate.node_id else n for n in scoped.nodes]
+    else:
+        config: dict[str, Any] = {} if alias is None else {"alias": alias}
+        added = GraphNode(
+            id=candidate.node_id,
+            data=NodeData(label=label, nodeType=candidate.node_type, config=config),
+        )
+        nodes = [*scoped.nodes, added]
+    updated = scoped.model_copy(update={"nodes": nodes})
+    if module == ROOT_MODULE:
+        return updated
+    submodels = dict(graph.submodels or {})
+    submodels[module] = submodels[module].model_copy(update={"graph": updated})
+    return graph.model_copy(update={"submodels": submodels})
+
+
+def _name_problem(
+    graph: PipelineGraph, candidate: NamingCandidate, read_utility: UtilityReader
+) -> str | None:
+    module = _located(graph, candidate)
+    for violation in name_violations(graph, read_utility):
+        if violation.kind in _NAME_KINDS and any(
+            party.node_id == candidate.node_id and party.module == module
+            for party in violation.parties
+        ):
+            return violation.message()
+    return None
+
+
+def _suffixed(candidate: NamingCandidate, base: str, attempt: int) -> str:
+    if attempt == 1:
+        return base
+    # An occurrence's alias stays a canonical identifier.
+    return f"{base}_{attempt}" if candidate.node_type == NodeType.SUBMODEL else f"{base} {attempt}"
+
+
+def name_candidates(
+    graph: PipelineGraph,
+    candidates: list[NamingCandidate],
+    read_utility: UtilityReader,
+    *,
+    allocate: bool,
+) -> tuple[list[NamedCandidate], PipelineGraph]:
+    """Name each candidate in request order against *graph*, and return the graph after.
+
+    With *allocate*, a candidate takes the first free name the naming rule
+    allows (``label``, ``label 2``, ... or ``alias``, ``alias_2``, ...),
+    counting the names earlier candidates took. Without it, a candidate keeps
+    its name, and a name the rule refuses comes back as its collision.
+    """
+    read_utility = functools.cache(read_utility)
+    named: list[NamedCandidate] = []
+    for candidate in candidates:
+        base = candidate.alias if candidate.node_type == NodeType.SUBMODEL else candidate.label
+        if base is None:
+            raise ValueError(f"Submodel node {candidate.label!r} requires an alias.")
+        attempts = range(1, _MAX_ALLOCATION_ATTEMPTS + 1) if allocate else range(1, 2)
+        for attempt in attempts:
+            label = _suffixed(candidate, base, attempt)
+            trial = _with_name(graph, candidate, label)
+            problem = _name_problem(trial, candidate, read_utility)
+            if problem is None or not allocate:
+                break
+        else:
+            raise ValueError(f"No free name for node {candidate.label!r}.")
+        graph = trial
+        alias = label if candidate.node_type == NodeType.SUBMODEL else None
+        named.append(NamedCandidate(label=label, alias=alias, collision=problem))
+    return named, graph

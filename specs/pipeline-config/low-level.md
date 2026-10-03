@@ -612,6 +612,9 @@ it on the reading node instead of aborting the walk, and every other run propaga
   root not found, or found without a surrounding git repository.
 - **`ParseError`** (`haute.errors`) — `async def` node body; duplicate node function name;
   Explore-node topology violations (`_graph_shape.py`).
+- **`NodeConfigError`** (`haute.errors`, setting `values`) — a Constant node with two
+  entries of one non-empty name, raised by `_node_apply.constant_frame` (canvas builder and
+  standalone run alike) before any frame is built.
 - **`ContractMismatchError`** (`haute.errors`) — a user-declared `contract=` disagrees with
   the config-derived contract on the inputs and/or outputs side; the message lists which
   columns are missing from, or extra in, the builder-derived side.
@@ -694,7 +697,8 @@ API and real JSON round-trips rather than mocks:
 - **`test_standalone_nodes.py`** — the standalone configured-node runtime: a sidecar-typed node without `config=` is
   called as a plain function; every configured type run as a declaration returns what its work produces (a Data Input's loaded rows, a Model
   Score's predictions, an Output's assembled document, a Live Switch's scenario-selected
-  frame, an Edge Join's joined rows, a Constant's frame from its sidecar); a Data Input, Model
+  frame, an Edge Join's joined rows, a Constant's frame from its sidecar, and a Constant with two
+  entries of one name refused as the executor refuses it); a Data Input, Model
   Score, Rating Step, Scenario Expander and Explore hook receives the configured result as
   `df` and an External File hook its inputs and `obj`; a sidecar edit changes the next run
   without re-importing the module; `has_empty_body` accepts `...`, `pass` and a docstring and

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
-from haute.graph_utils import flatten_graph
+from haute._flatten import flatten_executable_graph
 from haute.routes._rating_levels import RatingLevelsService
 from haute.routes._synchronous_analysis import run_until_disconnected
 from haute.routes.node_data import _node_data_service
@@ -24,7 +24,7 @@ async def rating_levels(body: RatingLevelsRequest, request: Request) -> RatingLe
     abandoned one is cancelled rather than left scanning the whole dataset for
     an answer nobody will read.
     """
-    graph = flatten_graph(body.graph)
+    graph = flatten_executable_graph(body.graph)
     _ensure_source_file(graph)
     _validate_runtime_input_paths(graph)
     prepared = body.model_copy(update={"graph": graph})

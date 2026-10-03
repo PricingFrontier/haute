@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef } from "react"
 
+import { nodeNameIssue } from "../utils/nodeNameValidation"
 import type { OnUpdateConfigResult } from "./editors"
 
 export type NodePanelTab = "config" | "polars" | "columns"
@@ -94,10 +95,16 @@ export function useNodeRenameSession(nodeId: string): NodeRenameSession {
       dispatch({ type: "settled", error: "Node rename handler is unavailable." })
       return
     }
+    // The same shape check the Rename dialog makes; collisions are the server's.
+    const issue = nodeNameIssue(label)
+    if (issue !== null) {
+      dispatch({ type: "settled", error: issue })
+      return
+    }
     dispatch({ type: "started" })
     let pending: Promise<OnUpdateConfigResult>
     try {
-      pending = onRenameNode(nodeId, label)
+      pending = onRenameNode(nodeId, label.trim())
     } catch (error: unknown) {
       pending = Promise.reject(error)
     }

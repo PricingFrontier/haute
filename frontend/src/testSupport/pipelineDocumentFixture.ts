@@ -5,6 +5,7 @@ import type { GlobalConstant } from "../utils/globalConstants"
 
 import type {
   PipelineDiagnostic,
+  PipelineNameViolation,
   PipelineNodeCompleteness,
   PipelineDocumentCapabilities,
   PipelineEditorDocument,
@@ -41,6 +42,7 @@ export interface PipelineDocumentFixture extends CanonicalGraphFixture {
   diagnostics_omitted?: number
   completeness?: PipelineNodeCompleteness[]
   completeness_omitted?: number
+  name_violations?: PipelineNameViolation[]
   capabilities?: Partial<PipelineDocumentCapabilities>
   recoveryNodes?: RecoveryNode[]
   recoveryEdges?: RecoveryEdge[]
@@ -251,6 +253,7 @@ export function makePipelineEditorDocument(
     diagnostics_omitted: fixture.diagnostics_omitted ?? 0,
     completeness: fixture.completeness ?? [],
     completeness_omitted: fixture.completeness_omitted ?? 0,
+    name_violations: fixture.name_violations ?? [],
     capabilities: capabilitiesFor(status, trusted, fixture.capabilities),
   }
 }
