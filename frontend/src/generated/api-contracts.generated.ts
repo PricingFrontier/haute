@@ -247,7 +247,8 @@ export interface PipelineNameViolation {
     | 'support_input'
     | 'support_conflict'
     | 'support_reserved'
-    | 'support_unsupported';
+    | 'support_unsupported'
+    | 'output_destination';
   message: string;
   name: string;
   parties: PipelineNameViolationParty[];

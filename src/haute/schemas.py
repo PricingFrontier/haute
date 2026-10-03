@@ -833,6 +833,7 @@ class PipelineNameViolation(BaseModel):
         "support_conflict",
         "support_reserved",
         "support_unsupported",
+        "output_destination",
     ]
     name: str
     message: str = Field(min_length=1)

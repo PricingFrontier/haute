@@ -45,13 +45,26 @@ Comparison between two node names ignores case.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| NAME-05 | Planned | P1 | Duplicate keys inside one node's config are refused instead of keeping the last. |
-| NAME-01 | Planned | P2 | One executable-name rule, with reserved names, applied at every entry point. |
-| NAME-02 | Planned | P2 | A loaded file with colliding names says so and stays renameable. |
-| NAME-03 | Planned | P2 | Node and input names cannot collide with support code, and support code cannot collide with itself. |
-| NAME-04 | Planned | P2 | The editor allocates free names on create and refuses colliding renames inline. |
-| NAME-07 | Planned | P3 | Utility file names are importable and portable, and the panel shows refusals. |
-| NAME-08 | Planned | P3 | Deploy artifact keys and Data Output destinations cannot collide. |
+| NAME-05 | Delivered | P1 | Duplicate keys inside one node's config are refused instead of keeping the last. |
+| NAME-01 | Delivered | P2 | One executable-name rule, with reserved names, applied at every entry point. |
+| NAME-02 | Delivered | P2 | A loaded file with colliding names says so and stays renameable. |
+| NAME-03 | Delivered | P2 | Node and input names cannot collide with support code, and support code cannot collide with itself. |
+| NAME-04 | Delivered | P2 | The editor allocates free names on create and refuses colliding renames inline. |
+| NAME-07 | Delivered | P3 | Utility file names are importable and portable, and the panel shows refusals. |
+| NAME-08 | Delivered | P3 | Deploy artifact keys and Data Output destinations cannot collide. |
+
+## Delivery notes
+
+Delivered on 3 October 2026 on the `duplicate-names` branch, one commit per package. Two
+departures from the plans below:
+- `df` is not among the reserved input names of `NAME-01`: it keeps its existing rule (an input
+  of that name is refused where node code reads it and is an ordinary input on a node type
+  without code), which the codegen and pipeline-config specifications already state, and the
+  API Input editor does not reserve it.
+- `NAME-04`'s editors that set an input binding without creating or renaming a node (API frame
+  labels, `inputMapping` aliases, submodel ports) do not yet ask the identity request for the
+  edited binding's violations. Such a binding is still refused at save and by the strict parse,
+  with the `NAME-01`/`NAME-03` message, and a reserved frame label is refused inline.
 
 ## Planned improvements
 

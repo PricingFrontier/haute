@@ -156,6 +156,7 @@ const NAME_VIOLATION_KINDS = [
   "support_conflict",
   "support_reserved",
   "support_unsupported",
+  "output_destination",
 ] as const
 
 /** One name violation (codegen's naming rule, or support code's) with the server's message;

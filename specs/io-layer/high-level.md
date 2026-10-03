@@ -266,6 +266,18 @@ When `overwrite=false`, an existing data-output destination raises
 `DataOutputDestinationExistsError`; the server maps that explicit refusal to HTTP 409 rather
 than treating it as an I/O failure or replacing the destination.
 
+Two Data Output nodes cannot target one destination. A destination's identity
+(`_executable_names.data_output_destination`) is, for a file or lakehouse target, its path as
+the writer resolves it (a bare file name under `outputs/`, the format's default extension
+added), compared ignoring case on Windows and macOS; for a database target, its connection (or
+URI) and its table as written, so one table name in two schemas is two destinations. A
+destination missing a required part (a new Data Output starts with an empty path) has no
+identity: it is not compared, stays an editable, saveable draft, and its completeness is
+required only when it runs. A Data Output inside a submodel definition writes once per
+occurrence. The check is part of the codegen naming rule's graph validation, so save, the
+editor load, `haute run`, deploy and canvas execution all refuse two nodes writing one
+destination before anything is written.
+
 Malformed pointers, digest mismatches, metadata mismatches, invalid generation identifiers,
 linked, hard-linked, reparse-point, or escaping generation artifacts, or invalid Parquet
 footer/schema evidence raise `SourceCacheCorruptError`; a named generation that does not
