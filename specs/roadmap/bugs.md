@@ -18,8 +18,6 @@ Current rating behaviour is specified in
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| BUG-01 | Planned | P1 | Editing a Rating Step in the editor keeps each table's `onMissing` setting. |
-| BUG-02 | Decision | P1 | A rating table built in the editor no longer prices an unmatched level at 1.0 without saying so. |
 | BUG-12 | Planned | P1 | A save never drops a statement written after the pipeline constructor; such a statement is reported and saving waits for it to move. |
 | BUG-15 | Decision | P2 | A bare `pipeline.run()` routes a source the pipeline has instead of a `batch` scenario no pipeline declares. |
 | BUG-17 | Decision | P3 | A standalone run of a pipeline with a submodel runs it, or refuses up front naming the submodel, instead of reporting it as an unknown node. |
@@ -29,63 +27,6 @@ Current rating behaviour is specified in
 `BUG-02` decides when `onMissing` matters for a table built in the editor, so
 `BUG-01`'s control is easiest to place after it; the fix that stops the
 setting being lost does not wait for it.
-
-### BUG-01 — Editing a Rating Step keeps each table's `onMissing`
-**Why:** A rating table's `onMissing` decides what a miss does when the table
-has no usable `defaultValue`: `"error"` (the default) raises
-`RatingTableMissError`, and `"neutral"` leaves the output null and logs the
-misses. The editor has no control for it, and `normaliseRatingTable` rebuilds
-every table from `factors`, `factorDtypes`, `outputColumn`, `defaultValue` and
-`entries` only. Any edit of the node in the editor (a factor, an entry, the
-default, adding or removing a table) therefore removes an `onMissing` set in
-the pipeline, with no message, and a table that was set to `"neutral"` fails
-the run on its next miss. The same rebuild gives a table with no
-`defaultValue` the default `"1.0"`, so a table written to fail on a miss
-starts pricing misses at 1.0 after an unrelated edit. Before any edit, the
-Default field already shows `1.0` for a table whose `defaultValue` is `null`.
-
-**Plan:** Carry `onMissing` through `normaliseRatingTable`, keep an absent
-`defaultValue` absent, and show `onMissing` in the table editor beside Default,
-where it applies only while Default is empty.
-
-**Acceptance:** A frontend test edits an entry of a table configured with
-`onMissing: "neutral"` and no `defaultValue`, and the committed config still
-has that `onMissing` and no `defaultValue`; the editor shows the setting and
-changes it; the rating specification names the control.
-
-**Dependencies:** None to stop the loss; the control's placement follows
-`BUG-02`.
-
-**Evidence:** `frontend/src/panels/editors/rating/ratingTableUtils.ts::normaliseRatingTable`;
-`src/haute/_rating.py::_normalise_on_missing`;
-`src/haute/_rating.py::RatingTableMissError`; `specs/rating/high-level.md`
-(miss precedence).
-
-### BUG-02 — A rating table built in the editor says when a level is unmatched
-**Why:** A miss is filled silently by a usable `defaultValue`, and raises only
-when the table has none and `onMissing` is `"error"`. Every table the editor
-creates starts with `defaultValue` `"1.0"` (the Rating Step node defaults and
-the Add table button), so an unmatched level (a new vehicle group, a key typed
-differently from the data) is priced at 1.0 with no error or warning unless
-the analyst clears Default. That contradicts fail-loud pricing, and the Rating
-Step page's "Misses fail loudly by default".
-
-**Plan:** Decide between: new tables start with an empty Default, so a miss
-fails until the analyst sets a default or chooses `"neutral"`; or tables keep
-1.0 and the preview and trace report each table's miss count. Then change the
-node defaults, the editor, the rating specification and the Rating Step page
-together.
-
-**Acceptance:** A new table built in the editor, run on data with an
-unmatched level, either fails the run naming the table and key or shows the
-table's miss count in the preview; a test covers that miss.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/node_defaults.json` (`ratingStep`);
-`frontend/src/panels/editors/RatingStepEditor.tsx` (the table fallback and
-`addTable`); `src/haute/_rating.py::RatingTableMissError`;
-`docs/building-models/nodes/rating-step.md`.
 
 ### BUG-12 — A save keeps the statements written after the pipeline constructor
 **Why:** Codegen regenerates a pipeline file from the parsed graph, and the

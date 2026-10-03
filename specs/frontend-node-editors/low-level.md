@@ -610,8 +610,9 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   filtered/merged before persistence without making existing user rows disappear.
 - Rating table normalisation supports missing/malformed entries by producing the editable table
   contract; two-way grids keep their cartesian factor coordinates aligned with their entry values.
-  It preserves canonical row order and valid `factorDtypes` metadata instead of dropping either
-  during a view-only open/save cycle.
+  It preserves canonical row order, valid `factorDtypes` metadata and `onMissing` instead of
+  dropping any of them during a view-only open/save cycle, and leaves an absent or null
+  `defaultValue` as it is rather than filling one in.
 - `frontend/src/panels/editors/shared/tableClipboard.ts` parses tab/newline data before applying
   it, while the rating/banding grids validate their target coordinates and numeric values.
 - Path tools preserve/rewrite only recognised path prefixes. JSON path validation and

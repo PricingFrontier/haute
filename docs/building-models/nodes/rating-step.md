@@ -23,7 +23,7 @@ If a Banding node's output has no labelled rule, a warning names it: "Banding ou
 A banner counts the tables ("Rating Tables · 2 tables"). The list shows one row per table, named by its output column, with a dot (green when healthy, amber when not), the number of factors (`2f`) and the number of entries, and a bin to remove it (when there is more than one). Hover a row for its problems, such as "Output column is required", "Add at least one factor" or "Add at least one rating entry".
 
 - The search box finds a table by its output column or factors; **All** and **Issues** filter the list.
-- The + button beside the filter adds a table, with **DEFAULT** `1.0`.
+- The + button beside the filter adds a table, with an empty **DEFAULT**, so a level it does not list stops the run.
 
 Click a table in the list to edit it below:
 
@@ -31,7 +31,8 @@ Click a table in the list to edit it below:
 |---|---|
 | **FACTORS (N/3)** | The columns the table looks up, up to three. **+ Add factor...** adds one, and the × beside a factor removes it. The lists offer the columns with known levels, each with its number of levels: the band names of every Banding node's outputs, and the text columns of the input. A factor that is not among them shows as "(not a banding factor)". Adding or removing a factor rebuilds the entries for every combination of levels, keeping the values already entered. |
 | **OUTPUT COLUMN** | The name of the column the looked-up value goes into. Errors and logs identify the table by it. It is required and must be unique: the box turns red with "Output column is required" or "Output column name must be unique". |
-| **DEFAULT** | The value given to a row whose factor values have no entry in the table (e.g. an area code you haven't mapped). A new table starts with `1.0`. Clear it to make a miss stop the run instead (see [What happens on a miss](#what-happens-on-a-miss)). |
+| **DEFAULT** | The value given to a row whose factor values have no entry in the table (e.g. an area code you haven't mapped). A new table starts empty, so such a row is handled by **ON MISS** (see [What happens on a miss](#what-happens-on-a-miss)). Type a value such as `1.0` to price every miss at it. |
+| **ON MISS** | What a row with no entry does while **DEFAULT** is empty: **Stop the run** (the default) or **Leave empty**, which leaves the table's output empty and logs a warning with the number of misses. It is greyed out while **DEFAULT** holds a value, which fills every miss. |
 | **↻ Rebuild from factor levels** | Rebuilds the entries from the factors' current levels - after a Banding node gains a band, for example - keeping the values already entered. |
 
 Under the fields, the table itself:
@@ -70,7 +71,7 @@ The **COLUMNS** tab chooses which columns the node passes on (see [Working with 
 
 An area factor and an age factor, multiplied together, where `age_band` comes from an upstream Banding node:
 
-1. Connect your data to a Rating Step. In the first table, choose `area` under **+ Add factor...**, type `area_factor` as the **OUTPUT COLUMN** and leave **DEFAULT** at `1.0`.
+1. Connect your data to a Rating Step. In the first table, choose `area` under **+ Add factor...**, type `area_factor` as the **OUTPUT COLUMN** and leave **DEFAULT** empty, so an area the table does not list stops the run.
 2. Fill in the relativities: London `1.25`, Manchester `1.10`, Rural `0.85`.
 3. Click the + button beside the table list to add a second table. Choose `age_band` as its factor, type `age_factor` as the **OUTPUT COLUMN**, and fill in `18-25` → `1.40`, `26-65` → `1.00`, `65+` → `1.15`.
 4. Switch **RATING SECTION** to **Combined**, click the + button, and change the **COMBINED OUTPUT COLUMN** to `location_age_factor`. Leave **OPERATION** on **× Multiply** and **BASE VALUE** at `1.0`.
@@ -88,9 +89,9 @@ BEFORE                                AFTER
 
 ## What happens on a miss
 
-A row whose factor value has no entry in the table is an unpriceable row. A table with a numeric **DEFAULT** prices it at that value without an error. Tables start with **DEFAULT** `1.0`, so a miss is priced at `1.0` unless you clear **DEFAULT**.
+A row whose factor value has no entry in the table is an unpriceable row. A table with a numeric **DEFAULT** prices it at that value without an error. Tables start with an empty **DEFAULT**, so a miss follows **ON MISS**.
 
-With **DEFAULT** cleared, the run fails with a `RatingTableMissError` naming the table's output column, the missing keys and the number of rows affected - a renamed band label cannot silently price at base rate.
+With **ON MISS** on **Stop the run**, the run fails with a `RatingTableMissError` naming the table's output column, the missing keys and the number of rows affected - a renamed band label cannot silently price at base rate.
 
 !!! warning "How entries match"
     Each entry's factor values are first converted to the type of the input
@@ -112,7 +113,8 @@ With **DEFAULT** cleared, the run fails with a `RatingTableMissError` naming the
     | The tables | `tables`: a list with one object per table |
     | **FACTORS** | `tables[].factors`: the input columns to match on, at most 3 |
     | **OUTPUT COLUMN** | `tables[].outputColumn` |
-    | **DEFAULT** | `tables[].defaultValue`, as text such as `"1.0"` (empty when cleared) |
+    | **DEFAULT** | `tables[].defaultValue`, as text such as `"1.0"` (absent when empty) |
+    | **ON MISS** | `tables[].onMissing`: `"error"` (**Stop the run**, also what an absent key means) or `"neutral"` (**Leave empty**) |
     | The relativities | `tables[].entries`: one object per combination of levels, holding a value for each factor and the looked-up `value` |
     | The combined outputs | `combinedOutputs`: a list with one object per combined output |
     | **COMBINED OUTPUT COLUMN** | `combinedOutputs[].outputColumn` |
@@ -123,10 +125,9 @@ With **DEFAULT** cleared, the run fails with a `RatingTableMissError` naming the
 
     With no editor control:
 
-    - `tables[].onMissing`: what to do when a lookup misses and no usable `defaultValue` is set. `"error"` (the default) fails the run as described above; `"neutral"` leaves the table output null - combined outputs treat it as the operation's neutral element (×1.0 / +0.0) - and logs a warning with the miss count. Set it by hand in the sidecar, and note that any edit to the node's tables in the editor removes it; misses are still counted and logged.
     - `tables[].factorDtypes`: the data types of the factor columns, which Haute records.
 
-    A table whose sidecar has no `defaultValue` shows **DEFAULT** `1.0` in the editor, and editing the node's tables saves it with `1.0`.
+    With `"neutral"`, a combined output treats the table's empty output as the operation's neutral element (×1.0 / +0.0).
 
     A one-way area factor, as stored:
 

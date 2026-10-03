@@ -11,6 +11,7 @@ import { classifyBandingLevels } from "../../utils/banding"
 import type { RatingFactorColumn, RatingFactorDtype, RatingTable } from "./rating/ratingTableUtils"
 import {
   normaliseRatingTables,
+  newRatingTable,
   buildCartesianEntries,
   ratingTableStatus,
   tableStats,
@@ -257,7 +258,7 @@ export default function RatingStepEditor({
 
   const availableColumns = Object.keys(factorLevels)
   const safeIdx = Math.min(activeTab, tables.length - 1)
-  const table = tables[safeIdx] || { factors: [], outputColumn: "", defaultValue: "1.0", entries: [] }
+  const table = tables[safeIdx] || newRatingTable()
   const tableStatuses = tables.map((candidate, idx) => ratingTableStatus(candidate, idx, tables))
   const activeTableStatus = tableStatuses[safeIdx] || { state: "problem" as const, issues: [] }
   const activeTableSummaryIssues = activeTableStatus.issues.filter(issue => !issue.startsWith("Output column"))
@@ -291,6 +292,9 @@ export default function RatingStepEditor({
   const outputColumnInvalid = outputColumnBlank || outputColumnDuplicate
   const outputColumnInputId = `rating-output-column-${safeIdx}`
   const outputColumnErrorId = `${outputColumnInputId}-error`
+  const defaultInputId = `rating-default-${safeIdx}`
+  const onMissingInputId = `rating-on-missing-${safeIdx}`
+  const hasDefault = typeof table.defaultValue === "string" && table.defaultValue.trim() !== ""
   const hasCombinedOutput = combinedOutputs.length > 0
   const safeCombinedIdx = hasCombinedOutput ? Math.min(activeCombinedIdx, combinedOutputs.length - 1) : 0
   const combinedOutput = combinedOutputs[safeCombinedIdx] || { outputColumn: "", operation: "multiply" as CombinedOperation, baseValue: "1.0" }
@@ -330,6 +334,16 @@ export default function RatingStepEditor({
   const updateTable = (idx: number, patch: Partial<RatingTable>) => {
     const next = tables.map((t, i) => i === idx ? { ...t, ...patch } : t)
     commitTables(next)
+  }
+
+  // An empty Default is removed rather than saved, so a miss follows onMissing.
+  const setDefaultValue = (idx: number, raw: string) => {
+    const value = raw.trim()
+    commitTables(tables.map((t, i) => {
+      if (i !== idx) return t
+      const { defaultValue: _previous, ...rest } = t
+      return value ? { ...rest, defaultValue: value } : rest
+    }))
   }
 
   const setFactors = (idx: number, newFactors: string[]) => {
@@ -390,7 +404,7 @@ export default function RatingStepEditor({
   }
 
   const addTable = () => {
-    commitTables([...tables, { factors: [], outputColumn: "", defaultValue: "1.0", entries: [] }])
+    commitTables([...tables, newRatingTable()])
     tableList.reset()
     selectTable(tables.length)
   }
@@ -604,8 +618,8 @@ export default function RatingStepEditor({
         </div>
       </div>
 
-      {/* Output column + default */}
-      <div className="grid grid-cols-2 gap-2">
+      {/* Output column, default and what a miss does */}
+      <div className="grid grid-cols-[2fr_1fr_1.3fr] gap-2">
         <div>
           <label htmlFor={outputColumnInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: outputColumnInvalid ? 'var(--danger)' : 'var(--text-muted)' }}>Output Column</label>
           <input key={`out-${safeIdx}`} type="text" defaultValue={table.outputColumn}
@@ -625,11 +639,23 @@ export default function RatingStepEditor({
           )}
         </div>
         <div>
-          <label className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>Default</label>
-          <input key={`def-${safeIdx}`} type="number" step="0.01" defaultValue={table.defaultValue ?? "1.0"}
-            onBlur={(e) => updateTable(safeIdx, { defaultValue: e.target.value })}
+          <label htmlFor={defaultInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>Default</label>
+          <input key={`def-${safeIdx}`} id={defaultInputId} type="number" step="0.01" defaultValue={table.defaultValue ?? ""}
+            onBlur={(e) => setDefaultValue(safeIdx, e.target.value)}
             className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
-            style={INPUT_STYLE} placeholder="1.0" />
+            style={INPUT_STYLE} placeholder="none" />
+        </div>
+        <div>
+          <label htmlFor={onMissingInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: 'var(--text-muted)' }}>On miss</label>
+          <select id={onMissingInputId} value={table.onMissing ?? "error"}
+            disabled={hasDefault}
+            title={hasDefault ? "The default fills every miss" : "What a level with no entry does"}
+            onChange={(e) => updateTable(safeIdx, { onMissing: e.target.value })}
+            className="w-full px-2 py-1.5 text-xs rounded-lg focus:outline-none focus:ring-2 disabled:opacity-50"
+            style={INPUT_STYLE}>
+            <option value="error">Stop the run</option>
+            <option value="neutral">Leave empty</option>
+          </select>
         </div>
       </div>
 
