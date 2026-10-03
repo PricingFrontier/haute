@@ -132,7 +132,14 @@
    boundary. Explicit `modelScore.feature_contract_path` files are copied under the
    canonical `<node>__feature_contract.json` key and override an adjacent downloaded
    contract. MLflow artifact identifiers reject absolute and `..`-containing forms before
-   download. The bundler resolves each model-score node's `mlflow_destination` to one
+   download. Each model-score node's source is read through `parse_model_source`, the
+   parser every other Model Scoring consumer uses: a node with no `sourceType` is untouched
+   and is not bundled (the preview passes it through too), a chosen source with an empty
+   `run_id`/`registered_model` (`IncompleteModelSourceError`) is skipped with a warning, a
+   run source without an `artifact_path` is discovered when served, and any other invalid
+   source raises its `ConfigError`. A node left unbundled is then refused by the deploy
+   scorer's passthrough guard below. The bundler resolves each model-score node's
+   `mlflow_destination` to one
    backend exactly once and passes that object to both registered-model resolution
    (`_resolve_registered_model`, which resolves a stored `alias` once to its current
    version and returns `(run_id, artifact_path, resolved_version)`) and the download itself

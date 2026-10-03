@@ -86,9 +86,12 @@ def collect_artifacts(
             artifacts[artifact_name] = abs_path
 
         elif node_type == NodeType.MODEL_SCORE:
-            source_type = config.get("sourceType", "run")
-            run_id = config.get("run_id", "")
-            artifact_path = config.get("artifact_path", "")
+            from haute._model_source import (
+                IncompleteModelSourceError,
+                RegisteredModelSource,
+                parse_model_source,
+            )
+
             explicit_contract = config.get("feature_contract_path")
             if explicit_contract is not None:
                 if not isinstance(explicit_contract, str) or not explicit_contract:
@@ -106,6 +109,20 @@ def collect_artifacts(
                 _check_exists(contract_path, nid, "modelScore feature contract")
                 artifacts[f"{nid}__feature_contract.json"] = contract_path
 
+            try:
+                model_source = parse_model_source(config)
+            except IncompleteModelSourceError as exc:
+                # Nothing to download; the deploy scorer refuses the node as an
+                # identity passthrough unless an artifact is bundled for it.
+                logger.warning(
+                    "model_score_skip_incomplete_source",
+                    node_id=nid,
+                    missing_field=exc.context.get("missing_field"),
+                )
+                continue
+            if model_source is None:
+                continue
+
             # The node's stored destination ("" = local) is resolved to exactly
             # one backend, after the skip guards so an unconfigured node stays a
             # silent skip, and that object is threaded through both the registry
@@ -113,39 +130,28 @@ def collect_artifacts(
             # the two across backends.
             from haute._mlflow_utils import resolve_backend
 
-            destination = str(config.get("mlflow_destination", "") or "")
-
-            if source_type == "registered":
-                registered_model = config.get("registered_model", "")
-                version = config.get("version", "")
-                alias = str(config.get("alias", "") or "")
-                if not registered_model:
-                    logger.warning(
-                        "model_score_skip_no_registered_model",
-                        node_id=nid,
-                    )
-                    continue
-                backend = resolve_backend(destination)
+            if isinstance(model_source, RegisteredModelSource):
+                backend = resolve_backend(model_source.mlflow_destination)
                 run_id, artifact_path, resolved_version = _resolve_registered_model(
-                    registered_model,
-                    version,
+                    model_source.registered_model,
+                    model_source.version,
                     backend=backend,
-                    alias=alias,
+                    alias=model_source.alias,
                 )
                 if model_sources is not None:
                     model_sources[nid] = {
-                        "registered_model": registered_model,
-                        "alias": alias,
+                        "registered_model": model_source.registered_model,
+                        "alias": model_source.alias,
                         "version": resolved_version,
                         "run_id": run_id,
                     }
             else:
-                # source_type == "run" (default)
-                if artifact_path not in (None, ""):
-                    _validate_mlflow_artifact_identifier(nid, artifact_path)
-                if not run_id or artifact_path in (None, ""):
+                artifact_path = model_source.artifact_path
+                if not artifact_path:
+                    # A run without an artifact path is discovered when served.
                     continue
-                backend = resolve_backend(destination)
+                run_id = model_source.run_id
+                backend = resolve_backend(model_source.mlflow_destination)
 
             _validate_mlflow_artifact_identifier(nid, artifact_path)
 

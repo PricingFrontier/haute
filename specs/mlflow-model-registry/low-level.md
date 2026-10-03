@@ -8,6 +8,7 @@
 | `src/haute/_mlflow_utils.py` | Shared MLflow bootstrap used by `_mlflow_io.py`, the optimiser IO layer, and deploy's bundler: version resolution, safe model-version search, `runtime_environment_inference` (scopes MLflow's uv-project auto-detection and uv-file logging off so a logged model records the executing interpreter), `bind_mlflow_databricks_credentials` (binds every MLflow Databricks request to the dedicated MLflow pair or the selected profile; see modelling), `ensure_experiment` (a bound client's experiment id, first creating a new Databricks experiment's missing workspace folder with the bound credentials; see modelling), `resolve_backend` (a destination key — or the empty string for the local folder — to a `ResolvedBackend` carrying the tracking/registry URIs plus a secret-free backend identity and filesystem digest; see Key types), and `resolve_mlflow_source` (import mlflow, resolve that backend, build a client pinned to it, resolve `source_type` to a concrete run ID/version, and return the backend alongside the client). |
 | `src/haute/_mlflow_errors.py` | The one MLflow failure classifier (`classify_mlflow_error`: MLflow error codes, HTTP 401/403/404, and transport-only connectivity across the exception chain — any other local OS error is `unknown`; it runs inside error handlers and never raises, so when `mlflow.exceptions` or `requests` cannot be imported only the remaining rules apply), `MlflowRemoteError` (a classified write failure with haute's own message), the write-path copy `MLFLOW_LOG_FAILURE_MESSAGES`, and the shared missing-package status and detail. |
 | `src/haute/_model_flavors.py` | Single source of truth for the scoring flavor domain: `ModelFlavor` (`Literal["catboost", "pyfunc", "rustystats"]`) and `_SUPPORTED_FLAVORS`, derived via `get_args` so the two can never drift apart. Dependency-free leaf module (see high-level Design rationale for why). |
+| `src/haute/_model_source.py` | The Model Scoring node's model source: `parse_model_source` turns a node config into a typed `ModelSource` once, owning every source default and validation rule, and `load_scoring_model(source, task)` is the one entry point that loads it. Every Model Scoring consumer — the executor's builder, the column-contract planner, the standalone scorer, the trace explanation and the deploy bundler and scorer — takes the parsed source, and only this module calls the MLflow loader. |
 | `src/haute/_model_scorer.py` | MODEL_SCORE node logic: the `ModelScorer` class, the unified `score_frame` dispatch (eager vs batched), the feature-validation cache, offset-column resolution, write-projection application, and `score_from_config` (codegen's delegation target). |
 | `src/haute/_model_explainability.py` | Per-prediction SHAP (CatBoost) and native GLM contribution (RustyStats) explanations for trace enrichment, plus `explain_model_score_from_config`, the config-driven entry point trace enrichment calls. |
 | `src/haute/routes/mlflow.py` | FastAPI router (`/api/mlflow/*`) exposing read-only experiment/run/model/version discovery for the MODEL_SCORE node's config UI — every discovery route accepts a `destination` query (`""` = the local folder) — plus the connection surface: the destinations inventory with optional concurrent bounded probes, `[mlflow]` settings read/write, and a bounded per-destination test-connection probe. |
@@ -79,7 +80,22 @@
 - **`ModelFlavor`** / **`_SUPPORTED_FLAVORS`** (`_model_flavors.py`) —
   see Module map. `_model_flavors.py` is their only import surface;
   scoring and loading modules consume private local aliases.
-- **`ModelSource`** (`_model_scorer.py`) — `Literal["run", "registered"]`.
+- **`ModelSource`** (`_model_source.py`) — the parsed model source of a
+  Model Scoring node, a union discriminated by each class's `source_type`
+  class variable: `RunModelSource` (`run_id`, `artifact_path`,
+  `mlflow_destination`) and `RegisteredModelSource` (`registered_model`,
+  `version`, `alias`, `artifact_path`, `mlflow_destination`). Both are frozen
+  slotted dataclasses whose fields are named after the config keys they come
+  from, so the typed node-config models (`PCFG-R07`) absorb them as the Model
+  Scoring source slice rather than adding a second config model. A registered
+  source carries `version` only when it names no `alias` (`"latest"` when the
+  config names neither); a run source carries no version at all.
+- **`IncompleteModelSourceError(ConfigError)`** (`_model_source.py`) — a
+  source type is chosen but its identifying field (`run_id` or
+  `registered_model`) is empty. Interactive and standalone consumers let it
+  propagate like any `ConfigError`; the deploy bundler alone treats it as an
+  unconfigured node and skips bundling (the deploy scorer then refuses the node
+  as an identity passthrough).
 - **`ScoreWriteProjection`** (`_model_scorer.py`, frozen `dataclass`,
   `slots=True`) — `passthrough_columns: frozenset[str] | None` (`None`
   means "preserve the full scored input"), `optional_passthrough_columns:
@@ -87,8 +103,8 @@
   `required_output_columns: frozenset[str]` (validated to actually appear
   in the final projected column set).
 - **`ModelScorer`** (`_model_scorer.py`) — holds a MODEL_SCORE node's full
-  configuration: `source_type`, `run_id`, `artifact_path`,
-  `registered_model`, `version`, `task`, `output_col`, `code`,
+  configuration: `model_source` (a parsed `ModelSource`), `task`,
+  `output_col`, `code`,
   `source_names`, `source` (`"live"` → eager, anything else → batched),
   `row_limit` (set for preview and trace; scores through the row-local scan
   regardless of `source`), `required_output_columns`, `feature_contract_path`,
@@ -172,6 +188,39 @@ compatible within a version; renaming or removing any listed item requires a new
 `haute.contract_version`.
 
 ## Control flow
+
+### Model source — `parse_model_source` / `load_scoring_model` (`_model_source.py`)
+
+`parse_model_source(config)` reads a Model Scoring config once:
+
+1. An absent or empty `sourceType` returns `None`: the node is untouched. The
+   executor's builder makes it a preview passthrough, the planner reports no
+   referenced columns, the trace explains nothing and the deploy bundler skips
+   it. `require_model_source` — used by `score_from_config`, which runs only for
+   configured nodes — turns `None` into a `ConfigError` naming `sourceType`.
+2. A non-string `sourceType` and one outside `run`/`registered` raise
+   `ConfigError` naming the value and the supported types.
+3. A run source needs a non-empty string `run_id`; a registered source a
+   non-empty string `registered_model`. A non-string value raises
+   `ConfigError`; an empty one raises `IncompleteModelSourceError` naming the
+   missing field. A registered source then applies the shared
+   `validate_registered_model_alias` rule (a malformed alias, or an alias beside
+   any version, raises `ConfigError`).
+4. `artifact_path` (optional, a string when present) and `mlflow_destination`
+   (`""` = the local folder) are read for both kinds. A registered source's
+   version is the configured version, `""` beside an alias, and `"latest"` when
+   the config names neither.
+
+The defaults above live only in this parser. `load_scoring_model(source,
+task)` passes the source's fields to `load_mlflow_model` (a run source passes
+no version), and is the only caller of `load_mlflow_model` in the package:
+the builder (`ModelScorer`), the planner (`_model_score_columns`),
+`score_from_config` and `explain_model_score_from_config` all load through it,
+so every context loads the same model for the same config. The deploy bundler
+parses the source to decide what to download, and the deploy scorer's
+passthrough guard parses it to decide whether a node without a bundled
+artifact can be served; a source that does not parse is refused there as a
+`DeployError` chained from the parse failure.
 
 ### Model loading — `load_mlflow_model(...)` (`_mlflow_io.py`)
 
@@ -745,6 +794,7 @@ endpoint.
 | Situation | Exception | Where it surfaces |
 |---|---|---|
 | `mlflow` not installed | `ImportError` | `resolve_mlflow_source`; routes' `_ensure_tracking` converts to `HTTPException(503)` with `MLFLOW_NOT_INSTALLED_DETAIL`, the same status and detail the modelling and optimiser log routes return. |
+| Model Scoring config with an unknown or non-string `sourceType`, an empty `run_id`/`registered_model` (`IncompleteModelSourceError`), or a version beside an alias | `ConfigError` | `parse_model_source`, identically for the builder, the planner, `score_from_config` and the trace explanation; the deploy scorer's passthrough guard re-raises it as `DeployError`, and the deploy bundler skips only `IncompleteModelSourceError`. |
 | Missing `run_id`/`registered_model`, invalid `source_type`, no versions found | `ValueError` | `resolve_mlflow_source` / `resolve_version`. |
 | No matching artifact in a run | `_ArtifactNotFoundError` (⊂ `FileNotFoundError`) | `_find_model_artifact` and its per-extension helpers; a genuine `MlflowException`/bare `FileNotFoundError` from `list_artifacts` is not caught here. |
 | Unsupported local file extension | `NotImplementedError` | `load_local_model`. |
@@ -774,6 +824,7 @@ plain `RuntimeError`, not a `HauteError` subclass.
 ## Testing
 
 - `tests/test_offset_scoring.py` verifies offset-aware GLM/CatBoost/pyfunc/canvas/deploy scoring, feature-name handling, metrics, and signature contracts.
+- `tests/test_model_source.py` verifies the parsed source: each invalid config (no run ID, no registered model, an unknown `sourceType`, a version beside an alias) fails with the same `ConfigError` through the builder, `score_from_config` and the trace explanation; the parser's defaults; the deploy passthrough guard chaining the parse failure; and that `load_mlflow_model` is called only from `_model_source.py`.
 - `tests/test_scoring_path_unified.py` verifies explicit flavor dispatch, unified scoring regression guards, structural invariants, wrapper dispatch, and eager/batch equivalence.
 - `tests/test_scoring_prep_perf.py` verifies prediction-frame preparation correctness, pyfunc named-frame dispatch, downstream passthrough, edge cases, and benchmark behavior.
 

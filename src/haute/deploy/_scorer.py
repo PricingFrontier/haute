@@ -192,18 +192,6 @@ def admit_deploy_execution(
     )
 
 
-def _model_score_has_configured_source(config: dict[str, Any]) -> bool:
-    """Return whether a modelScore node has enough config to load a model."""
-    source_type = config.get("sourceType", "")
-    if not source_type:
-        return False
-    if source_type == "run" and not config.get("run_id", ""):
-        return False
-    if source_type == "registered" and not config.get("registered_model", ""):
-        return False
-    return True
-
-
 def _cleanup_model_score_temp_paths(
     paths: list[str],
     *,
@@ -476,22 +464,27 @@ def _validate_deploy_model_score_source(node: GraphNode, remap: dict[str, str]) 
         return
     config = node.data.config
     if (
-        _model_score_has_configured_source(config)
-        or _remap_artifact(node.id, config, remap, "artifact_path") is not None
+        _remap_artifact(node.id, config, remap, "artifact_path") is not None
         or _bundled_contract_path(node.id, remap) is not None
     ):
         return
 
-    from haute.errors import DeployError
+    from haute._model_source import parse_model_source
+    from haute.errors import ConfigError, DeployError
 
-    raise DeployError(
+    message = (
         f"modelScore node {node.id!r} cannot be served: it has no usable "
         "model source (set sourceType with a run_id or "
         "registered_model) and no bundled model artifact, so the "
         "deployed endpoint would serve it as a silent identity "
-        "passthrough that omits the model from every quote.",
-        node_id=node.id,
+        "passthrough that omits the model from every quote."
     )
+    try:
+        model_source = parse_model_source(config)
+    except ConfigError as exc:
+        raise DeployError(f"{message} {exc}", node_id=node.id) from exc
+    if model_source is None:
+        raise DeployError(message, node_id=node.id)
 
 
 def _declared_categorical_levels_for_model_score(

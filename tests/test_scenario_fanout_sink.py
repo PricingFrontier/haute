@@ -28,7 +28,7 @@ from haute._polars_utils import (
     streaming_chunk_size_cap,
 )
 from haute.graph_utils import GraphNode, NodeData
-from tests.test_model_scorer import _make_scoring_model
+from tests.test_model_scorer import _make_scoring_model, _run_source
 
 
 def _polars_chunk() -> int | None:
@@ -249,7 +249,7 @@ def _score_recording_sink_chunks(input_fanout: int, steps: int) -> tuple[list[An
 
     scoring_model = _make_scoring_model(feature_names=["a", "b"])
     scoring_model.raw_model.predict.side_effect = lambda x: np.full(len(x), 0.5)
-    scorer = ModelScorer(source_type="run", run_id="abc", source="batch", input_fanout=input_fanout)
+    scorer = ModelScorer(model_source=_run_source("abc"), source="batch", input_fanout=input_fanout)
     with (
         patch("haute._mlflow_io.load_mlflow_model", return_value=scoring_model),
         patch.object(polars_utils, "bounded_sink", recording_sink),

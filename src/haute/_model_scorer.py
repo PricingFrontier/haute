@@ -14,7 +14,7 @@ from collections.abc import Hashable, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, closing, contextmanager, nullcontext, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 import numpy as np
 import polars as pl
@@ -29,6 +29,7 @@ from haute._lru_cache import LRUCache
 from haute._model_flavors import _SUPPORTED_FLAVORS as _SUPPORTED_MODEL_FLAVORS
 from haute._model_flavors import NATIVE_WRAPPER_FLAVORS
 from haute._model_flavors import ModelFlavor as _ModelFlavor
+from haute._model_source import ModelSource, require_model_source
 from haute._polars_utils import bounded_collect_batches
 from haute._types import _Frame
 from haute.errors import ConfigError
@@ -46,11 +47,6 @@ logger = get_logger(component="model_scorer")
 
 # Unknown flavor → ConfigError at the scoring entry point (fail loudly: a
 # typo in the flavor string must not silently fall through to pyfunc).
-
-# How an MLflow model is located.  ``"run"`` resolves an artifact within a
-# run; ``"registered"`` resolves a version of a registered model.  Typed so a
-# typo cannot silently reach the loader's dispatch as an unhandled string.
-ModelSource: TypeAlias = Literal["run", "registered"]
 
 
 # ---------------------------------------------------------------------------
@@ -1528,28 +1524,21 @@ def _score_batched_standalone(
 
 
 class ModelScorer:
-    """Load an MLflow model and score a LazyFrame.
+    """Load a Model Scoring node's model and score a LazyFrame.
 
     Encapsulates the full MODEL_SCORE lifecycle:
-    1. Model loading (from MLflow run or registered model).
+    1. Model loading (through the node's parsed model source).
     2. Feature intersection (skip features absent from input).
     3. Prediction (eager in-memory or batched via parquet).
     4. Optional post-processing user code.
 
     Parameters
     ----------
-    source_type : ModelSource
-        ``"run"`` or ``"registered"`` — how to locate the model in MLflow.
-    run_id : str
-        MLflow run ID (used when *source_type* is ``"run"``).
-    artifact_path : str
-        Artifact path within the run (e.g. ``"model.cbm"``).
-    registered_model : str
-        Registered model name (used when *source_type* is ``"registered"``).
-    version : str
-        Model version string (``"1"``, ``"2"``, or ``"latest"``).
-    alias : str
-        Registered model alias; when set it decides the version.
+    model_source : ModelSource
+        Where the model comes from, parsed from the node config by
+        :func:`haute._model_source.parse_model_source`. It carries the MLflow
+        destination the node was configured against, so the model is loaded
+        from there even when another destination is configured.
     task : Task
         ``"regression"`` or ``"classification"``.
     output_col : str
@@ -1573,11 +1562,6 @@ class ModelScorer:
     reuse_loaded_model : bool
         When true, pin the loaded model on this scorer instance. Intended for
         short-lived streaming jobs that reuse one scorer across many chunks.
-    mlflow_destination : str
-        Destination key the node was configured against (``"databricks"``,
-        ``"server"``, ``"local"``); ``""`` means the local folder. The model is
-        loaded from this destination even when the environment's other
-        destination points elsewhere.
     input_fanout : int
         Rows of the scoring input per row of the source it is read from (the
         product of the scenario expansions upstream; 1 when there are none).
@@ -1588,11 +1572,7 @@ class ModelScorer:
     def __init__(
         self,
         *,
-        source_type: ModelSource,
-        run_id: str = "",
-        artifact_path: str = "",
-        registered_model: str = "",
-        version: str = "latest",
+        model_source: ModelSource,
         task: Task = "regression",
         output_col: str = "prediction",
         code: str = "",
@@ -1604,18 +1584,11 @@ class ModelScorer:
         feature_contract_path: str | None = None,
         categorical_levels: _CategoricalLevels = None,
         reuse_loaded_model: bool = False,
-        mlflow_destination: str = "",
-        alias: str = "",
         input_fanout: int = 1,
     ) -> None:
         from haute.modelling._feature_contract import normalise_categorical_levels
 
-        self.source_type = source_type
-        self.alias = alias
-        self.run_id = run_id
-        self.artifact_path = artifact_path
-        self.registered_model = registered_model
-        self.version = version
+        self.model_source = model_source
         self.task = task
         self.output_col = output_col
         self.code = code
@@ -1635,25 +1608,16 @@ class ModelScorer:
             else None
         )
         self.reuse_loaded_model = reuse_loaded_model
-        self.mlflow_destination = mlflow_destination
         self.input_fanout = max(1, int(input_fanout))
         self._scoring_model: Any | None = None
         self._scoring_model_lock = threading.Lock()
 
     def _load_scoring_model_uncached(self) -> Any:
-        """Load the configured model via the shared MLflow loader."""
-        from haute._mlflow_io import load_mlflow_model, verify_contract_identity
+        """Load the configured model through the model-source seam."""
+        from haute._mlflow_io import verify_contract_identity
+        from haute._model_source import load_scoring_model
 
-        scoring_model = load_mlflow_model(
-            source_type=self.source_type,
-            run_id=self.run_id,
-            artifact_path=self.artifact_path,
-            registered_model=self.registered_model,
-            version=self.version,
-            task=self.task,
-            destination=self.mlflow_destination,
-            alias=self.alias,
-        )
+        scoring_model = load_scoring_model(self.model_source, self.task)
         if self.feature_contract_path is not None:
             from haute.modelling._feature_contract import load_contract
 
@@ -1813,18 +1777,12 @@ def score_from_config(
         raise ValueError(f"Config path {config!r} resolves outside project root")
     cfg = json.loads(read_user_text(resolved))
     scorer = ModelScorer(
-        source_type=cfg.get("sourceType", "run"),
-        run_id=cfg.get("run_id", ""),
-        artifact_path=cfg.get("artifact_path", ""),
-        registered_model=cfg.get("registered_model", ""),
-        version=cfg.get("version", "latest"),
+        model_source=require_model_source(cfg),
         task=cfg.get("task", "regression"),
         output_col=cfg.get("output_column", "prediction"),
         source=_scenario_ctx.get(),
         feature_contract_path=cfg.get("feature_contract_path") or None,
         categorical_levels=cfg.get("categorical_levels") or None,
-        mlflow_destination=cfg.get("mlflow_destination", ""),
-        alias=cfg.get("alias", ""),
     )
     return scorer.score(*dfs)
 

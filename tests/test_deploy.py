@@ -629,7 +629,7 @@ class TestBundler:
         ) as mock_resolve:
             artifacts = collect_artifacts(graph, [], tmp_path)
 
-        mock_resolve.assert_called_once_with("my-model", "", backend=ANY, alias="")
+        mock_resolve.assert_called_once_with("my-model", "latest", backend=ANY, alias="")
         assert len(artifacts) == 1
 
     def test_registered_model_skipped_without_model_name(self):
@@ -767,8 +767,8 @@ class TestBundler:
         assert len(artifacts) == 1
         assert "ms_explicit_run__model.cbm" in artifacts
 
-    def test_model_score_defaults_to_run_source_type(self, tmp_path, monkeypatch):
-        """MODEL_SCORE without sourceType defaults to 'run'."""
+    def test_model_score_without_source_type_is_not_bundled(self, tmp_path, monkeypatch):
+        """MODEL_SCORE without sourceType is untouched, as in the preview: nothing bundles."""
         from haute.deploy._bundler import collect_artifacts
 
         monkeypatch.chdir(tmp_path)
@@ -792,9 +792,7 @@ class TestBundler:
             }
         )
 
-        artifacts = collect_artifacts(graph, [], tmp_path)
-        assert len(artifacts) == 1
-        assert "ms_default__model.cbm" in artifacts
+        assert collect_artifacts(graph, [], tmp_path) == {}
 
     # -- One backend per node (MLF-D03) -------------------------------------
 

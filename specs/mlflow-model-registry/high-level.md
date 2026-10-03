@@ -110,6 +110,12 @@ Out of scope (owned elsewhere):
   `source_type="registered"` with a `registered_model` name and a
   `version` (a literal version number, or `"latest"`, which resolves to
   the highest numeric version currently registered).
+- A Model Scoring node's config is parsed once into a typed model source,
+  which owns every source default and validation rule, and is loaded through
+  one entry point. The executor, column planning, a standalone run, the trace
+  explanation and deploy all take that parsed source, so an invalid source
+  fails with the same error everywhere and no context loads a different model
+  for the same config.
 - Loaded models are cached in two tiers. An in-memory LRU (16 entries)
   holds fully-loaded `ScoringModel` objects keyed by the resolved source
   identity plus `task` plus the byte-identity fingerprint of the locally

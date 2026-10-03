@@ -45,7 +45,6 @@ file defaults to a family.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| MSC-01 | Planned | P2 | Every Model Scoring consumer resolves the node's model through one parsed source. |
 | MSC-02 | Planned | P2 | A model family is registered in one place, and an unrecognised file is refused by name. |
 | MSC-03 | Planned | P2 | Model Scoring scores a model file in the project, for every family Haute trains. |
 | MSC-04 | Planned | P2 | Load File no longer loads CatBoost models; Model Scoring is the one way to score a model. |
@@ -55,49 +54,8 @@ file defaults to a family.
 
 ## Planned improvements
 
-The order is `MSC-01`, `MSC-02`, `MSC-03`, then `MSC-04`; `MSC-05` and `MSC-06`
-each follow `MSC-03` on their own.
-
-### MSC-01 — Every Model Scoring consumer resolves the model through one source
-**Why:** Five consumers read a Model Scoring config and rebuild the same
-loader call field by field: the executor's builder, the column-contract
-planner, the standalone `score_from_config`, the trace explanation, and the
-deploy bundler and scorer. Each re-reads `sourceType`, `run_id`,
-`artifact_path`, `registered_model`, `version`, `alias`, `task` and
-`mlflow_destination` with its own defaults (the builder defaults `sourceType`
-to `""`, `score_from_config` and the explanation to `"run"`), and only the
-builder validates the source. Adding a source means editing all of them in
-step, and a missed one loads a different model in one context than in the
-others.
-
-**Plan:** Parse a Model Scoring config once into a typed model source, a
-discriminated union over `run` and `registered` that carries the destination,
-validated where the builder validates now. Give the loader one entry point
-that takes the source and the task and returns a `ScoringModel`. The builder,
-the planner, `score_from_config`, the explanation and the deploy scorer take
-the parsed source, and the defaults live only in the parser. Behaviour does
-not change; the MLflow model registry specification gains the source type and
-the entry point. Shape the source as the Model Scoring slice of `PCFG-R07`'s
-typed config models, so that package absorbs it rather than adding a second
-config model.
-
-**Acceptance:** `load_mlflow_model` is called only from the source seam. A
-parametrised test passes each invalid source config (no run ID, no registered
-model, an unknown `sourceType`, a version and an alias together) to the
-builder, `score_from_config` and the explanation, and each fails with the same
-`ConfigError`. The existing Model Scoring, deploy and trace tests pass
-unchanged.
-
-**Dependencies:** None. It lands before `PCFG-R07` (pipeline config), which
-absorbs the parsed source into the typed Model Scoring config.
-
-**Evidence:** `src/haute/_builders.py::_validated_model_score_source`;
-`src/haute/_builders.py::_model_score_columns`;
-`src/haute/_builders.py::_build_model_score`;
-`src/haute/_model_scorer.py::score_from_config`;
-`src/haute/_model_explainability.py::explain_model_score_from_config`;
-`src/haute/deploy/_bundler.py::collect_artifacts`;
-`src/haute/deploy/_scorer.py::_attach_bundled_model_contract_inputs`.
+The order is `MSC-02`, `MSC-03`, then `MSC-04`; `MSC-05` and `MSC-06` each
+follow `MSC-03` on their own.
 
 ### MSC-02 — A model family is registered in one place
 **Why:** What Haute knows about each family is spread over sites that must
@@ -182,8 +140,9 @@ before cached results can be reused. A missing required file raises even when
 a model object or scored frame is cached; an unchanged path is not freshness
 evidence. Existing explicitly pinned snapshot generations keep their fixed
 data semantics; they must not be reported as current model execution.
-The other consumers follow from
-`MSC-01`: column planning, the trace explanation, `score_from_config`, cache
+The other consumers follow from the parsed model source
+(`src/haute/_model_source.py`): column planning, the trace explanation,
+`score_from_config`, cache
 field classification, config recovery (where `sourceType` gains `file`), and
 the deploy bundler, which bundles the file and its contract under the node.
 In the editor, **MODEL SOURCE** gains **Model file**, with a file browser
@@ -217,7 +176,7 @@ without its contract each fail with an error naming the file. The trace
 explains a file-sourced CatBoost, GLM and XGBoost prediction. A frontend test
 chooses a file and commits `sourceType` and `model_path`.
 
-**Dependencies:** `MSC-01`, `MSC-02`.
+**Dependencies:** `MSC-02`.
 
 **Evidence:** `src/haute/_mlflow_io.py::load_local_model`;
 `src/haute/_mlflow_io.py::model_contract_candidates`;

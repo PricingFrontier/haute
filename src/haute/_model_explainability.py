@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import polars as pl
 
 from haute._logging import get_logger
 from haute.errors import HauteValidationError
+
+if TYPE_CHECKING:
+    from haute._model_source import ModelSource
 
 logger = get_logger(component="model_explainability")
 
@@ -687,25 +690,22 @@ def explain_native_prediction(
     }
 
 
-def _config_requests_supported_explanation(config: dict[str, Any]) -> bool:
-    source_type = config.get("sourceType")
-    if source_type not in {"run", "registered"}:
-        return False
-    artifact_path = str(config.get("artifact_path", ""))
-    return artifact_path.endswith((".cbm", ".rsglm", ".ubj", ".lgbm", ".ebm"))
+def _source_requests_supported_explanation(source: ModelSource) -> bool:
+    return source.artifact_path.endswith((".cbm", ".rsglm", ".ubj", ".lgbm", ".ebm"))
 
 
 def explanation_error_metadata_for_config(config: dict[str, Any]) -> dict[str, str]:
     """Return stable error metadata for the configured explanation method.
 
     Caller (``enrich_model_score``) only invokes this after
-    :func:`_config_requests_supported_explanation` has returned True, so the
-    artifact path is guaranteed to end in ``.rsglm`` or ``.cbm``.  We still
-    enumerate both branches explicitly so adding a third supported flavour in
-    future means extending this function alongside the loader.
+    :func:`explain_model_score_from_config` raised a
+    :class:`ModelExplanationError`, which happens only for a source whose
+    artifact path names a supported native model.  We still enumerate every
+    branch explicitly so adding a supported flavour means extending this
+    function alongside the loader.
 
     The function is on the *error-handling* path: it must always return a
-    well-formed dict even when ``_config_requests_supported_explanation`` and
+    well-formed dict even when ``_source_requests_supported_explanation`` and
     this lookup disagree — otherwise an internal mismatch crashes the entire
     trace step through the outer ``except Exception`` in ``enrich_model_score``.
     Hit the unreachable branch with a ``logger.warning`` so a regression
@@ -740,22 +740,19 @@ def explain_model_score_from_config(
     prediction_column: str,
     prediction_value: Any,
 ) -> dict[str, Any] | None:
-    """Load the configured model and return trace explanation detail."""
-    if not _config_requests_supported_explanation(config):
+    """Load the configured model and return trace explanation detail.
+
+    ``None`` for a node with no source chosen or a model with no supported
+    explanation. A source config that does not parse raises its ``ConfigError``.
+    """
+    from haute._model_source import load_scoring_model, parse_model_source
+
+    source = parse_model_source(config)
+    if source is None or not _source_requests_supported_explanation(source):
         return None
 
-    from haute._mlflow_io import load_mlflow_model
-
-    scoring_model = load_mlflow_model(
-        source_type=config.get("sourceType", "run"),
-        run_id=config.get("run_id", ""),
-        artifact_path=config.get("artifact_path", ""),
-        registered_model=config.get("registered_model", ""),
-        version=config.get("version", "latest"),
-        alias=str(config.get("alias", "") or ""),
-        task=config.get("task", "regression"),
-        destination=str(config.get("mlflow_destination", "") or ""),
-    )
+    task = config.get("task", "regression")
+    scoring_model = load_scoring_model(source, task)
     effective_prediction = (
         prediction_value if prediction_value is not None else output_row.get(prediction_column)
     )
@@ -763,14 +760,14 @@ def explain_model_score_from_config(
         return explain_catboost_prediction(
             scoring_model,
             input_row,
-            task=config.get("task", "regression"),
+            task=task,
             prediction_value=effective_prediction,
         )
     if getattr(scoring_model, "flavor", "") in ("xgboost", "lightgbm", "ebm"):
         return explain_native_prediction(
             scoring_model,
             input_row,
-            task=config.get("task", "regression"),
+            task=task,
             prediction_value=effective_prediction,
         )
     if getattr(scoring_model, "flavor", "") == "rustystats":
