@@ -129,7 +129,7 @@ class NameViolation:
         )
 
     def _support_message(self) -> str:
-        # ``origin`` says where the support code binds the name (NAME-03).
+        # ``origin`` says where the support code binds the name.
         if self.kind == "support_unsupported":
             return self.origin
         if self.kind == "support_conflict":

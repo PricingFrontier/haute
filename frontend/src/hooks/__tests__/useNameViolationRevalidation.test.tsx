@@ -1,5 +1,5 @@
 /**
- * A document loaded with name violations (NAME-02): the parser reads them,
+ * A document loaded with name violations: the parser reads them,
  * the status store fences save/run/preview until renames clear them, the
  * banner lists them, and each graph edit revalidates through the editor
  * identity request, a newer edit superseding an answer still in flight.

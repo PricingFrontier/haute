@@ -1,4 +1,4 @@
-"""The names support code binds, and the collisions they make (NAME-03).
+"""The names support code binds, and the collisions they make.
 
 Support code is what a generated module runs before its node functions: the
 root preamble, each submodel preamble (appended to the parent's when its
