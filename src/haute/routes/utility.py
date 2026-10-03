@@ -209,12 +209,12 @@ async def create_utility_file(body: UtilityCreateRequest) -> UtilityWriteRespons
     """Create a new utility file in ``utility/``."""
     _validate_module_name(body.name)
     d = _utility_dir()
+    # Containment first: a path escaping the utility folder is refused as such.
+    target = contained_path(d, f"{body.name}.py")
     _validate_new_module_name(body.name, d)
 
     d.mkdir(exist_ok=True)
     _ensure_init(d)
-
-    target = contained_path(d, f"{body.name}.py")
 
     content = body.content or f'"""Utility module: {body.name}."""\n\nimport polars as pl\n'
 

@@ -223,11 +223,10 @@ class TestDryRun:
         assert len(service.plan_store) == 0
 
     def test_an_occurrence_named_like_its_inner_node_fails_at_dry_run(self, tmp_path: Path):
-        """Codegen would refuse this graph at apply, so dry-run refuses it first."""
-
-        from fastapi import HTTPException
+        """Codegen would refuse this graph at apply; the strict load refuses it first."""
 
         from haute.assistant._assets import materialize_example_bundle
+        from haute.errors import ParseError
 
         materialize_example_bundle("reusable_submodel", tmp_path / "b")
         source = tmp_path / "b" / "pipeline.py"
@@ -237,7 +236,7 @@ class TestDryRun:
         source.write_bytes(colliding.encode("utf-8"))
         service = _service(tmp_path / "b")
 
-        with pytest.raises(HTTPException, match="sanitize to the same Python function name"):
+        with pytest.raises(ParseError, match="take one name, `enriched`"):
             service.dry_run(
                 "pipeline.py", [{"op": "update_preamble", "preamble": None}], summary="Test plan."
             ).plan

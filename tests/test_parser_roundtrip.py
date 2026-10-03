@@ -143,7 +143,9 @@ def _valid_label() -> st.SearchStrategy[str]:
     """
     import keyword
 
-    _reserved = {"df", "pl", "pipeline", "haute"}
+    from haute._executable_names import BUILTIN_NAMES, RESERVED_NAMES
+
+    _reserved = {"df", *RESERVED_NAMES, *BUILTIN_NAMES}
     return (
         st.text(
             alphabet=st.sampled_from("abcdefghijklmnopqrstuvwxyz"),
