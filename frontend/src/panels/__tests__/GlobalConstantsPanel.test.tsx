@@ -126,8 +126,7 @@ describe("GlobalConstantsPanel", () => {
     expect(screen.getByTestId("constant-value-1")).toBe(value)
     expect(screen.getByRole("button", { name: "todo complete" })).toBeInTheDocument()
 
-    // Choosing the filter again applies it afresh: the fixed constant leaves.
-    fireEvent.click(screen.getByRole("button", { name: "All" }))
+    // Choosing the filter again, even the one already chosen, applies it afresh.
     fireEvent.click(screen.getByRole("button", { name: /^Issues/ }))
     expect(screen.queryByRole("button", { name: "todo complete" })).not.toBeInTheDocument()
   })

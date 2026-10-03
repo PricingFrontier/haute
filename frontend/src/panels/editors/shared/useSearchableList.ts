@@ -33,7 +33,7 @@ export interface SearchableList {
  * the selected item, the first visible one is selected instead, so the editor
  * never edits an item the list does not show. Under the Issues filter, an item
  * that had issues when it was selected stays listed after an edit fixes them,
- * until another item is selected or the filter changes, so fixing an item never
+ * until another item is selected or a filter is chosen, so fixing an item never
  * moves the editor away from it mid-edit.
  */
 export function useSearchableList(
@@ -43,12 +43,17 @@ export function useSearchableList(
   enabled = true,
 ): SearchableList {
   const [search, setSearch] = useState("")
-  const [filter, setFilter] = useState<SearchableListFilter>("all")
+  // Each choice of filter, even of the one already chosen, applies it afresh.
+  const [{ filter, chosen }, setChoice] = useState<{ filter: SearchableListFilter; chosen: number }>(
+    { filter: "all", chosen: 0 },
+  )
+  const setFilter = (next: SearchableListFilter) =>
+    setChoice((choice) => ({ filter: next, chosen: choice.chosen + 1 }))
   const selectedItem = items.find((item) => item.index === selectedIndex)
   const keepFor = selectedItem !== undefined && !selectedItem.healthy ? selectedIndex : null
-  const [kept, setKept] = useState({ selectedIndex, filter, index: keepFor })
-  const keptCurrent = kept.selectedIndex === selectedIndex && kept.filter === filter
-  if (!keptCurrent) setKept({ selectedIndex, filter, index: keepFor })
+  const [kept, setKept] = useState({ selectedIndex, chosen, index: keepFor })
+  const keptCurrent = kept.selectedIndex === selectedIndex && kept.chosen === chosen
+  if (!keptCurrent) setKept({ selectedIndex, chosen, index: keepFor })
   const keptIndex = keptCurrent ? kept.index : keepFor
   const query = search.trim().toLowerCase()
   const visible = items.filter((item) => {
