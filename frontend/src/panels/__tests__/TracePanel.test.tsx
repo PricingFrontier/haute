@@ -1156,6 +1156,9 @@ describe("TracePanel", () => {
         input_values: { premium: 250, competitor_premium: 252.2 },
       },
     })
+    const expectBefore = (first: HTMLElement, second: HTMLElement) => {
+      expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    }
     const competitorPremium = { ...formula("competitor_premium", "", "", 252.2, []), expression_text: null, substituted_text: null }
 
     // The model's hook code computed the clicked column.
@@ -1187,8 +1190,9 @@ describe("TracePanel", () => {
     )
     const modelBody = screen.getByTestId("trace-step-body-competitor_scoring")
     expect(within(modelBody).getByTestId("trace-calculation-body")).toHaveTextContent(/premium.*competitor_premium/)
-    // The model that predicted what the formula read is still explained.
-    expect(within(modelBody).getByText("Model Score")).toBeInTheDocument()
+    // The model that predicted what the formula read is still explained, before the
+    // formula, as the code ran after it.
+    expectBefore(within(modelBody).getByText("Model Score"), within(modelBody).getByTestId("trace-calculation-body"))
     // The step that computed the premium the formula read opens with it.
     expect(screen.getByTestId("trace-step-body-pricing")).toBeInTheDocument()
     cleanup()
@@ -1238,7 +1242,7 @@ describe("TracePanel", () => {
     )
     const expanderBody = screen.getByTestId("trace-step-body-scenarios")
     expect(within(expanderBody).getByTestId("trace-calculation-body")).toHaveTextContent(/premium.*competitor_premium/)
-    expect(within(expanderBody).getByText("Scenario Expander")).toBeInTheDocument()
+    expectBefore(within(expanderBody).getByText("Scenario Expander"), within(expanderBody).getByTestId("trace-calculation-body"))
     const modelCard = screen.getByTestId("trace-step-card-competitor_scoring")
     if (!within(modelCard).queryByTestId("trace-step-body-competitor_scoring")) {
       fireEvent.click(within(modelCard).getAllByRole("button")[0])
