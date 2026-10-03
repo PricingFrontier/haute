@@ -1612,3 +1612,172 @@ class TestRunSource:
 
         with pytest.raises(TypeError, match=r"sources are live\."):
             pipeline.run()
+
+
+_FACTORS_MODULE = """\
+import haute
+import polars as pl
+
+submodel = haute.Submodel(
+    "factors",
+    definition_id="definition_factors",
+    input_ports=[{"name": "rows", "targets": [{"nodeId": "aged", "handleId": None}]}],
+    output_ports=[{"name": "factored", "source": {"nodeId": "factor", "handleId": None}}],
+    pipeline_dir="..",
+)
+
+
+@submodel.polars
+def aged(rows: pl.LazyFrame) -> pl.LazyFrame:
+    return rows.with_columns(age=2025 - pl.col("year"))
+
+
+@submodel.polars
+def factor(aged: pl.LazyFrame) -> pl.LazyFrame:
+    return aged.with_columns(factor=pl.when(pl.col("age") > 10).then(1.2).otherwise(1.0))
+
+
+submodel.connect("aged", "factor")
+"""
+
+
+def _submodel_pipeline(tmp_path, main_body: str):
+    """Write a pipeline using ``modules/factors.py``; return its path and live pipeline."""
+    from tests.conftest import write_node_config
+
+    rows = write_node_config(
+        tmp_path,
+        NodeType.CONSTANT,
+        "quotes",
+        {"values": [{"name": "year", "value": 2010}]},
+    )
+    (tmp_path / "modules").mkdir()
+    (tmp_path / "modules" / "factors.py").write_text(_FACTORS_MODULE, encoding="utf-8")
+    source = (
+        "import haute\n"
+        "import polars as pl\n\n"
+        'pipeline = haute.Pipeline("p")\n\n\n'
+        f'@pipeline.constant(config="{rows}")\n'
+        "def quotes(): ...\n\n\n" + main_body
+    )
+    path = tmp_path / "main.py"
+    path.write_text(source, encoding="utf-8")
+    namespace: dict = {"__file__": str(path), "__name__": "pipeline_under_test"}
+    exec(compile(source, str(path), "exec"), namespace)
+    return path, namespace["pipeline"]
+
+
+def _haute_run_frame(path, node_id: str) -> pl.DataFrame:
+    """The frame the graph executor computes for *node_id*: parse, flatten, execute."""
+    from haute.executor import execute_graph
+    from haute.parser import parse_pipeline_file
+
+    result = execute_graph(parse_pipeline_file(path, flatten=True), node_id, source="live")[node_id]
+    assert result.status == "ok", result.error
+    return pl.DataFrame(result.preview)
+
+
+class TestStandaloneSubmodels:
+    """A standalone run executes a submodel occurrence as ``haute run`` does."""
+
+    def test_a_run_through_a_submodel_returns_haute_runs_result(self, tmp_path) -> None:
+        path, pipeline = _submodel_pipeline(
+            tmp_path,
+            "@pipeline.polars\n"
+            "def premium(factored: pl.LazyFrame) -> pl.LazyFrame:\n"
+            "    return factored.with_columns(premium=pl.col('factor') * 100)\n\n\n"
+            'pipeline.submodel("modules/factors.py", "factors")\n'
+            'pipeline.connect("quotes", "factors", target_port="rows")\n'
+            'pipeline.connect("factors", "premium", source_port="factored")\n',
+        )
+
+        standalone = pipeline.run(source="live")
+
+        assert standalone.to_dicts() == [{"year": 2010, "age": 15, "factor": 1.2, "premium": 120.0}]
+        assert standalone.equals(_haute_run_frame(path, "premium"))
+
+    def test_a_submodel_can_be_the_pipelines_output(self, tmp_path) -> None:
+        _path, pipeline = _submodel_pipeline(
+            tmp_path,
+            'pipeline.submodel("modules/factors.py", "factors")\n'
+            'pipeline.connect("quotes", "factors", target_port="rows")\n',
+        )
+
+        assert pipeline.run(source="live")["factor"].to_list() == [1.2]
+
+    def test_two_occurrences_of_one_definition_each_run(self, tmp_path) -> None:
+        _path, pipeline = _submodel_pipeline(
+            tmp_path,
+            "@pipeline.polars\n"
+            "def both(factored: pl.LazyFrame, again: pl.LazyFrame) -> pl.LazyFrame:\n"
+            "    return pl.concat([factored, again])\n\n\n"
+            'pipeline.submodel("modules/factors.py", "factors")\n'
+            'pipeline.submodel("modules/factors.py", "again", instance_of="factors")\n'
+            'pipeline.connect("quotes", "factors", target_port="rows")\n'
+            'pipeline.connect("quotes", "again", target_port="rows")\n'
+            'pipeline.connect("factors", "both", source_port="factored")\n'
+            'pipeline.connect("again", "both", source_port="factored")\n',
+        )
+
+        assert pipeline.run(source="live")["factor"].to_list() == [1.2, 1.2]
+
+    def test_score_seeds_its_frame_through_a_submodel(self, tmp_path) -> None:
+        _path, pipeline = _submodel_pipeline(
+            tmp_path,
+            'pipeline.submodel("modules/factors.py", "factors")\n'
+            'pipeline.connect("quotes", "factors", target_port="rows")\n',
+        )
+
+        scored = pipeline.score(pl.DataFrame({"year": [2020]}))
+
+        assert scored["factor"].to_list() == [1.0]
+
+    def test_a_port_input_takes_its_parameters_place_among_a_nodes_inputs(self, tmp_path) -> None:
+        module = tmp_path / "modules" / "rates.py"
+        module.parent.mkdir()
+        module.write_text(
+            "import haute\n"
+            "import polars as pl\n\n"
+            "submodel = haute.Submodel(\n"
+            '    "rates",\n'
+            '    definition_id="definition_rates",\n'
+            '    input_ports=[{"name": "rows", "targets": [{"nodeId": "joined"}]}],\n'
+            '    output_ports=[{"name": "out", "source": {"nodeId": "joined"}}],\n'
+            '    pipeline_dir="..",\n'
+            ")\n\n\n"
+            "@submodel.polars\n"
+            "def table() -> pl.LazyFrame:\n"
+            '    return pl.LazyFrame({"rate": [2.0]})\n\n\n'
+            "@submodel.polars\n"
+            "def joined(rows: pl.LazyFrame, table: pl.LazyFrame) -> pl.LazyFrame:\n"
+            '    return rows.join(table, how="cross")\n\n\n'
+            'submodel.connect("table", "joined")\n',
+            encoding="utf-8",
+        )
+        source = (
+            "import haute\n"
+            "import polars as pl\n\n"
+            'pipeline = haute.Pipeline("p")\n\n\n'
+            "@pipeline.polars\n"
+            "def quotes() -> pl.LazyFrame:\n"
+            '    return pl.LazyFrame({"year": [2010]})\n\n\n'
+            'pipeline.submodel("modules/rates.py", "rates")\n'
+            'pipeline.connect("quotes", "rates", target_port="rows")\n'
+        )
+        path = tmp_path / "main.py"
+        path.write_text(source, encoding="utf-8")
+        namespace: dict = {"__file__": str(path), "__name__": "pipeline_under_test"}
+        exec(compile(source, str(path), "exec"), namespace)
+
+        assert namespace["pipeline"].run(source="live").columns == ["year", "rate"]
+
+    def test_a_file_without_a_submodel_is_refused_naming_it(self, tmp_path) -> None:
+        _path, pipeline = _submodel_pipeline(
+            tmp_path,
+            'pipeline.submodel("modules/empty.py", "factors")\n'
+            'pipeline.connect("quotes", "factors", target_port="rows")\n',
+        )
+        (tmp_path / "modules" / "empty.py").write_text("import haute\n", encoding="utf-8")
+
+        with pytest.raises(ExecutionError, match=r"modules/empty\.py.*defines no haute\.Submodel"):
+            pipeline.run(source="live")

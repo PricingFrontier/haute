@@ -29,11 +29,10 @@ valid-Python mutation and classification boundary is fixed by the accepted
 
 The generated file tree is the artifact saved to disk and later parsed for preview,
 execution, tracing, and deployment; it is not an intermediate serialization hidden from the
-user. A single-file/flat generated pipeline is also directly executable through
-`haute.Pipeline.run()`. A hierarchical main file is different: its live
-`pipeline.submodel(path)` calls only record paths, so the live `Pipeline` API does not import the
-child registrations and the main file is not a standalone execution surface for that hierarchy.
-The static parser resolves and flattens the child files before the full executor runs them.
+user. A generated pipeline is also directly executable through `haute.Pipeline.run()`; for a
+hierarchical main file, `run()` imports each `pipeline.submodel(path)` file and runs its
+definition in place of the occurrence. The static parser resolves and flattens the child files
+before the full executor runs them.
 
 ## Scope
 

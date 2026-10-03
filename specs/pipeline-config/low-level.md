@@ -519,9 +519,17 @@ it on the reading node instead of aborting the walk, and every other run propaga
   that are the module's plus `global_constants` bound to the view for
   `function_constant_reads(fn)`, the reads of the function's source (every constant when its
   source cannot be read). Two runs therefore never share a binding. Calling a node's decorated
-  name outside a run binds nothing, so its code reads the sentinel. A standalone run of a
-  pipeline that wires a submodel fails before any node runs
-  ([BUG-17](../roadmap/bugs.md#bug-17--a-standalone-run-of-a-pipeline-with-a-submodel-says-what-it-cannot-do)).
+  name outside a run binds nothing, so its code reads the sentinel.
+- A pipeline with submodel registrations runs through `Pipeline._with_submodels_expanded`:
+  `_load_submodel_definition` resolves each file with
+  `src/haute/_submodel_paths.py::resolve_submodel_reference` from the pipeline directory and
+  imports it under a fresh module name, requiring exactly one `Submodel` among its globals;
+  each definition node becomes a `dataclasses.replace` copy named `<occurrence>.<node>`;
+  boundary edges come from `_submodel_input` / `_submodel_output` (an unknown port is an
+  `ExecutionError` listing the ports); and `_in_parameter_order` orders each submodel node's
+  inputs by its positional parameter names (the source's name, or the input port's for an
+  edge into an occurrence) when they name every input, leaving the pipeline's own nodes in
+  registration order.
 
 ## Edge cases and invariants
 

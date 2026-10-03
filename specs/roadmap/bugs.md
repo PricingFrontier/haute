@@ -7,7 +7,7 @@ are fixed. These packages came from the 27 September 2026 audit of the
 Getting Started and Building Models documentation, which checked every page
 against the code, and from the review of that documentation on 28 September
 (`BUG-10`, `BUG-11`): each one is a place where the code, not only the page, is
-wrong. `BUG-12` to `BUG-17` came from reading the parser, the code generator,
+wrong. `BUG-12` came from reading the parser, the code generator,
 the executors, the deploy scorer and the editor's request builders for the
 [global constants](../pipeline-config/high-level.md#behaviour) specification and its review on
 2 October 2026.
@@ -19,7 +19,6 @@ Current rating behaviour is specified in
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | BUG-12 | Planned | P1 | A save never drops a statement written after the pipeline constructor; such a statement is reported and saving waits for it to move. |
-| BUG-17 | Decision | P3 | A standalone run of a pipeline with a submodel runs it, or refuses up front naming the submodel, instead of reporting it as an unknown node. |
 
 ## Planned improvements
 
@@ -59,30 +58,3 @@ preserve markers save and regenerate unchanged.
 `src/haute/_ast_helpers.py::_extract_preserved_blocks`;
 `src/haute/parser.py::parse_pipeline_source`.
 
-### BUG-17 — A standalone run of a pipeline with a submodel says what it cannot do
-**Why:** `Pipeline.submodel()` records an occurrence without loading its
-definition, and `run()` and `score()` sort and execute the root registry only.
-A standalone run of any pipeline that wires a submodel therefore fails before
-any node runs, with a message that contradicts the registration: reproduced on
-2 October 2026, a pipeline registering `pipeline.submodel("modules/rating.py",
-"rating")` and connecting nodes to it raised `UnknownEdgeEndpointError`
-("Edges reference unknown node IDs: rating"), whether the submodel fed a later
-node or was terminal. `haute run` and the editor execute the same pipeline,
-because they parse and flatten it.
-
-**Plan:** Decide between executing submodel occurrences in standalone runs (load
-each definition through its `pipeline_dir`, register its nodes under qualified
-names and wire its ports as flattening does) and refusing such a run up front
-with a message that names the submodel and points to `haute run`. Then
-implement it and state it in the pipeline-config specification.
-
-**Acceptance:** A standalone run of a pipeline with a submodel either returns
-`haute run`'s result or raises the decided message naming the submodel, in
-`tests/test_pipeline.py`.
-
-**Dependencies:** None. Standalone global-constant parity covers pipelines
-without submodels until this lands.
-
-**Evidence:** `src/haute/pipeline.py::Pipeline.submodel`;
-`src/haute/pipeline.py::Pipeline.run`;
-`src/haute/pipeline.py::Pipeline._topo_order`.
