@@ -117,8 +117,15 @@
    `identical_row_count` is set "One of N identical rows" (the panel does not repeat its
    `identical_row_match` diagnostic as a correlation warning), and routes its expanded body to
    a calculation hero, expression/source view, `NodeDetailBlock`, or value table according to the
-   data present. The expanded body also lists, under "Computed here", the step's formulas for
-   the other columns the traced value depends on (the traced column's own formula is shown
+   data present. A node detail (a model, an optimiser, a rating step, banding, a scenario expander
+   or a live switch) takes the place of the calculation unless the node's own code computed the
+   traced column, which its `derivations` say by giving that column a formula: a transform step
+   in a Model Score or Scenario Expander, say. The card then shows that formula (the hero on the
+   clicked column's step, the calculation line elsewhere) with the node detail beneath it, and the
+   steps that computed the columns the formula reads open by default. A formula the step carries
+   for a column a later step rewrote has no derivation, so the node detail still stands alone.
+   The expanded body also lists, under "Computed here", the step's formulas for the other
+   columns the traced value depends on (the traced column's own formula is shown
    above it when the step has one), leaving out a substituted line that only restates the
    value (a formula copying a column). Its value table lists what the step did, not every
    column of its row: the traced column and the columns it added or modified, except one
@@ -208,8 +215,10 @@ optimiser objective followed to the loaded values, a model's prediction as a rul
 in the trace, a read with no source, several possible sources, unfollowed reads, a value
 generated before its node's code, and the depth limit;
 `frontend/src/panels/__tests__/TracePanel.test.tsx` renders it in the
-online optimiser card and the "Computed here" list, follows a row's step link to its card
-and the canvas focus, shows the full trace for a link to a card the focused one hides,
+online optimiser card and the "Computed here" list, shows a model's and an expander's transform
+formula for the traced column above the node detail (and not a formula a later step rewrote),
+follows a row's step link to its card and the canvas focus, shows the full trace for a link
+to a card the focused one hides,
 rings a hovered card's node, and opens scrolled to the clicked node's card, or to the last
 card shown when the focused trace hides it, without replaying a link followed in an
 earlier trace. `frontend/src/components/__tests__/TraceViewFit.test.tsx` pins

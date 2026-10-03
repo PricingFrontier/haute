@@ -684,7 +684,10 @@ its public facade.
    `(node_id, column)` visited set) — for each reference, finds the nearest
    upstream step that created/modified it, parses/evaluates its formula (with a
    banding-specific branch that reuses `enrich_banding`'s factor detail instead
-   of generic expression parsing), and recurses into *its* references.
+   of generic expression parsing), and recurses into *its* references. A step whose
+   code never assigns the column (a model's prediction beside its transform steps,
+   a column a join brought in) computed it otherwise: the source carries the value
+   the step produced, as for a step with no code, never `expression_not_located`.
 5. Detects renames (`.rename({...})` or a pure `.with_columns(new=pl.col(old))`)
    and builds a rename chain by walking backward through prior steps.
 6. Dispatches node-type enrichment by `node_type` (`ratingStep`, `banding`,

@@ -19,6 +19,7 @@ import { hasRichRatingStepDetail } from "./ratingStepHelpers"
 import {
   hasPrimaryNodeDetail,
   hasRichBandingDetail,
+  stepCodeComputesColumn,
 } from "../panels/trace/traceStoryView"
 
 function detailUsesDefault(value: unknown): boolean {
@@ -123,7 +124,10 @@ export function StepCard({
 
   // All output columns for expanded view
   const allOutputCols = Object.keys(step.output_values)
-  const richNodeDetail = hasPrimaryNodeDetail(step)
+  // A model, optimiser or expander whose own code computed the traced column
+  // shows that formula, with its node detail beneath it.
+  const codeComputesTraced = stepCodeComputesColumn(step, tracedColumn)
+  const richNodeDetail = hasPrimaryNodeDetail(step) && !codeComputesTraced
   const isOriginStep = isTraceOriginStep(step, tracedColumn)
   const sourceCalculationIsPlaceholder = isComputedPlaceholder(step.calculation?.substituted_text)
   const showSourceOrigin = isOriginStep &&
@@ -147,6 +151,7 @@ export function StepCard({
     step.node_detail &&
     (
       !showCalculationHero ||
+      codeComputesTraced ||
       hasRichRatingStepDetail(step) ||
       (
         hasRichBandingDetail(step) &&

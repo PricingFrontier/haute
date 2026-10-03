@@ -98,6 +98,53 @@ def test_effective_node_code_is_the_single_instance_resolution_rule(
     assert _effective_node_code(config, node_map) == expected
 
 
+def test_an_input_a_node_computed_without_its_code_keeps_the_value_it_produced() -> None:
+    """A model whose transform code assigns other columns still predicted its own.
+
+    A formula downstream reads the prediction; its input source carries the
+    predicted value rather than a "not computed" from looking for a formula the
+    model's code never wrote.
+    """
+    from haute._trace_enrichment import _build_input_sources
+    from haute.trace import SchemaDiff
+
+    def diff(added: list[str]) -> SchemaDiff:
+        return SchemaDiff(
+            columns_added=added, columns_removed=[], columns_modified=[], columns_passed=[]
+        )
+
+    model = TraceStep(
+        node_id="scoring",
+        node_name="scoring",
+        node_type="modelScore",
+        schema_diff=diff(["prediction", "ratio"]),
+        input_values={"premium": 250.0},
+        output_values={"premium": 250.0, "prediction": 252.2, "ratio": 250.0 / 252.2},
+    )
+    reader = TraceStep(
+        node_id="reader",
+        node_name="reader",
+        node_type="polars",
+        schema_diff=diff(["margin"]),
+        input_values={"premium": 250.0, "prediction": 252.2},
+        output_values={"premium": 250.0, "prediction": 252.2, "margin": -2.2},
+    )
+    node_map = {
+        "scoring": _transform_node(
+            "scoring",
+            'df = df.with_columns((pl.col("premium") / pl.col("prediction")).alias("ratio"))',
+        ),
+    }
+
+    sources = _build_input_sources(["prediction"], reader, [model, reader], node_map, None)
+
+    assert sources["prediction"] == {
+        "node_id": "scoring",
+        "node_name": "scoring",
+        "result_value": 252.2,
+    }
+
+
 # ===========================================================================
 # 1. Rating Step Simulation Tests (19 tests)
 # ===========================================================================
