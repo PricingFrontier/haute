@@ -442,13 +442,14 @@ export default function ModellingConfig({
   // Export settings do not change the trained model, so the stale check and
   // the RAM estimate follow the config without them.
   const trainingIdentity = useMemo(() => trainingIdentityConfig(config), [config])
-  // buildGraph reads the constants from the store; listing them renews the
-  // callback, so a constant edited after mount reaches the next request.
+  // buildGraph reads the preamble and constants from the store; listing them
+  // renews the callback, so an edit made after mount reaches the next request.
   const globalConstants = useGraphStore((state) => state.globalConstants)
   const graph = useCallback(
     () => {
       void globalConstants
-      return buildGraph(allNodes, edges, submodels, preamble)
+      void preamble
+      return buildGraph(allNodes, edges, submodels)
     },
     [allNodes, edges, submodels, preamble, globalConstants],
   )

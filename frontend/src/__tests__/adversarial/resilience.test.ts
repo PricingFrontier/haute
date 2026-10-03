@@ -532,7 +532,7 @@ describe("6. Empty graph", () => {
       nodes: [],
       edges: [],
       submodels: undefined,
-      preamble: undefined,
+      preamble: "",
       global_constants: [],
       global_constants_error: null,
     })

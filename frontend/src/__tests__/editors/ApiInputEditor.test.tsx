@@ -202,7 +202,8 @@ describe("ApiInputEditor", () => {
       />,
     )
     fireEvent.click(screen.getByTestId("api-input-add-table-btn"))
-    const tables = onUpdate.mock.calls.at(-1)?.[0].tables as Array<{ path: string; label: string }>
+    const update = onUpdate.mock.calls.at(-1)?.[0] as { tables: Array<{ path: string; label: string }> }
+    const tables = update.tables
     expect(tables.at(-1)).toEqual(
       expect.objectContaining({ path: "$[:].table_2[:]", label: "table_2_2" }),
     )

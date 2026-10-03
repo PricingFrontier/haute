@@ -42,6 +42,7 @@ from tests.conftest import (
     make_edge,
     make_graph,
     make_ready_file_input_config,
+    make_transform_node,
 )
 from tests.optimiser_fixtures import run_frontier_and_wait
 
@@ -829,6 +830,26 @@ class TestSolveResultContract:
             "tolerance": 1e-4,
         }
         assert result["diagnostics_errors"] == []
+        assert result["adjustments"]["n_quotes"] == 5
+
+    def test_a_transform_upstream_calls_a_preamble_helper(self, client, tmp_path):
+        path = tmp_path / "online_preamble.parquet"
+        _scored_frame(n_quotes=5, n_steps=3).write_parquet(path)
+        graph = _online_graph(str(path))
+        graph["nodes"].append(
+            make_transform_node(
+                "boost",
+                "df = source.with_columns(expected_income=boost(pl.col('expected_income')))",
+            ).model_dump()
+        )
+        graph["edges"] = [
+            make_edge("source", "boost").model_dump(),
+            make_edge("boost", "opt").model_dump(),
+        ]
+        graph["preamble"] = "def boost(income):\n    return income * 2\n"
+
+        result = _poll_until_done(client, _solve_completed(client, graph))["result"]
+
         assert result["adjustments"]["n_quotes"] == 5
 
     def test_every_online_solve_records_its_history(self, client, tmp_path):

@@ -147,7 +147,7 @@ export default function useWholeDataAnswer<TResponse extends WholeDataResponse>(
       setLoading({ identity: requestIdentity, value: true })
       askRef.current({
         asked: askedFor,
-        graph: buildGraph(allNodes, edges, submodels, preamble),
+        graph: buildGraph(allNodes, edges, submodels),
         nodeId,
         source: activeSource,
         signal: controller.signal,

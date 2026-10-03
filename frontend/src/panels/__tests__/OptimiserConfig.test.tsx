@@ -1505,6 +1505,25 @@ describe("OptimiserConfig", () => {
       )
     })
 
+    it("the estimate and solve requests carry the preamble", async () => {
+      mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_42", error: null })
+      const actual = await vi.importActual<typeof import("../../utils/buildGraph")>("../../utils/buildGraph")
+      vi.mocked(buildGraph).mockImplementation(actual.buildGraph)
+      act(() => useGraphStore.getState().setPreambleRaw("def helper(x):\n    return x\n"))
+      renderConfig(makeProps({
+        config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: {} },
+      }))
+      await waitFor(() => expect(mockEstimateOptimiserSolve).toHaveBeenCalled())
+      fireEvent.click(screen.getByRole("button", { name: /Optimise/ }))
+      await waitFor(() => expect(mockSolveOptimiser).toHaveBeenCalledTimes(1))
+      expect(mockEstimateOptimiserSolve.mock.calls[0][0].graph.preamble).toBe("def helper(x):\n    return x\n")
+      expect(mockSolveOptimiser.mock.calls[0][0].graph.preamble).toBe("def helper(x):\n    return x\n")
+      act(() => useGraphStore.getState().setPreambleRaw(""))
+      vi.mocked(buildGraph).mockImplementation(
+        () => ({ nodes: [], edges: [], preamble: "" }) as unknown as ReturnType<typeof buildGraph>,
+      )
+    })
+
     it("solve button calls solveOptimiser with graph payload", async () => {
       mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_42", error: null })
       const props = makeProps({
@@ -2395,6 +2414,36 @@ describe("OptimiserConfig", () => {
       expect(props.componentProps.onUpdate).toHaveBeenCalledWith({
         frontier_ranges: { loss_ratio: { min: 11, max: 39 } },
       })
+    })
+
+    it("the auto-range request carries the preamble", async () => {
+      mockStartOptimiserFrontierAutoRange.mockResolvedValue({ status: "started", job_id: "range-job-1", error: null })
+      mockGetOptimiserFrontierAutoRangeStatus.mockResolvedValue({
+        status: "completed",
+        progress: 1,
+        message: "Completed",
+        elapsed_seconds: 1,
+        result: { status: "ok", ranges: { loss_ratio: { min: 11, max: 39 } }, method: "scenario_envelope" },
+      })
+      const actual = await vi.importActual<typeof import("../../utils/buildGraph")>("../../utils/buildGraph")
+      vi.mocked(buildGraph).mockImplementation(actual.buildGraph)
+      act(() => useGraphStore.getState().setPreambleRaw("import numpy as np"))
+      renderConfig(makeProps({
+        config: {
+          _nodeId: "opt_1",
+          mode: "online",
+          objective: "premium",
+          constraints: { loss_ratio: { max: 35 } },
+          frontier_ranges: { loss_ratio: {} },
+        },
+      }))
+      fireEvent.click(screen.getByRole("button", { name: "Auto range loss_ratio" }))
+      await waitFor(() => expect(mockStartOptimiserFrontierAutoRange).toHaveBeenCalledTimes(1))
+      expect(mockStartOptimiserFrontierAutoRange.mock.calls[0][0].graph.preamble).toBe("import numpy as np")
+      act(() => useGraphStore.getState().setPreambleRaw(""))
+      vi.mocked(buildGraph).mockImplementation(
+        () => ({ nodes: [], edges: [], preamble: "" }) as unknown as ReturnType<typeof buildGraph>,
+      )
     })
 
     it("fills only the clicked constraint and keeps the other swept range", async () => {

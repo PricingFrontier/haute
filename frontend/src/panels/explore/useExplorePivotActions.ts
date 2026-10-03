@@ -219,11 +219,13 @@ export default function useExplorePivotActions({
         useNodeResultsStore.getState().pivotStartClaims[key]?.token
           === startToken && isDocumentExecutionFenceCurrent(documentFence)
       setNotice(pivot.id, null)
+      // buildGraph reads the preamble from the store; listing it renews this callback.
+      void preamble
       const submissionGeneration = beginSubmitting(pivot.id)
 
       try {
         const response = await runExplorePivot({
-          graph: buildGraph(allNodes, edges, submodels, preamble),
+          graph: buildGraph(allNodes, edges, submodels),
           node_id: node.id,
           pivot,
           source: activeSource,

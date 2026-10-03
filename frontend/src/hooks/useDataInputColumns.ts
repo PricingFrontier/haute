@@ -135,7 +135,7 @@ export function useDataInputColumns(
     const controller = new AbortController()
     // Fetch fresh columns (cached value shown meanwhile)
     const requestStructuralVersion = structuralVersion
-    const graph = buildGraph(allNodesRef.current, edgesRef.current, submodels, preamble)
+    const graph = buildGraph(allNodesRef.current, edgesRef.current, submodels)
     previewNode({
       graph,
       nodeId: dataInput,

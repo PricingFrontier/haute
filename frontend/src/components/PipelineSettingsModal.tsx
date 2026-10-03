@@ -592,13 +592,8 @@ export default function PipelineSettingsModal({ onClose }: { onClose: () => void
       // Read the graph from the store at the moment of the request rather than
       // subscribing to it. Subscribing would make any edit, websocket resync or
       // load re-issue the request while the pane is open.
-      const { nodes: storeNodes, edges, submodels, preamble } = useGraphStore.getState()
-      const graph = buildGraph(
-        storeNodes.map(toSimpleNode),
-        edges.map(toSimpleEdge),
-        submodels,
-        preamble,
-      )
+      const { nodes: storeNodes, edges, submodels } = useGraphStore.getState()
+      const graph = buildGraph(storeNodes.map(toSimpleNode), edges.map(toSimpleEdge), submodels)
       return fetchCacheNodes({ graph, source: activeSource }, { signal: controller.signal })
     },
     [activeSource],

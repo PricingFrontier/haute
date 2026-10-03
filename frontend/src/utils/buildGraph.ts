@@ -18,12 +18,14 @@ function storeGlobalConstants() {
   }
 }
 
-/** Build the graph payload expected by backend API calls. */
+/**
+ * Build the graph payload expected by backend API calls. The preamble, like the
+ * global constants, is read from the graph store, so no request can leave it out.
+ */
 export function buildGraph(
   allNodes: SimpleNode[],
   edges: SimpleEdge[],
   submodels?: Record<string, unknown>,
-  preamble?: string,
 ) {
   return toCanonicalGraphPayload({
     nodes: allNodes.map((n) => ({
@@ -34,7 +36,7 @@ export function buildGraph(
     })),
     edges: edges as PipelineEdge[],
     submodels,
-    preamble,
+    preamble: useGraphStore.getState().preamble,
     ...storeGlobalConstants(),
   })
 }

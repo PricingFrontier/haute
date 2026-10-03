@@ -24,7 +24,6 @@ Current rating behaviour is specified in
 | BUG-10 | Planned | P2 | A CSV Data Input's detected schema is read with the node's reader arguments. |
 | BUG-12 | Planned | P1 | A save never drops a statement written after the pipeline constructor; such a statement is reported and saving waits for it to move. |
 | BUG-15 | Decision | P2 | A bare `pipeline.run()` routes a source the pipeline has instead of a `batch` scenario no pipeline declares. |
-| BUG-16 | Planned | P2 | The optimiser's estimate, auto-range and solve requests carry the preamble, as every other execution request does. |
 | BUG-17 | Decision | P3 | A standalone run of a pipeline with a submodel runs it, or refuses up front naming the submodel, instead of reporting it as an unknown node. |
 
 ## Planned improvements
@@ -205,33 +204,6 @@ default.
 **Evidence:** `src/haute/pipeline.py::Pipeline.run`;
 `src/haute/_model_scorer.py::_scenario_ctx`;
 `src/haute/_standalone_nodes.py::run_configured_node`.
-
-### BUG-16 — Optimiser requests carry the preamble
-**Why:** Every other execution request the editor sends (previews, training,
-Explore, Data Output and Output) builds its graph with the preamble, but the
-optimiser's estimate and auto-range requests use a graph builder in
-`OptimiserConfig.tsx` that passes nodes, edges and submodels only, and the
-solve request in `solveActions.ts` does the same. The optimiser service compiles
-`body.graph.preamble or ""`, so it runs with no preamble at all: a Transform
-upstream of an Optimisation node that calls a preamble helper, or uses a module
-the preamble imports, previews correctly and then raises `NameError` in the
-optimiser's estimate, auto-range and solve.
-
-**Plan:** Build the optimiser's graphs with the preamble like every other
-request. Both graph builders already read the graph store's global constants
-when called; reading the preamble there too closes this class of omission for
-every caller.
-
-**Acceptance:** Request tests prove the estimate, auto-range and solve requests
-carry the preamble, and a backend test solves a pipeline whose Transform calls a
-preamble helper.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/OptimiserConfig.tsx` (`buildGraphCb`);
-`frontend/src/panels/optimiser/solveActions.ts`;
-`frontend/src/panels/optimiser/useOptimiserAutoRange.ts`;
-`src/haute/routes/_optimiser_service.py`.
 
 ### BUG-17 — A standalone run of a pipeline with a submodel says what it cannot do
 **Why:** `Pipeline.submodel()` records an occurrence without loading its
