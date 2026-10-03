@@ -20,7 +20,6 @@ Current rating behaviour is specified in
 |---|---|---:|---|
 | BUG-01 | Planned | P1 | Editing a Rating Step in the editor keeps each table's `onMissing` setting. |
 | BUG-02 | Decision | P1 | A rating table built in the editor no longer prices an unmatched level at 1.0 without saying so. |
-| BUG-03 | Planned | P3 | The ratebook optimiser settings nothing reads are gone. |
 | BUG-04 | Planned | P2 | A pickled XGBoost or LightGBM model loads in a Load File node, or is refused by name. |
 | BUG-05 | Planned | P3 | The Data Input editor describes the Databricks query field as the SELECT clause it is. |
 | BUG-06 | Planned | P2 | A Delta table folder can be chosen as a Lakehouse Data Input in the editor. |
@@ -96,30 +95,6 @@ table's miss count in the preview; a test covers that miss.
 `frontend/src/panels/editors/RatingStepEditor.tsx` (the table fallback and
 `addTable`); `src/haute/_rating.py::RatingTableMissError`;
 `docs/building-models/nodes/rating-step.md`.
-
-### BUG-03 — Remove the ratebook optimiser settings nothing reads
-**Why:** The optimiser config declares `candidate_min`, `candidate_max`,
-`candidate_steps` and `structure_mode`. The cache classifies them, recovery
-validates `candidate_steps`, and the Optimiser page lists the first three as
-required, but the ratebook solve builds `price_contour`'s `RatebookOptimiser`
-without any of them, and no editor field sets them. The candidate values come
-from the scored scenario grid and the factor structure from the Factors pane,
-so a value written for these keys has no effect.
-
-**Plan:** Delete the four fields from `OptimiserConfig`, the cache field
-classification, the recovery validation, and the Optimiser page.
-
-**Acceptance:** No reference to the four keys remains in `src/`,
-`frontend/src/`, `specs/` or `docs/`; the config round-trip and cache field
-classification tests pass.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_types.py` (`OptimiserConfig` and its field list);
-`src/haute/_cache.py` (the optimiser field classification);
-`src/haute/_node_config_recovery.py`;
-`src/haute/routes/_optimiser_solver.py` (`RatebookOptimiser(`);
-`docs/building-models/nodes/optimiser.md`.
 
 ### BUG-04 — A pickled XGBoost or LightGBM model loads in a Load File node
 **Why:** Load File reads pickle and joblib files through an exact allowlist of

@@ -578,7 +578,7 @@ def _validator_issues(
     if node_type is NodeType.OPTIMISER:
         if not isinstance(config.get("objective"), str) or not config["objective"]:
             issues.append(_issue("objective", "required", "Optimiser objective is required."))
-        for field in ("max_iter", "candidate_steps", "frontier_steps", "max_cd_iterations"):
+        for field in ("max_iter", "frontier_steps", "max_cd_iterations"):
             if field in config and (type(config[field]) is not int or config[field] <= 0):
                 issues.append(_issue(field, "invalid_value", "Control must be a positive integer."))
         for field in ("tolerance", "cd_tolerance"):
