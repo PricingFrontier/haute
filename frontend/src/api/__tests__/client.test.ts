@@ -937,6 +937,15 @@ describe("endpoint contracts", () => {
     expect(url).toBe("/api/schema?path=data%2Ftest%20file.csv")
   })
 
+  it("fetchSchema sends a Data Input's reader settings", async () => {
+    await fetchSchema("claims.csv", undefined, { format: "csv", arguments: { separator: ";" } })
+    const [url] = mockFetch.mock.calls[0]
+    const params = new URL(url, "http://localhost").searchParams
+    expect(params.get("path")).toBe("claims.csv")
+    expect(params.get("format")).toBe("csv")
+    expect(JSON.parse(params.get("arguments") ?? "")).toEqual({ separator: ";" })
+  })
+
   it("trainModel posts to /api/modelling/train with default source", async () => {
     await trainModel({ graph: dummyGraph, node_id: "model1" })
     const [url, opts] = mockFetch.mock.calls[0]

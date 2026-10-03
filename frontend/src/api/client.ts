@@ -1168,11 +1168,20 @@ export function dissolveSubmodel(
 // Schema endpoints
 // ---------------------------------------------------------------------------
 
+/** A Data Input's reader settings, which the schema is detected with instead of the path's defaults. */
+export type SchemaReader = { format: string; arguments: Record<string, unknown> }
+
 export function fetchSchema(
   path: string,
   options?: { signal?: AbortSignal },
+  reader?: SchemaReader,
 ): Promise<SchemaResult> {
-  return request<unknown>(`/api/schema?path=${encodeURIComponent(path)}`, options).then(parseSchemaResponse)
+  const query = reader
+    ? `&format=${encodeURIComponent(reader.format)}&arguments=${encodeURIComponent(JSON.stringify(reader.arguments))}`
+    : ""
+  return request<unknown>(`/api/schema?path=${encodeURIComponent(path)}${query}`, options).then(
+    parseSchemaResponse,
+  )
 }
 
 // ---------------------------------------------------------------------------

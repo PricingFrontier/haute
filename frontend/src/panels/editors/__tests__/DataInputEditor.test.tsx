@@ -4,6 +4,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react"
 import type { IoCapabilityGroup } from "../../../api/types"
@@ -356,6 +357,24 @@ describe("DataInputEditor", () => {
       null_values: ["NA"],
       schema: { policy_id: "Int64", premium: "Float64" },
     })
+  })
+
+  it("detects the schema with the node's reader settings, its schema argument aside", async () => {
+    renderEditor({
+      inputType: "file",
+      format: "csv",
+      mode: "scan",
+      path: "claims.csv",
+      arguments: { separator: ";", schema: { claim_id: "Int64" } },
+      code: "",
+    })
+
+    await waitFor(() => expect(fetchSchema).toHaveBeenCalled())
+    expect(fetchSchema).toHaveBeenLastCalledWith(
+      "claims.csv",
+      { signal: expect.any(AbortSignal) },
+      { format: "csv", arguments: { separator: ";" } },
+    )
   })
 
   it("tolerates a leftover cacheMode key and never migrates it", async () => {

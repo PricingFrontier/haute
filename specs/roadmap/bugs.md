@@ -21,7 +21,6 @@ Current rating behaviour is specified in
 | BUG-01 | Planned | P1 | Editing a Rating Step in the editor keeps each table's `onMissing` setting. |
 | BUG-02 | Decision | P1 | A rating table built in the editor no longer prices an unmatched level at 1.0 without saying so. |
 | BUG-06 | Planned | P2 | A Delta table folder can be chosen as a Lakehouse Data Input in the editor. |
-| BUG-10 | Planned | P2 | A CSV Data Input's detected schema is read with the node's reader arguments. |
 | BUG-12 | Planned | P1 | A save never drops a statement written after the pipeline constructor; such a statement is reported and saving waits for it to move. |
 | BUG-15 | Decision | P2 | A bare `pipeline.run()` routes a source the pipeline has instead of a `batch` scenario no pipeline declares. |
 | BUG-17 | Decision | P3 | A standalone run of a pipeline with a submodel runs it, or refuses up front naming the submodel, instead of reporting it as an unknown node. |
@@ -113,32 +112,6 @@ selection.
 (`manualEntry={direction === "output"}`); `frontend/src/panels/editors/_shared.tsx`
 (the browser's folder click); `src/haute/routes/files.py` (directory items);
 `src/haute/_polars_io_registry.py` (the `delta` and `iceberg` formats).
-
-### BUG-10 — A CSV's detected schema uses the node's reader arguments
-**Why:** A CSV Data Input detects its columns through `GET /api/schema`, which
-receives only the path and reads the file with the CSV reader's defaults; the
-node's **ARGUMENTS** (a `separator`, a quote character, `has_header`) are never
-sent. For a file that needs one, the detected columns are wrong: a `;` file
-with the header `claim_id;amount` is detected as the single column
-`claim_id;amount`. **Use detected schema** then writes that column into
-`arguments.schema`, and the node's next read fails with Polars' `SchemaError`
-"provided schema does not match number of columns in file (1 != 2 in file)".
-The Data Input page tells analysts to leave the button alone for such a file.
-
-**Plan:** Detect a file input's schema from the node's own reader settings
-(format and arguments, the `schema` argument aside) through the same reader the
-snapshot uses, instead of from the path alone.
-
-**Acceptance:** A CSV Data Input with `separator: ";"` detects its columns split
-on `;`, and **Use detected schema** writes those columns; a backend test on the
-schema request covers the arguments, a frontend test that the editor sends
-them; the Data Input page drops its warning.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/panels/editors/DataInputEditor.tsx` (`useSchemaFetch`
-is given only the path); `src/haute/routes/files.py::get_schema`
-(`graph_utils.read_source` on the path); `docs/building-models/nodes/data-input.md`.
 
 ### BUG-12 — A save keeps the statements written after the pipeline constructor
 **Why:** Codegen regenerates a pipeline file from the parsed graph, and the

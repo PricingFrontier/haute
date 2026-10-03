@@ -335,6 +335,42 @@ class TestGetSchemaCsv:
         assert "y" in col_names
         assert body["row_count"] == 2
 
+    def test_a_csv_is_read_with_the_nodes_reader_arguments(
+        self, client: TestClient, work_dir: Path
+    ):
+        (work_dir / "claims.csv").write_text("claim_id;amount\n1;10.5\n2;20.0\n")
+        resp = client.get(
+            "/api/schema",
+            params={
+                "path": "claims.csv",
+                "format": "csv",
+                "arguments": json.dumps({"separator": ";", "schema": {"stale": "String"}}),
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert [(c["name"], c["dtype"]) for c in body["columns"]] == [
+            ("claim_id", "Int64"),
+            ("amount", "Float64"),
+        ]
+        assert body["row_count"] == 2
+
+    @pytest.mark.parametrize(
+        ("params", "detail"),
+        [
+            ({"arguments": "{}"}, "arguments need a format"),
+            ({"format": "csv", "arguments": "[1]"}, "arguments must be a JSON object"),
+            ({"format": "csv", "arguments": json.dumps({"no_such": 1})}, "no_such"),
+        ],
+    )
+    def test_reader_settings_that_cannot_read_the_file_are_400(
+        self, client: TestClient, work_dir: Path, params: dict[str, str], detail: str
+    ):
+        (work_dir / "claims.csv").write_text("claim_id;amount\n1;10.5\n")
+        resp = client.get("/api/schema", params={"path": "claims.csv", **params})
+        assert resp.status_code == 400
+        assert detail in resp.json()["detail"]
+
 
 class TestGetSchemaJsonl:
     def test_jsonl_row_count_estimated(self, client: TestClient, work_dir: Path):

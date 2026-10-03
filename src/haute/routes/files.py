@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -13,6 +15,7 @@ from haute._api_input_schema import ApiInputSchemaError
 from haute._io import UnsupportedSourceFormatError
 from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
+from haute._polars_io_registry import PolarsIoConfigError
 from haute._sandbox import contained_path
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.schemas import (
@@ -130,8 +133,44 @@ def _collect_file_preview(lf: pl.LazyFrame) -> pl.DataFrame:
     return streaming_collect(lf)
 
 
-def _read_schema_blocking(path: str, target: Path) -> SchemaResponse:
+def _scan_with_reader(target: Path, reader: Mapping[str, Any]) -> pl.LazyFrame:
+    """Scan *target* as a file Data Input configured with *reader* would read it.
+
+    *reader* holds the node's ``format`` and ``arguments``; the ``schema``
+    argument is left out, because the schema is what is being detected.
+    """
+    from haute._polars_io_registry import (
+        PolarsIoConfigError,
+        format_for_config,
+        scan_polars_input_for_schema,
+        scanner_rejected_arguments,
+    )
+
+    arguments = {k: v for k, v in reader["arguments"].items() if k != "schema"}
+    config = {
+        "inputType": "file",
+        "format": reader["format"],
+        "path": str(target),
+        "arguments": arguments,
+    }
+    fmt = format_for_config(config)
+    if fmt.scanner is None:
+        raise PolarsIoConfigError(f"Format {fmt.name!r} has no scanner to detect a schema with.")
+    rejected = scanner_rejected_arguments(fmt, config)
+    if rejected:
+        raise PolarsIoConfigError(
+            f"The {fmt.label} scanner does not accept the argument(s) {', '.join(rejected)}."
+        )
+    return scan_polars_input_for_schema(config)[0]
+
+
+def _read_schema_blocking(
+    path: str, target: Path, reader: Mapping[str, Any] | None = None
+) -> SchemaResponse:
     """Synchronous schema + preview reader.
+
+    With *reader*, the file is read with that Data Input format and its
+    arguments rather than by its extension's defaults.
 
     Run from a thread pool (``run_in_threadpool``) so the event loop
     stays responsive while Polars materialises the preview and row count.
@@ -141,7 +180,9 @@ def _read_schema_blocking(path: str, target: Path) -> SchemaResponse:
     from haute import graph_utils
     from haute.schemas import ColumnInfo
 
-    if target.suffix.casefold() == ".xml":
+    if reader is not None:
+        lf = _scan_with_reader(target, reader)
+    elif target.suffix.casefold() == ".xml":
         from haute._json_shred._records import _iter_xml_records
 
         lf = pl.DataFrame(list(_iter_xml_records(target)), strict=False).lazy()
@@ -276,13 +317,30 @@ def _inspect_model_file_blocking(
 
 
 @router.get("/schema", response_model=SchemaResponse)
-async def get_schema(path: str) -> SchemaResponse:
+async def get_schema(
+    path: str, format: str | None = None, arguments: str | None = None
+) -> SchemaResponse:
     """Read a data file and return its schema + preview.
+
+    With ``format`` (and optionally ``arguments``, a JSON object), the file is
+    read as a Data Input with those reader settings would read it, so a CSV's
+    separator or header setting shapes the detected columns.
 
     Blocking parquet/CSV/JSON reads are offloaded to ``run_in_threadpool``
     so concurrent requests on the single async event loop are not
     serialised behind disk I/O.
     """
+    reader: dict[str, Any] | None = None
+    if format is not None:
+        try:
+            parsed = json.loads(arguments) if arguments is not None else {}
+        except json.JSONDecodeError:
+            parsed = None
+        if not isinstance(parsed, dict):
+            raise HTTPException(status_code=400, detail="Reader arguments must be a JSON object.")
+        reader = {"format": format, "arguments": parsed}
+    elif arguments is not None:
+        raise HTTPException(status_code=400, detail="Reader arguments need a format.")
     # Resolve the base for the same reason as ``browse_files`` — keep cwd in its
     # canonical form so path handling is consistent on Windows short paths.
     base = Path.cwd().resolve()
@@ -291,7 +349,7 @@ async def get_schema(path: str) -> SchemaResponse:
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
 
     try:
-        return await run_in_threadpool(_read_schema_blocking, path, target)
+        return await run_in_threadpool(_read_schema_blocking, path, target, reader)
     except UnsupportedSourceFormatError as exc:
         logger.info(
             "schema_unsupported_source_format",
@@ -331,7 +389,7 @@ async def get_schema(path: str) -> SchemaResponse:
                 "matches its file extension."
             ),
         ) from None
-    except ApiInputSchemaError as exc:
+    except (ApiInputSchemaError, PolarsIoConfigError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     except ValueError as exc:
         # Raw ValueError text may embed absolute paths, tracebacks, or
