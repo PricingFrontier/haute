@@ -56,6 +56,8 @@ const discovery = vi.hoisted(() => ({
   getRuns: vi.fn(),
   getModels: vi.fn(),
   getModelVersions: vi.fn(),
+  listFiles: vi.fn(),
+  inspectModelFile: vi.fn(),
 }))
 
 vi.mock("../../../api/client", async () => ({
@@ -225,6 +227,72 @@ describe("ModelScoreEditor", () => {
   })
 
   // 2. Source type toggle switches between registered and run
+  it("chooses a model file from a browser limited to model files and commits it", async () => {
+    discovery.listFiles.mockResolvedValue({
+      dir: ".",
+      items: [{ name: "freq.cbm", path: "models/freq.cbm", type: "file", size: 10 }],
+    })
+    const onUpdate = vi.fn()
+    render(
+      <ModelScoreEditor {...defaultProps()} onUpdate={onUpdate} config={{ sourceType: "file" }} />,
+    )
+
+    // A file source never reads MLflow, so the destination is not offered.
+    expect(screen.queryByText(/Local folder/i)).toBeNull()
+    expect(screen.getByText(/scored with the feature contract saved beside it/i)).toBeInTheDocument()
+    fireEvent.click(await screen.findByText("freq.cbm"))
+
+    expect(onUpdate).toHaveBeenCalledWith({ sourceType: "file", model_path: "models/freq.cbm" })
+    expect(discovery.listFiles).toHaveBeenCalledWith(".", ".cbm,.ebm,.lgbm,.rsglm,.ubj")
+  })
+
+  it("shows what the chosen file scores as and the task it records", async () => {
+    discovery.inspectModelFile.mockResolvedValue({
+      model_path: "models/freq.cbm",
+      flavor: "catboost",
+      label: "CatBoost",
+      task: "classification",
+      features: ["age", "region"],
+      categorical_features: ["region"],
+      offset_column: "exposure",
+      offset_link: "log",
+      contract_path: "models/freq.feature_contract.json",
+    })
+    const onUpdate = vi.fn()
+    render(
+      <ModelScoreEditor
+        {...defaultProps()}
+        onUpdate={onUpdate}
+        config={{ sourceType: "file", model_path: "models/freq.cbm", task: "regression" }}
+      />,
+    )
+
+    const summary = await screen.findByTestId("model-file-inspection")
+    expect(summary).toHaveTextContent("CatBoost")
+    expect(summary).toHaveTextContent("2 (1 categorical)")
+    expect(summary).toHaveTextContent("exposure (log)")
+    expect(summary).toHaveTextContent("models/freq.feature_contract.json")
+    expect(discovery.inspectModelFile).toHaveBeenCalledWith("models/freq.cbm", undefined, expect.anything())
+    expect(screen.getByTestId("model-score-recorded-task")).toHaveTextContent("Classification")
+    expect(screen.getByText("Task recorded with the model.")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Use classification" }))
+    expect(onUpdate).toHaveBeenCalledWith("task", "classification")
+  })
+
+  it("shows the server's refusal for a file the node cannot score", async () => {
+    discovery.inspectModelFile.mockRejectedValue(
+      new Error("CatBoost model 'ext.cbm' does not record whether it was trained with an offset"),
+    )
+    render(
+      <ModelScoreEditor {...defaultProps()} config={{ sourceType: "file", model_path: "ext.cbm" }} />,
+    )
+
+    expect(await screen.findByTestId("model-file-error")).toHaveTextContent(
+      "does not record whether it was trained with an offset",
+    )
+    expect(screen.queryByTestId("model-score-recorded-task")).toBeNull()
+  })
+
   it("calls onUpdate when toggling source type to run", () => {
     const { onUpdate } = defaultProps()
     render(<ModelScoreEditor config={{}} onUpdate={onUpdate} inputSources={[]} accentColor="#8b5cf6" />)

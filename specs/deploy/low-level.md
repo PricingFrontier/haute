@@ -137,7 +137,18 @@
    and is not bundled (the preview passes it through too), a chosen source with an empty
    `run_id`/`registered_model` (`IncompleteModelSourceError`) is skipped with a warning, a
    run source without an `artifact_path` is discovered when served, and any other invalid
-   source raises its `ConfigError`. A node left unbundled is then refused by the deploy
+   source raises its `ConfigError`. A file source (`sourceType: "file"`) is copied from the
+   project: its `model_path` resolves through the same containment check and must exist,
+   and the model is bundled under `<node>__<file name>`. Its contract, the explicit
+   `feature_contract_path` or else the first existing sibling
+   (`model_contract_candidates`), is bundled under `<node>__feature_contract.json`; a file
+   source never contacts MLflow. For a run or registered source without an explicit
+   contract, the contract logged beside the model in the run is bundled
+   (`_resolve_run_contract`, which fails naming the run when there is none) for a
+   contract-bound family and for a CatBoost model whose file does not declare its offset
+   (`_offset_undeclared` loads the downloaded model to check), so that model is served bound
+   to the same declaration as in the preview; otherwise the bare `feature_contract.json`
+   beside the download is bundled when present. A node left unbundled is then refused by the deploy
    scorer's passthrough guard below. The bundler resolves each model-score node's
    `mlflow_destination` to one
    backend exactly once and passes that object to both registered-model resolution
@@ -418,7 +429,8 @@ pair. Deploy never uses the general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair.
    (`_resolve_runtime_graph_paths`) and attach bundled feature-contract paths to
    `modelScore` node configs (`_attach_bundled_feature_contracts`). When a remapped
    native model has no bundled feature-contract sidecar, load that local model through
-   the stat-gated deploy cache and attach its feature names plus any offset column as
+   the shared stat-gated local-model cache (`load_local_model_cached`) and attach its
+   feature names plus any offset column as
    the node's internal deploy-contract inputs before strategy planning. Projection and
    boundary checks therefore describe the artifact actually served and never contact
    the original MLflow run or registry merely to resolve a remapped model's columns.
@@ -446,7 +458,9 @@ pair. Deploy never uses the general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair.
    `load_mlflow_optimiser_artifact(destination=...)`, so a Local artifact is served from Local
    even when the deployed environment configures a remote, and an explicit destination
    that is not configured there fails without consulting another backend); `modelScore` in three sub-cases (remapped
-   model artefact present → score; contract bundled but no model artefact → validate
+   model artefact present, found by the basename of `model_path` for a file source and of
+   `artifact_path` otherwise → score, loaded and bound to its bundled contract through
+   `load_local_model_cached`; contract bundled but no model artefact → validate
    contract then raise `RuntimeError`; neither present and no usable model source
    configured → raise `DeployError` immediately, never a silent passthrough).
 3. Compile the graph's preamble once so transform-node user code has access to the same

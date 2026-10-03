@@ -158,9 +158,15 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 - **`FeatureContract`** (`_feature_contract.py`, frozen dataclass) — `features`,
   `feature_types`, `categorical_features`, `categorical_levels`, `target_name`,
   `target_type`, `task`, `contract_hash` (sha256 of canonical compact JSON over every
-  other field), `offset_column: str | None`. Serialized contracts always contain every
-  one of those fields, including an empty `categorical_levels` object and a nullable
-  `offset_column`. `CONTRACT_FILENAME = "feature_contract.json"`;
+  other field), `offset_column: str | None`, `offset_link: str | None`. Serialized
+  contracts always contain every one of those fields, including an empty
+  `categorical_levels` object and a nullable `offset_column` and `offset_link`.
+  `offset_link` (`log` or `identity`) says how the offset enters the model's raw score.
+  It is null when `offset_column` is null, and may be null beside a named column only
+  for a model that applies its own offset (a pyfunc, or a family whose file records
+  the link); binding refuses it for a model whose offset only the contract declares.
+  `build_contract` and `load_contract` refuse a link without a column and a link
+  outside `log`/`identity`. `CONTRACT_FILENAME = "feature_contract.json"`;
   per-model files are named via `_training_job.model_contract_filename(name)` →
   `"{name}.feature_contract.json"`.
   Feature types are named by `_polars_dtypes.contract_dtype_name`, the
@@ -1287,7 +1293,10 @@ potentially large copy on its threadpool.
   configured (`_extract_offset_baseline` raises if the column is missing). The baseline
   is `log(offset)` for `Poisson` and `Tweedie` losses and the offset verbatim otherwise;
   `haute_offset_link` records the transform beside `haute_offset_column`, and a model
-  recording a column without a link is refused. The job's offset link and the link
+  recording a column without a link is refused. A fit without an offset stamps an empty
+  `haute_offset_column` (and no link), so every model Haute trains declares its offset;
+  an absent key leaves the offset undeclared, and scoring then needs a contract that
+  declares it (see the MLflow model registry specification). The job's offset link and the link
   stamped at fit both follow the effective loss (`TrainingJob._catboost_loss_function`).
 - GLM prediction keeps the offset column inside the frame handed to RustyStats rather
   than transforming it in Python — RustyStats owns the fit-time offset transform (e.g.
@@ -1995,7 +2004,7 @@ used for staged input.
   job's allotment, and `device` (the `cuda:N` an XGBoost GPU fit trained on, else `None`);
   `TrainResult.fit_evidence` records those threads, else the job's, and the device when set; the response validates it as
   `FitEvidencePayload`, and `build_candidate_run` logs it as `fit_*` parameters.
-- `FeatureContract` has `contract_version` 2 and `model: ModelIdentity | None`. `ModelIdentity`
+- `FeatureContract` has `contract_version` 3 and `model: ModelIdentity | None`. `ModelIdentity`
   holds `algorithm`, `link`, `engine_name`, `engine_version`, `haute_version`, `loss`,
   `glm_family`, `variance_power`, `class_labels` (`(negative, positive)`), and
   `native_feature_names`; `load_contract` validates every field.

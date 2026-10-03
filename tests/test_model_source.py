@@ -1,4 +1,4 @@
-"""The Model Scoring node's model source is parsed once (MSC-01).
+"""The Model Scoring node's model source is parsed once (MSC-01, MSC-03).
 
 Every consumer that loads a Model Scoring model parses the node config through
 ``parse_model_source`` and loads through ``load_scoring_model``, so a config
@@ -17,6 +17,7 @@ from unittest.mock import patch
 import pytest
 
 from haute._model_source import (
+    FileModelSource,
     IncompleteModelSourceError,
     RegisteredModelSource,
     RunModelSource,
@@ -29,7 +30,8 @@ from haute.errors import ConfigError
 INVALID_SOURCES: dict[str, dict[str, Any]] = {
     "run without run_id": {"sourceType": "run", "run_id": ""},
     "registered without model": {"sourceType": "registered", "registered_model": ""},
-    "unknown sourceType": {"sourceType": "file", "run_id": "abc"},
+    "file without model_path": {"sourceType": "file", "model_path": ""},
+    "unknown sourceType": {"sourceType": "mlflow", "run_id": "abc"},
     "version beside alias": {
         "sourceType": "registered",
         "registered_model": "pricing",
@@ -114,6 +116,7 @@ def test_an_invalid_source_fails_identically_in_every_consumer(
     [
         ({"sourceType": "run"}, "run_id"),
         ({"sourceType": "registered", "registered_model": ""}, "registered_model"),
+        ({"sourceType": "file"}, "model_path"),
     ],
 )
 def test_an_empty_identifier_is_an_incomplete_source(
@@ -132,8 +135,15 @@ def test_an_empty_identifier_is_an_incomplete_source(
         {"sourceType": "run", "run_id": 7},
         {"sourceType": "run", "run_id": "abc", "artifact_path": ["model.cbm"]},
         {"sourceType": "registered", "registered_model": "m", "alias": " champion"},
+        {"sourceType": "file", "model_path": ["model.cbm"]},
     ],
-    ids=["non-string type", "non-string run_id", "non-string artifact", "malformed alias"],
+    ids=[
+        "non-string type",
+        "non-string run_id",
+        "non-string artifact",
+        "malformed alias",
+        "non-string model_path",
+    ],
 )
 def test_a_malformed_source_field_is_a_config_error_not_an_incomplete_source(
     config: dict[str, Any],
@@ -199,8 +209,18 @@ def test_an_untouched_node_has_no_source_and_require_refuses_it() -> None:
                 mlflow_destination="",
             ),
         ),
+        (
+            # A file source never reads MLflow fields.
+            {
+                "sourceType": "file",
+                "model_path": "models/freq.cbm",
+                "run_id": "abc",
+                "mlflow_destination": "databricks",
+            },
+            FileModelSource(model_path="models/freq.cbm"),
+        ),
     ],
-    ids=["run defaults", "run fields", "registered latest", "registered alias", "pinned"],
+    ids=["run defaults", "run fields", "registered latest", "registered alias", "pinned", "file"],
 )
 def test_the_parser_owns_the_source_defaults(config: dict[str, Any], expected: object) -> None:
     assert parse_model_source(config) == expected

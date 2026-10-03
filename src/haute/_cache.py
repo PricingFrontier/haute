@@ -740,6 +740,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
                 "artifact_path",
                 "feature_contract_path",
                 "mlflow_destination",
+                "model_path",
                 "registered_model",
                 "run_id",
                 "sourceType",

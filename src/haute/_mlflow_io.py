@@ -54,12 +54,14 @@ from haute._model_flavors import (
     model_file_suffixes,
     supported_model_files_description,
 )
+from haute._stat_gated_cache import StatGatedCache, artifact_cache_key, resolve_artifact_path
 
 if TYPE_CHECKING:
     from catboost import CatBoostClassifier, CatBoostRegressor
     from mlflow.tracking import MlflowClient
 
     from haute._model_scorer import ScoreWriteProjection
+    from haute.modelling._feature_contract import FeatureContract
 
 logger = get_logger(component="mlflow_io")
 
@@ -535,6 +537,12 @@ class ScoringModel:
     RustyStats path hands it to the model inside the predict frame (it is
     already part of ``required_columns``).  A missing column fails loud —
     scoring never silently proceeds on an offset-0/absent basis.
+
+    ``offset_declared`` is ``False`` only for a CatBoost model whose file does
+    not record whether it was trained with an offset; :func:`bind_feature_contract`
+    takes the declaration from its contract or refuses it. Scoring reads the
+    offset from this carrier, never the raw model, so a contract-bound offset
+    applies to a raw model a cache may share.
     """
 
     __slots__ = (
@@ -544,6 +552,7 @@ class ScoringModel:
         "flavor",
         "offset_column",
         "offset_link",
+        "offset_declared",
     )
 
     def __init__(
@@ -554,6 +563,7 @@ class ScoringModel:
         flavor: str = "pyfunc",
         offset_column: str | None = None,
         offset_link: str | None = None,
+        offset_declared: bool = True,
     ) -> None:
         self._model = model
         self.feature_names = feature_names
@@ -561,6 +571,18 @@ class ScoringModel:
         self.flavor = flavor
         self.offset_column = offset_column
         self.offset_link = offset_link
+        self.offset_declared = offset_declared
+
+    def with_offset(self, offset_column: str | None, offset_link: str | None) -> ScoringModel:
+        """A declared carrier sharing this raw model, with the given offset."""
+        return ScoringModel(
+            model=self._model,
+            feature_names=self.feature_names,
+            cat_feature_names=self.cat_feature_names,
+            flavor=self.flavor,
+            offset_column=offset_column,
+            offset_link=offset_link,
+        )
 
     @property
     def raw_model(self) -> Any:
@@ -716,13 +738,26 @@ def verify_contract_identity(identity: Any, scoring_model: ScoringModel) -> None
             )
 
 
+def _catboost_offset_declared(model: Any) -> bool:
+    """Whether a CatBoost model's metadata declares its offset (or its absence).
+
+    Haute stamps ``CATBOOST_OFFSET_METADATA_KEY`` at every fit, empty for a fit
+    without an offset. A model without the key (trained outside Haute, or by
+    an earlier Haute) declares nothing: its baseline must come from a contract.
+    """
+    from haute.modelling._algorithms import CATBOOST_OFFSET_METADATA_KEY
+
+    return isinstance(model.get_metadata().get(CATBOOST_OFFSET_METADATA_KEY), str)
+
+
 def _catboost_offset_column(model: Any) -> str | None:
     """Read the trained-with offset column stamped into the .cbm metadata.
 
     ``CatBoostAlgorithm.fit`` records the offset column name under
     ``CATBOOST_OFFSET_METADATA_KEY`` because the .cbm format has no native
     baseline memory — without this, a served model would silently score
-    from baseline 0. Only an absent key means "no offset", so a failed
+    from baseline 0. ``None`` covers both an empty value (no offset) and an
+    absent key (undeclared, see :func:`_catboost_offset_declared`); a failed
     metadata read propagates.
     """
     from haute.modelling._algorithms import CATBOOST_OFFSET_METADATA_KEY
@@ -808,6 +843,7 @@ def _wrap_catboost(model: CatBoostRegressor | CatBoostClassifier, *, source: str
         flavor="catboost",
         offset_column=_catboost_offset_column(model),
         offset_link=_catboost_offset_link(model),
+        offset_declared=_catboost_offset_declared(model),
     )
 
 
@@ -906,6 +942,128 @@ def load_local_model(
     return family.load_file(path, task, contract_path=contract_path, source=source)
 
 
+def _offset_transform(link: str | None) -> str | None:
+    """How an offset enters the raw score: ``log``, else ``identity`` (``None`` for none)."""
+    if link is None:
+        return None
+    return "log" if link == "log" else "identity"
+
+
+def bind_feature_contract(
+    scoring_model: ScoringModel, contract: FeatureContract | None, *, model_name: str
+) -> ScoringModel:
+    """Bind a loaded model to the feature contract it scores under.
+
+    A contract that records a model identity must describe the loaded model.
+    A model that declares its own offset must agree with the contract's; a
+    pyfunc model, whose contract is its only offset description, takes the
+    contract's. A CatBoost model whose file does not declare its offset takes
+    the contract's declaration: a null ``offset_column`` declares no offset, a
+    named one with an ``offset_link`` declares that offset. Returns the carrier
+    to score (a new one when the offset changes); *scoring_model* itself, which
+    a cache may hold, is never mutated.
+
+    Raises:
+        ConfigError: the identity or the offset disagree, or a CatBoost
+            model's offset is declared by neither its file nor its contract.
+    """
+    from haute.errors import ConfigError
+
+    if contract is not None and contract.model is not None:
+        verify_contract_identity(contract.model, scoring_model)
+    if not scoring_model.offset_declared:
+        remedy = (
+            "Save a feature contract beside the model that declares its offset "
+            "(offset_column with offset_link 'log' or 'identity', or offset_column null "
+            "for a model trained without one), or retrain it with this version of Haute."
+        )
+        if contract is None:
+            raise ConfigError(
+                f"CatBoost model {model_name} does not record whether it was trained with "
+                f"an offset, and no feature contract declares it. Scoring it without its "
+                f"offset would mis-price every row. {remedy}",
+                model=model_name,
+            )
+        if contract.offset_column is not None and contract.offset_link is None:
+            raise ConfigError(
+                f"The feature contract of CatBoost model {model_name} names offset column "
+                f"{contract.offset_column!r} but not how it enters the model "
+                f"(offset_link). {remedy}",
+                model=model_name,
+                offset_column=contract.offset_column,
+            )
+        return scoring_model.with_offset(contract.offset_column, contract.offset_link)
+    if contract is None:
+        return scoring_model
+    if scoring_model.flavor == "pyfunc":
+        return scoring_model.with_offset(contract.offset_column, contract.offset_link)
+    model_link = _offset_transform(scoring_model.offset_link)
+    if contract.offset_column != scoring_model.offset_column or (
+        contract.offset_link is not None and contract.offset_link != model_link
+    ):
+        raise ConfigError(
+            f"Model {model_name} records offset {scoring_model.offset_column!r} "
+            f"(link {model_link!r}), but its feature contract declares "
+            f"{contract.offset_column!r} (link {contract.offset_link!r}). Use the contract "
+            "saved with this model.",
+            model=model_name,
+            model_offset_column=scoring_model.offset_column,
+            contract_offset_column=contract.offset_column,
+        )
+    return scoring_model
+
+
+_local_model_cache: StatGatedCache[tuple[str, str, str | None], ScoringModel] = StatGatedCache(
+    artifact_kind="local model file"
+)
+
+
+def load_local_model_cached(
+    path: str,
+    task: str,
+    contract_path: str | None = None,
+    *,
+    model_name: str | None = None,
+) -> ScoringModel:
+    """Load a local model file bound to *contract_path*, through a stat-gated cache.
+
+    The one in-memory local-model cache, shared by file-sourced Model Scoring
+    and the deploy scorer. A slot is keyed on the case-folded path, the task
+    and the contract's byte identity, and gated on the model file's freshness
+    token: replacing the model or only its contract reloads, and a missing
+    model or contract raises however warm the cache. A failed load or binding
+    is never cached. *model_name* names the model in errors (its file name
+    otherwise).
+    """
+    from haute.deploy._scorer import artifact_identity_fingerprint
+
+    io_path = resolve_artifact_path(path)
+    name = model_name or repr(Path(path).name)
+    # The contract decides an EBM's offset, labels and loss and an undeclared
+    # CatBoost model's offset: replacing only it must reload.
+    contract_identity = (
+        artifact_identity_fingerprint({"contract": contract_path}) if contract_path else None
+    )
+
+    def _load() -> ScoringModel:
+        from haute.modelling._feature_contract import load_contract_cached
+
+        contract = load_contract_cached(contract_path) if contract_path else None
+        scoring_model = load_local_model(
+            io_path, task, contract_path=contract_path, source=model_name
+        )
+        return bind_feature_contract(scoring_model, contract, model_name=name)
+
+    return _local_model_cache.get_or_load(
+        (artifact_cache_key(io_path), task, contract_identity), io_path, _load
+    )
+
+
+def clear_local_model_cache() -> None:
+    """Drop every cached local model (test isolation / targeted resets)."""
+    _local_model_cache.clear()
+
+
 def model_contract_candidates(path: str | Path) -> list[Path]:
     """Where a model file's feature contract sits: beside it, by name or in a package."""
     from haute.modelling._feature_contract import CONTRACT_FILENAME
@@ -976,7 +1134,11 @@ def _loaded_artifact_fingerprint(
 def _resolve_run_contract(
     mlflow_mod: Any, backend: ResolvedBackend, run_id: str, artifact: str
 ) -> str:
-    """Fetch the feature contract a run logged beside *artifact* (an EBM needs it to load)."""
+    """Fetch the feature contract a run logged beside *artifact*.
+
+    An EBM loads only under it, and a CatBoost model whose file does not
+    declare its offset scores only under it.
+    """
 
     from haute.errors import ConfigError
 
@@ -985,11 +1147,65 @@ def _resolve_run_contract(
         return _resolve_artifact_local(mlflow_mod, backend, run_id, contract_artifact)
     except Exception as exc:
         raise ConfigError(
-            f"Run {run_id} has no feature contract {contract_artifact} beside {artifact}; an "
-            f"EBM model loads only with the contract it was trained with ({exc}).",
+            f"Run {run_id} has no feature contract {contract_artifact} beside {artifact}, and "
+            f"this model scores only with the contract it was trained with ({exc}).",
             run_id=run_id,
             artifact_path=artifact,
         ) from exc
+
+
+def run_logged_contract_path(
+    *,
+    source_type: str,
+    run_id: str = "",
+    artifact_path: str = "",
+    registered_model: str = "",
+    version: str = "",
+    alias: str = "",
+    destination: str = "",
+) -> str:
+    """The local copy of the contract a model source's run logged beside its model.
+
+    A run source naming its artifact is answered from the disk model cache when
+    the contract is there; otherwise the source resolves through MLflow (not
+    within :func:`disk_cache_only_model_loads`) and the contract downloads into
+    the same cache.
+
+    Raises:
+        ConfigError: the run logged no contract beside the model.
+        ModelNotInDiskCacheError: loads are limited to the disk cache and the
+            contract is not in it.
+    """
+    from haute._mlflow_utils import resolve_backend
+
+    backend = resolve_backend(destination)
+    if source_type == "run" and run_id and artifact_path:
+        _validate_artifact_path(artifact_path)
+        cached = _artifact_cache_path(
+            _disk_cache_root(), backend.digest, run_id, _run_contract_artifact(artifact_path)
+        )
+        if cached.is_file():
+            return str(cached)
+    if _DISK_CACHE_ONLY.get():
+        from haute.errors import ModelNotInDiskCacheError
+
+        raise ModelNotInDiskCacheError(
+            "The local model cache holds no feature contract for this model, and this "
+            "execution loads models only from that cache. Preview the Model Scoring node "
+            "in the editor, which fills it.",
+            source_type=source_type,
+        )
+    resolved_run_id, _version, mlflow_mod, client, _backend = resolve_mlflow_source(
+        source_type=source_type,
+        run_id=run_id,
+        registered_model=registered_model,
+        version=version,
+        backend=backend,
+        alias=alias,
+    )
+    artifact = artifact_path or _find_model_artifact(client, resolved_run_id)[0]
+    with _disk_cache_run_in_use(resolved_run_id):
+        return _resolve_run_contract(mlflow_mod, backend, resolved_run_id, artifact)
 
 
 def _load_xgboost_file(
@@ -2011,19 +2227,15 @@ def _score_eager(
     output_col: str = "prediction",
     task: str = "regression",
     write_projection: ScoreWriteProjection | None = None,
-    offset_column: str | None = None,
 ) -> pl.LazyFrame:
     """Collect a LazyFrame and score in-memory. Returns a LazyFrame.
 
     Thin delegate onto :func:`haute._model_scorer.score_frame` with
     ``batch=False`` — the unified scoring entry point owns the flavor
-    dispatch and the batch/eager fork.
-
-    ``offset_column`` is threaded so the model's fit-time offset (contract
-    or self-described) is re-applied at score time; ``None`` lets the
-    scorer derive it from the model itself.
+    dispatch and the batch/eager fork. The carrier's offset (self-described
+    or contract-bound) is re-applied at score time.
     """
-    from haute._model_scorer import _declared_offset_column, score_frame
+    from haute._model_scorer import _declared_offset_column, _declared_offset_link, score_frame
 
     return score_frame(
         model=scoring_model.raw_model,
@@ -2035,7 +2247,6 @@ def _score_eager(
         output_col=output_col,
         batch=False,
         write_projection=write_projection,
-        offset_column=offset_column
-        if offset_column is not None
-        else _declared_offset_column(scoring_model),
+        offset_column=_declared_offset_column(scoring_model),
+        offset_link=_declared_offset_link(scoring_model),
     )

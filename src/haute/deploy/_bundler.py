@@ -34,7 +34,8 @@ def collect_artifacts(
 
     - ``externalFile`` nodes: model files (``.cbm``, ``.pkl``, etc.)
     - ``optimiserApply`` nodes: optimiser artifact files
-    - ``modelScore`` nodes: CatBoost ``.cbm`` models (downloaded from MLflow)
+    - ``modelScore`` nodes: model files (downloaded from MLflow, or copied from
+      the project for a file source) and the feature contracts they score under
     - ``dataInput`` nodes that are NOT deploy inputs: static data inputs
 
     Args:
@@ -88,6 +89,7 @@ def collect_artifacts(
 
         elif node_type == NodeType.MODEL_SCORE:
             from haute._model_source import (
+                FileModelSource,
                 IncompleteModelSourceError,
                 RegisteredModelSource,
                 parse_model_source,
@@ -122,6 +124,11 @@ def collect_artifacts(
                 )
                 continue
             if model_source is None:
+                continue
+            if isinstance(model_source, FileModelSource):
+                _collect_model_file(
+                    nid, model_source, explicit_contract, pipeline_dir, project_root, artifacts
+                )
                 continue
 
             # The node's stored destination ("" = local) is resolved to exactly
@@ -175,9 +182,14 @@ def collect_artifacts(
             # staged into the MLflow download cache (or placed manually);
             # training itself writes per-model ``{name}.feature_contract.json``
             # files since W4b.9 and never populates this directory.
-            if explicit_contract is None and family_for_artifact(artifact_path).requires_contract:
-                # A family that loads only under its contract (EBM) finds it
-                # beside the model in the run; bundle it so the deployed scorer has it.
+            if explicit_contract is None and (
+                family_for_artifact(artifact_path).requires_contract
+                or _offset_undeclared(local_path, str(config.get("task") or "regression"))
+            ):
+                # A family that loads only under its contract (EBM), and a
+                # CatBoost model whose file does not declare its offset, score
+                # only with the contract the run logged beside the model; bundle
+                # it so the deployed scorer binds the same declaration.
                 import mlflow
 
                 from haute._mlflow_io import _resolve_run_contract
@@ -200,6 +212,49 @@ def collect_artifacts(
             )
 
     return artifacts
+
+
+def _collect_model_file(
+    node_id: str,
+    model_source: Any,
+    explicit_contract: str | None,
+    pipeline_dir: Path,
+    project_root: Path,
+    artifacts: dict[str, Path],
+) -> None:
+    """Bundle a file-sourced Model Scoring node's model and the contract it scores under.
+
+    The model is copied from the project under ``<node>__<file name>``; without
+    an explicit contract (already bundled by the caller), the contract saved
+    beside the model is bundled under ``<node>__feature_contract.json``.
+    """
+    from haute._mlflow_io import model_contract_candidates
+    from haute.modelling._feature_contract import CONTRACT_FILENAME
+
+    # An unsupported suffix is refused before anything is copied.
+    family_for_artifact(model_source.model_path)
+    model_path = _resolve_path(
+        model_source.model_path, pipeline_dir, project_root, node_id, "model_path"
+    )
+    _check_exists(model_path, node_id, "modelScore")
+    artifacts[_artifact_name(node_id, model_path)] = model_path
+    if explicit_contract is not None:
+        return
+    sibling = next(
+        (candidate for candidate in model_contract_candidates(model_path) if candidate.is_file()),
+        None,
+    )
+    if sibling is not None:
+        artifacts[f"{node_id}__{CONTRACT_FILENAME}"] = sibling
+
+
+def _offset_undeclared(model_path: Path, task: str) -> bool:
+    """Whether a downloaded model's file leaves its offset undeclared (a CatBoost model)."""
+    if family_for_artifact(model_path.name).flavor != "catboost":
+        return False
+    from haute._mlflow_io import load_local_model
+
+    return not load_local_model(str(model_path), task).offset_declared
 
 
 def _bundle_feature_contract(

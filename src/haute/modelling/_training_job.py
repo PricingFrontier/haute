@@ -1271,6 +1271,16 @@ class TrainingJob:
         link = algorithm_descriptor(self.algorithm).native_loss(task, str(loss)).link
         return "log" if link == "log" else "identity"
 
+    def _contract_offset_link(self) -> str | None:
+        """How the feature contract records the offset entering the raw score.
+
+        A GLM's non-log link adds the offset to the linear predictor, as every
+        other family's ``identity`` offset does.
+        """
+        if not self.offset:
+            return None
+        return "log" if self._offset_link() == "log" else "identity"
+
     def _shap_link(self) -> str:
         """The scale SHAP values add up on: log-odds for classification, else the offset link."""
         return "logit" if self.task == "classification" else self._offset_link()
@@ -2926,6 +2936,7 @@ class TrainingJob:
                 target_type=self._target_dtype_for_contract(),
                 task="classification" if self.task == "classification" else "regression",
                 offset_column=self.offset,
+                offset_link=self._contract_offset_link(),
                 model=self._model_identity(),
             )
             contract_path = output_dir / model_contract_filename(self.name)

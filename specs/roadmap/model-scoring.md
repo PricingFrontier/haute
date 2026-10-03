@@ -13,16 +13,13 @@ the editors in
 and bundling in [the deploy specification](../deploy/high-level.md). Training,
 run logging and the optimiser's own artifacts are out of scope.
 
-Today Model Scoring loads every family Haute trains (CatBoost `.cbm`,
-RustyStats GLM `.rsglm`, XGBoost `.ubj`, LightGBM `.lgbm`, EBM `.ebm`) and
-MLflow pyfunc models, but only from MLflow: an experiment run or a registered
-model. A model file in the project, whether written by Model Training's
-**Save model to file** or handed over by a colleague, can only be used through
-Load File. Load File reads CatBoost alone among those families, as a raw
-object for hand-written `obj.predict(...)` code, with none of the feature,
-categorical, offset or task checks Model Scoring applies. The deploy path
-already scores every family from a local file, so the gap is in the node and
-its consumers, not the loaders.
+Model Scoring loads every family Haute trains (CatBoost `.cbm`, RustyStats
+GLM `.rsglm`, XGBoost `.ubj`, LightGBM `.lgbm`, EBM `.ebm`) from an experiment
+run, a registered model or a model file in the project, and MLflow pyfunc
+models from a run or the registry. Every loaded model is bound to its feature
+contract, which declares the offset a CatBoost file cannot. Load File still
+reads CatBoost as a raw object for hand-written `obj.predict(...)` code, with
+none of those checks.
 
 The target is one node that scores a model. Model Scoring finds the model in a
 registry, a run or a project file, for every family Haute trains, through one
@@ -45,7 +42,6 @@ file defaults to a family.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| MSC-03 | Planned | P2 | Model Scoring scores a model file in the project, for every family Haute trains. |
 | MSC-04 | Planned | P2 | Load File no longer loads CatBoost models; Model Scoring is the one way to score a model. |
 | MSC-05 | Planned | P3 | Model Scoring scores an MLflow pyfunc model saved in the project. |
 | MSC-06 | Planned | P2 | An XGBoost or LightGBM model trained outside Haute scores under a declared contract. |
@@ -53,95 +49,9 @@ file defaults to a family.
 
 ## Planned improvements
 
-The order is `MSC-03`, then `MSC-04`; `MSC-05` and `MSC-06` each follow
-`MSC-03` on their own. Each family they add is one registration in the model
-family registry (`src/haute/_model_flavors.py`).
-
-### MSC-03 — Model Scoring scores a model file in the project
-**Why:** **Save model to file** writes a native model and its feature contract
-into the project, and a deployed bundle already scores every family from such
-a file through `load_local_model`. The Model Scoring node reads only MLflow,
-so scoring a saved file in a pipeline means Load File. Only CatBoost loads
-there, as a raw object without feature order, categorical domain, offset or
-task checks, and an XGBoost, LightGBM, EBM or GLM file cannot be scored in a
-pipeline at all without an MLflow run.
-
-**Plan:** Add a third model source, `sourceType: "file"`, with `model_path`
-(project-relative, through the sandbox's path check) and the existing
-`feature_contract_path`. The contract defaults to the one saved beside the
-file, and unresolved required scoring semantics fail without a contract.
-For CatBoost, missing Haute offset metadata never proves that training used
-no baseline. A file with no recorded offset needs a contract that explicitly
-declares either an offset column and its transform or no offset; conflicting
-file metadata and contract declarations fail. Haute's saved sidecar supplies that
-declaration for its own models. External CatBoost files need the same
-declaration, supplied as a contract in this package. Apply this check through
-the source seam to run and registered sources too, documenting the tightening
-for previously accepted files whose offset was unknown. A missing required
-offset input fails before prediction.
-
-Loading goes through the source seam to `load_local_model`, under the same
-in-memory model cache keyed on the model and contract bytes, which the deploy
-scorer's stat-gated cache folds into. The resolved model and contract also
-become runtime inputs to execution-cache identity, including a sibling
-contract discovered without `feature_contract_path` in the config. Reuse the
-existing file-freshness and content-signature machinery. Model replacement,
-contract-only replacement, a changed sibling-contract selection, and deletion
-must invalidate preview, trace and downstream node-output snapshot freshness
-before cached results can be reused. A missing required file raises even when
-a model object or scored frame is cached; an unchanged path is not freshness
-evidence. Existing explicitly pinned snapshot generations keep their fixed
-data semantics; they must not be reported as current model execution.
-The other consumers follow from the parsed model source
-(`src/haute/_model_source.py`): column planning, the trace explanation,
-`score_from_config`, cache
-field classification, config recovery (where `sourceType` gains `file`), and
-the deploy bundler, which bundles the file and its contract under the node.
-In the editor, **MODEL SOURCE** gains **Model file**, with a file browser
-limited to the registry's suffixes. An inspection endpoint reports the chosen
-file's family, task, features, offset and contract, so **TASK** is shown
-read-only when recorded, as it is for a run. Update the MLflow model registry
-specification's sources and failure model, the feature-contract, caching,
-execution-engine, node editor and deploy specifications, and the Model
-Scoring and Load File pages first.
-
-**Acceptance:** For each family Haute trains, a model saved with **Save model
-to file** scores through a file-sourced node. Its predictions equal those of
-the same model scored from its MLflow run, in the preview, in a standalone
-`pipeline.run()` and in a deployed bundle. An external CatBoost model saved
-after training with a nonzero, nonconstant baseline matches native prediction
-with that baseline supplied through a CatBoost Pool; the trace reconstructs
-the same prediction. An explicit no-offset contract also scores. Missing
-offset declarations, disagreement with embedded metadata, and a missing
-declared offset input each fail for file, run and registered sources.
-
-Warm the model, preview and trace caches and a downstream snapshot, then
-replace the model at the same path: subsequent unpinned execution returns the
-new predictions and the old snapshot is not current. Repeat with only the
-automatically discovered sibling contract changed, using a valid change that
-alters scoring or rejects an input; stale predictions must not be returned.
-Adding a higher-priority sibling contract changes the selected contract and
-its identity. Removing the model or its required contract produces a named
-error even with warm caches. Retain a case for explicit contract paths too.
-A missing file, an unsupported suffix, a path outside the project and an EBM
-without its contract each fail with an error naming the file. The trace
-explains a file-sourced CatBoost, GLM and XGBoost prediction. A frontend test
-chooses a file and commits `sourceType` and `model_path`.
-
-**Dependencies:** None. It reads the model family registry for the
-supported suffixes and loaders.
-
-**Evidence:** `src/haute/_mlflow_io.py::load_local_model`;
-`src/haute/_mlflow_io.py::model_contract_candidates`;
-`src/haute/_mlflow_io.py::_catboost_offset_column`;
-`src/haute/deploy/_scorer.py::_load_local_model_cached`;
-`src/haute/execution.py::_runtime_file_signature_paths`;
-`src/haute/trace.py` (cached scored frames);
-`tests/test_runtime_input_cache_invalidation.py`;
-`src/haute/_types.py::ModelScoreConfig`;
-`src/haute/_node_config_recovery.py`;
-`frontend/src/panels/editors/ModelScoreEditor.tsx`;
-`docs/building-models/nodes/model-score.md`.
+`MSC-04`, `MSC-05` and `MSC-06` each build on the file source on their own.
+Each family they add is one registration in the model family registry
+(`src/haute/_model_flavors.py`).
 
 ### MSC-04 — Load File no longer loads CatBoost models
 **Why:** Once Model Scoring scores a file, Load File's **CATBOOST** file type
@@ -170,7 +80,7 @@ config with `fileType: "catboost"` is refused as an unsupported file type; a
 frontend test pins the picker's extensions; the Load File page no longer
 mentions CatBoost and points model files to Model Scoring.
 
-**Dependencies:** `MSC-03`.
+**Dependencies:** None. Model Scoring already scores model files.
 
 **Evidence:** `src/haute/_io.py::_load_external_object_uncached`;
 `src/haute/_types.py::ExternalFileConfig`;
@@ -215,7 +125,7 @@ All package members and local model, artifact and code paths declared by
 reference is refused before loading. Once trusted, the package's executed
 Python has the same process privileges as other trusted project code.
 Model-object and execution-cache identity include that package identity and
-the resolved feature contract, extending `MSC-03`'s preview, trace and
+the resolved feature contract, extending the file source's preview, trace and
 snapshot freshness rules. The trust check precedes reuse of cached outputs.
 
 Deploy bundles the verified directory and records its approved digest,
@@ -238,12 +148,13 @@ output caches too. After an approved package changes, the old digest fails;
 after explicit trust of the new digest, predictions use the new content.
 Cover an edit below a nested directory and file addition/removal, not only an
 `MLmodel` edit. A contract-only change invalidates cached results as in
-`MSC-03`. A package replaced during verification cannot execute unverified
+for a native model file. A package replaced during verification cannot execute unverified
 bytes, and a modified deployed package fails before loading. An escaping file
 reference or symlink, an absent or unsupported signature, and a requirement
 missing from or incompatible with the image are each refused with the reason.
 
-**Dependencies:** `MSC-03`.
+**Dependencies:** None. It extends the file source
+(`src/haute/_model_source.py::FileModelSource`).
 
 **Evidence:** `src/haute/_mlflow_io.py::load_local_model`;
 `src/haute/_mlflow_io.py::_wrap_pyfunc`;
@@ -252,10 +163,9 @@ missing from or incompatible with the image are each refused with the reason.
 `src/haute/deploy/_container.py` (`_ARTIFACT_EXT_TO_DEPS`).
 
 ### MSC-06 — A native model trained outside Haute scores under a declared contract
-**Why:** A CatBoost `.cbm` trained outside Haute currently loads, but its
-features and categorical columns do not establish its baseline semantics;
-`MSC-03` requires an explicit offset/no-offset contract when those semantics
-are absent. A GLM file describes itself. An XGBoost or LightGBM file trained
+**Why:** A CatBoost `.cbm` trained outside Haute scores only under a contract
+that declares its offset or no offset, because its file records no baseline.
+A GLM file describes itself. An XGBoost or LightGBM file trained
 outside Haute is refused, because Haute's wrappers read the features,
 categorical encoding, task, link and offset from a record Haute writes into
 the file. The refusal is right: the
@@ -358,7 +268,8 @@ are each refused by name. A frontend test drafts a contract, keeps missing-value
 semantics and objective provenance unresolved until supplied, and saves the
 completed declarations.
 
-**Dependencies:** `MSC-03`.
+**Dependencies:** None. It extends the file source and contract binding
+(`src/haute/_mlflow_io.py::bind_feature_contract`).
 
 **Evidence:** `src/haute/modelling/_xgboost.py::XGBoostModel`;
 `src/haute/modelling/_lightgbm.py::LightGBMModel`;
@@ -385,7 +296,7 @@ framework score with predictions equal to the source model within float
 tolerance. Without the extra installed, choosing an ONNX file fails naming the
 extra.
 
-**Dependencies:** `MSC-03`, and demand for ONNX.
+**Dependencies:** Demand for ONNX.
 
 **Evidence:** `src/haute/deploy/_container.py` (`_ARTIFACT_EXT_TO_DEPS`);
 `frontend/src/panels/editors/ExternalFileEditor.tsx`.

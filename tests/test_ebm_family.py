@@ -625,7 +625,7 @@ def test_deploy_bundles_the_run_contract_an_ebm_needs(tmp_path: Path) -> None:
 
 
 def test_a_deployed_ebm_loads_under_its_bundled_contract(tmp_path: Path) -> None:
-    from haute.deploy._scorer import _load_local_model_cached
+    from haute._mlflow_io import load_local_model_cached
 
     data = frame()
     _job, result = train(tmp_path / "train", target="severity", loss="RMSE")
@@ -637,13 +637,13 @@ def test_a_deployed_ebm_loads_under_its_bundled_contract(tmp_path: Path) -> None
     contract.write_bytes(
         (Path(result.model_path).parent / model_contract_filename("ebm")).read_bytes()
     )
-    scoring = _load_local_model_cached(str(model), "regression", str(contract))
+    scoring = load_local_model_cached(str(model), "regression", str(contract))
     assert np.array_equal(
         scoring.raw_model.predict(data),
         load_local_model(result.model_path).raw_model.predict(data),
     )
     with pytest.raises(ConfigError, match="No feature contract was found"):
-        _load_local_model_cached(str(model), "regression", None)
+        load_local_model_cached(str(model), "regression", None)
 
 
 def _write_contract(path: Path, contract: object) -> None:
@@ -677,7 +677,7 @@ def _write_contract(path: Path, contract: object) -> None:
 def test_the_loaders_refuse_a_contract_for_another_loss(
     tmp_path: Path, change: dict, message: str
 ) -> None:
-    from haute.deploy._scorer import _load_local_model_cached
+    from haute._mlflow_io import load_local_model_cached
 
     _job, result = train(tmp_path, target="claims", loss="Poisson", offset="exposure")
     contract = contract_of(result)
@@ -687,7 +687,7 @@ def test_the_loaders_refuse_a_contract_for_another_loss(
     with pytest.raises(ConfigError, match=message):
         load_local_model(result.model_path)
     with pytest.raises(ConfigError, match=message):
-        _load_local_model_cached(result.model_path, "regression", str(sidecar))
+        load_local_model_cached(result.model_path, "regression", str(sidecar))
 
 
 def test_a_contract_with_another_tweedie_power_is_refused(tmp_path: Path) -> None:
@@ -720,16 +720,17 @@ def _replace_sidecar(path: Path, contract: object) -> None:
 
 
 def test_the_deployed_cache_reloads_when_only_the_contract_changes(tmp_path: Path) -> None:
-    from haute.deploy._scorer import _clear_deploy_artifact_caches, _load_local_model_cached
+    from haute._mlflow_io import load_local_model_cached
+    from haute.deploy._scorer import _clear_deploy_artifact_caches
 
     _clear_deploy_artifact_caches()
     _job, result = train(tmp_path, target="severity", loss="RMSE")
     sidecar = Path(result.model_path).parent / model_contract_filename("ebm")
-    first = _load_local_model_cached(result.model_path, "regression", str(sidecar))
-    assert _load_local_model_cached(result.model_path, "regression", str(sidecar)) is first
+    first = load_local_model_cached(result.model_path, "regression", str(sidecar))
+    assert load_local_model_cached(result.model_path, "regression", str(sidecar)) is first
     _replace_sidecar(sidecar, _stale_version(contract_of(result)))
     with pytest.raises(ArtifactVersionMismatchError):
-        _load_local_model_cached(result.model_path, "regression", str(sidecar))
+        load_local_model_cached(result.model_path, "regression", str(sidecar))
     _clear_deploy_artifact_caches()
 
 

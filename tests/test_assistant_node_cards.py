@@ -161,6 +161,8 @@ def _log_model_run(project: Path, fixture: dict[str, Any]) -> str:
         cat_features=[name for name, dtype in features.schema.items() if dtype == pl.String],
     )
     model.fit(features.to_pandas(), [float(index) for index in range(features.height)])
+    # Declared as Haute declares a fit without an offset.
+    model.get_metadata()["haute_offset_column"] = ""
     model_path = project / "trained" / run["artifact"]
     model_path.parent.mkdir()
     model.save_model(str(model_path))

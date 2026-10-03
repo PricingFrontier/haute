@@ -1,4 +1,4 @@
-"""Version-2 feature contracts: the model identity section (MOD-F01)."""
+"""Feature contracts: the model identity section (MOD-F01) and the offset link."""
 
 from __future__ import annotations
 
@@ -50,8 +50,8 @@ def test_identity_round_trips_through_save_and_load(tmp_path: Path) -> None:
     save_contract(contract(), path)
     loaded = load_contract(path)
     assert loaded.model == IDENTITY
-    assert loaded.contract_version == CONTRACT_VERSION == 2
-    assert json.loads(path.read_text(encoding="utf-8"))["contract_version"] == 2
+    assert loaded.contract_version == CONTRACT_VERSION == 3
+    assert json.loads(path.read_text(encoding="utf-8"))["contract_version"] == 3
 
 
 def test_schema_only_contract_keeps_model_null(tmp_path: Path) -> None:
@@ -79,20 +79,65 @@ def test_every_identity_field_is_covered_by_the_contract_hash(change: dict) -> N
     assert contract(changed).contract_hash != contract().contract_hash
 
 
+def offset_contract(column: str | None, link: str | None):
+    return build_contract(
+        features=["a"],
+        feature_types={"a": "Float64"},
+        categorical_features=[],
+        target_name="y",
+        target_type="Float64",
+        task="regression",
+        offset_column=column,
+        offset_link=link,
+    )
+
+
+@pytest.mark.parametrize("link", ["log", "identity", None])
+def test_offset_link_round_trips_and_is_hashed(tmp_path: Path, link: str | None) -> None:
+    path = tmp_path / "c.json"
+    save_contract(offset_contract("exposure", link), path)
+    assert load_contract(path).offset_link == link
+    other = "identity" if link == "log" else "log"
+    assert offset_contract("exposure", other).contract_hash != (
+        offset_contract("exposure", link).contract_hash
+    )
+
+
+@pytest.mark.parametrize(
+    ("column", "link", "message"),
+    [
+        (None, "log", "offset_link is set but offset_column is null"),
+        ("exposure", "logit", "offset_link must be 'log', 'identity' or null"),
+    ],
+)
+def test_invalid_offset_link_is_refused_when_built_and_loaded(
+    tmp_path: Path, column: str | None, link: str, message: str
+) -> None:
+    with pytest.raises(FeatureMismatchError, match=message):
+        offset_contract(column, link)
+    path = tmp_path / "c.json"
+    save_contract(offset_contract("exposure", "log"), path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["offset_column"], raw["offset_link"] = column, link
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(FeatureMismatchError, match=message):
+        load_contract(path, verify_hash=False)
+
+
 def test_identity_does_not_change_the_live_schema_comparison() -> None:
     from haute.modelling._feature_contract import assert_contracts_match
 
     assert_contracts_match(contract(), contract(model=None))
 
 
-def test_version_one_contract_is_rejected_with_a_retrain_message(tmp_path: Path) -> None:
+def test_an_earlier_contract_version_is_rejected_with_a_retrain_message(tmp_path: Path) -> None:
     path = tmp_path / "c.json"
     save_contract(contract(), path)
     raw = json.loads(path.read_text(encoding="utf-8"))
     del raw["contract_version"]
     del raw["model"]
     path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(FeatureMismatchError, match="not a version-2 feature contract; retrain"):
+    with pytest.raises(FeatureMismatchError, match="not a version-3 feature contract; retrain"):
         load_contract(path)
 
 

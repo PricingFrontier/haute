@@ -5,7 +5,7 @@ You have a model file on disk  - a pickle, joblib, or CatBoost `.cbm` file  - an
 !!! info "When to use"
     - Your model is a standalone file not tracked in MLflow (e.g. a `.pkl` from a colleague), and its class is one Haute can load (see the warning below).
     - You need to load a JSON lookup file and apply it with custom logic.
-    - If your models are managed in MLflow with versioning, use [Model Scoring](model-score.md) instead.
+    - To score a model Haute trains (CatBoost, GLM, XGBoost, LightGBM or EBM), from MLflow or from a file in the project, use [Model Scoring](model-score.md) instead: it checks the model's features and offset for you.
 
 A Load File node takes the data to score as its first input and outputs that data with whatever your steps or code add. Your steps and code see the first input as `df`; any further inputs are available by their names, and **Join another input** and **Append inputs** steps can use them. With no steps and no code, the node passes its first input through unchanged. The panel has three tabs: **CONFIG**, **TRANSFORM** and **COLUMNS**.
 
@@ -87,6 +87,6 @@ df = df.with_columns(
 
 **See also:**
 
-- [Model Scoring](model-score.md)  - for MLflow-managed models
+- [Model Scoring](model-score.md)  - for models Haute trains, from MLflow or a project file
 - [Transform](transform.md)  - for steps and code
 - [Filesystem Portability](../filesystem-portability.md)  - if the file travels between operating systems, WSL, or network mounts

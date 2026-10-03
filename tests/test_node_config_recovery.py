@@ -199,6 +199,16 @@ def test_structured_contract_is_accepted() -> None:
             None,
         ),
         (
+            NodeType.MODEL_SCORE,
+            {
+                "sourceType": "file",
+                "model_path": "models/freq.cbm",
+                "task": "regression",
+                "output_column": "prediction",
+            },
+            None,
+        ),
+        (
             NodeType.BANDING,
             {
                 "factors": [
@@ -413,3 +423,8 @@ def test_unrecoverable_list_entries_are_excluded_not_null() -> None:
     assert "corrupt" in removed.reason
     (issue,) = [item for item in result.issues if item.path == "/factors/1"]
     assert issue.severity == "warning"
+
+
+def test_a_file_sourced_model_score_without_its_file_names_model_path() -> None:
+    issues = validate_recovery_config(NodeType.MODEL_SCORE, {"sourceType": "file"})
+    assert [(issue.path, issue.code) for issue in issues] == [("model_path", "required")]

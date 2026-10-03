@@ -517,7 +517,6 @@ EXPECTED_VIOLATIONS: dict[str, int] = {
     # (``_batch_scoring.py``'s ``tempfile.mkdtemp``, which takes no ``dir=``),
     # so the tests can only write into and clean up the path it hands back.
     "tests/test_deploy_batch_scoring.py": 4,
-    "tests/test_deploy_contract_integrity.py": 1,
     "tests/test_deploy_scorer_artifact_cache.py": 1,
     "tests/test_executor.py": 2,
     "tests/test_file_ops.py": 18,

@@ -240,7 +240,7 @@ nothing written.
 | Data Input / Data Output | provider locator (`path`, table, ...) | yes: empty locator, reported as completeness | saved |
 | Banding | factor/rule structure | no | refused when malformed |
 | Scenario Expander | `stepCount` | no: a new node carries an explicit count | refused when missing or invalid |
-| Model Score | `run_id` / `registered_model` for the chosen `sourceType` | yes: a source mode picked before its model | saved; the builder reports it when run |
+| Model Score | `run_id` / `registered_model` / `model_path` for the chosen `sourceType` | yes: a source mode picked before its model | saved; the builder reports it when run |
 | Optimiser Apply | `sourceType` when `artifact_path` is set | no | reported when the node runs; save-time refusal waits for the typed config models (`PCFG-R07`) |
 | Modelling | a trainable value for each configured `algorithm`, GLM `family`/`link`/solver setting, and `loss_function` | yes: a new node is `{}`, and an unset target, objective or feature set is completeness, reported when training starts | saved when incomplete; refused when a configured value is malformed |
 
@@ -528,7 +528,7 @@ forwards projection/profile fields; external-file resolution validates
   folder-backed node type used without `config=`;
   `optimiserApply` misconfiguration (`artifact_path` set without `sourceType`); `modelScore`
   misconfiguration (a non-string or unsupported `sourceType`, or a blank
-  `run_id`/`registered_model` for the declared source); project
+  `run_id`/`registered_model`/`model_path` for the declared source); project
   root not found, or found without a surrounding git repository.
 - **`ParseError`** (`haute.errors`) — `async def` node body; duplicate node function name;
   Explore-node topology violations (`_graph_shape.py`).

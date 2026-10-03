@@ -272,9 +272,11 @@ approving it.
   (`haute._execution_admission`, `haute._execution_context`).
 - **[mlflow-model-registry](../mlflow-model-registry/high-level.md)** — `_bundler.py`
   downloads `modelScore` model artefacts and feature contracts from MLflow at bundle
-  time (`_mlflow_io._resolve_artifact_local`, `_find_model_artifact`); `_mlflow.py`
+  time (`_mlflow_io._resolve_artifact_local`, `_find_model_artifact`) and copies a
+  file-sourced node's model file and contract from the project; `_mlflow.py`
   registers the deployed pipeline itself as a new MLflow model version. `_scorer.py`
-  loads bundled models via `haute._mlflow_io.load_local_model`.
+  loads bundled models via `haute._mlflow_io.load_local_model_cached`, which binds each
+  to its bundled contract exactly as the preview does.
 - **[modelling](../modelling/high-level.md)** — `_scorer.py` and `_bundler.py` both
   depend on `haute.modelling._feature_contract` (contract loading, matching, and
   categorical-level declarations) to detect train-vs-score drift.

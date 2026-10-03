@@ -2,8 +2,10 @@
 
 Every shipped native family, CatBoost included, is held to the same binary
 classification contract and scores identically through every path a trained
-model takes: eager and batched scoring, the shared MLflow pyfunc package, and
-the deployed scorer's cached loader.
+model takes: eager and batched scoring, the shared MLflow pyfunc package, the
+deployed scorer's cached loader, and Model Scoring from an MLflow run or from
+the saved model file (MSC-03) in the preview, a standalone run and a deployed
+bundle.
 """
 
 from __future__ import annotations
@@ -80,8 +82,14 @@ def train(tmp_path: Path, family: str, **kwargs: object):
     ).run()
 
 
-def _deploy_graph(artifact_path: str, task: str) -> object:
+def _deploy_graph(artifact_path: str, task: str, *, file_source: bool = False) -> object:
     from tests.conftest import make_graph, make_output_config
+
+    source = (
+        {"sourceType": "file", "model_path": artifact_path}
+        if file_source
+        else {"sourceType": "run", "run_id": "run", "artifact_path": artifact_path}
+    )
 
     # Output assembly merges identical elements, so each row carries its id.
     fields = ["row", "pred", "pred_proba"] if task == "classification" else ["row", "pred"]
@@ -97,13 +105,7 @@ def _deploy_graph(artifact_path: str, task: str) -> object:
                     "data": {
                         "label": "ms",
                         "nodeType": "modelScore",
-                        "config": {
-                            "sourceType": "run",
-                            "run_id": "run",
-                            "artifact_path": artifact_path,
-                            "task": task,
-                            "output_column": "pred",
-                        },
+                        "config": {**source, "task": task, "output_column": "pred"},
                     },
                 },
                 {
@@ -131,12 +133,17 @@ def every_path(
     ``deployed`` runs the bundled deploy graph (``score_graph`` with the model and
     its contract remapped as the bundler writes them); ``model_score`` is the Model
     Score node runtime that generated pipeline code calls, loading a local MLflow run.
+    The ``file_*`` paths score the saved file through a file-sourced Model Scoring
+    node: as the preview builds it, as a standalone run's ``score_from_config``
+    loads it, and from a deployed bundle.
     """
+    import json
+
     import mlflow
 
     from haute._mlflow_utils import mlflow_fluent_operation, set_tracking_uri_preserving_env
-    from haute._model_scorer import ModelScorer
-    from haute._model_source import RunModelSource
+    from haute._model_scorer import ModelScorer, score_from_config
+    from haute._model_source import FileModelSource, RunModelSource, scoring_contract_path
     from haute._sandbox import set_project_root
     from haute.deploy._scorer import _clear_deploy_artifact_caches, score_graph
     from haute.modelling._feature_contract import CONTRACT_FILENAME
@@ -179,7 +186,43 @@ def every_path(
             f"ms__{CONTRACT_FILENAME}": str(contract),
         },
     )
+    bundle = {
+        f"ms__{model_path.name}": str(model_path),
+        f"ms__{CONTRACT_FILENAME}": str(contract),
+    }
+    file_deployed = score_graph(
+        graph=_deploy_graph(model_path.name, task, file_source=True),
+        input_df=data,
+        input_node_ids=["src"],
+        output_node_id="out",
+        artifact_paths=bundle,
+    )
     _clear_deploy_artifact_caches()
+
+    # The preview's builder and a standalone run both resolve the file and the
+    # contract saved beside it from the project.
+    file_source = FileModelSource(model_path=model_path.name)
+    file_node = ModelScorer(
+        model_source=file_source,
+        task=task,
+        output_col="pred",
+        feature_contract_path=scoring_contract_path(file_source, {}, None),
+    ).score(data.lazy())
+    node_config = model_path.parent / "file_node.json"
+    node_config.write_text(
+        json.dumps(
+            {
+                "sourceType": "file",
+                "model_path": model_path.name,
+                "task": task,
+                "output_column": "pred",
+            }
+        ),
+        encoding="utf-8",
+    )
+    standalone = score_from_config(
+        data.lazy(), config=node_config.name, base_dir=model_path.parent
+    ).collect()
 
     package = package_native_model(model_path, contract, tmp_path / f"package_{task}")
     served = NativePyfuncModel(str(package)).predict(data.to_pandas())
@@ -214,6 +257,11 @@ def every_path(
         "batch": through(scoring, batch=True),
         "deployed": renamed(deployed.sort("row"), "pred"),
         "model_score": renamed(node.collect() if hasattr(node, "collect") else node, "pred"),
+        "file_preview": renamed(
+            file_node.collect() if hasattr(file_node, "collect") else file_node, "pred"
+        ),
+        "file_standalone": renamed(standalone, "pred"),
+        "file_deployed": renamed(file_deployed.sort("row"), "pred"),
         "pyfunc": pyfunc,
     }
 
@@ -243,6 +291,7 @@ def test_regression_scores_identically_on_every_path(
         monkeypatch,
     )
     assert_close(doubled["deployed"]["prediction"].to_numpy(), 2 * reference)
+    assert_close(doubled["file_deployed"]["prediction"].to_numpy(), 2 * reference)
 
 
 @pytest.mark.parametrize("family", FAMILIES)

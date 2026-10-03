@@ -2,13 +2,13 @@
 
 ## Purpose
 
-Haute pipelines score data through models that were trained and logged
-outside the pipeline itself — as an MLflow run artifact or as a version of
-an MLflow registered model. This component is the read path for those
-models: given a source description (a run + artifact path, or a
-registered model + version), it resolves that description against the
-configured MLflow tracking server, downloads and caches the underlying
-artifact, loads it with the right flavor-specific loader (CatBoost native,
+Haute pipelines score data through models that were trained outside the
+pipeline itself — an MLflow run artifact, a version of an MLflow registered
+model, or a model file saved in the project. This component is the read path
+for those models: given a source description (a run + artifact path, a
+registered model + version, or a project file), it resolves that description
+against the configured MLflow tracking server or the project, downloads and
+caches the underlying artifact, loads it with the right flavor-specific loader (CatBoost native,
 RustyStats native, or generic MLflow pyfunc), and wraps it behind one
 uniform interface the rest of the codebase scores against without caring
 which flavor it is.
@@ -45,6 +45,12 @@ In scope:
   is given (each registered family's suffixes in registration order —
   CatBoost `.cbm`, RustyStats `.rsglm`, XGBoost `.ubj`, LightGBM `.lgbm`,
   EBM `.ebm` — then a pyfunc model directory).
+- Resolving a project model file (`source_type="file"`) through the
+  runtime sandbox, and the contract it scores under (explicit, or saved
+  beside it), and inspecting such a file for the node editor
+  (`GET /api/model-file`).
+- Binding a loaded model to its feature contract, including the offset
+  declaration a CatBoost model's own file may lack.
 - Downloading and disk-caching native-flavor artifacts, and
   thread-safe in-memory LRU caching of already-loaded models.
 - Family detection and family-specific loading through the model family
@@ -109,17 +115,53 @@ Out of scope (owned elsewhere):
 
 ## Behaviour
 
-- A model is located one of two ways: `source_type="run"` with a
-  `run_id` (and optional `artifact_path`, auto-discovered if omitted), or
+- A model is located one of three ways: `source_type="run"` with a
+  `run_id` (and optional `artifact_path`, auto-discovered if omitted),
   `source_type="registered"` with a `registered_model` name and a
   `version` (a literal version number, or `"latest"`, which resolves to
-  the highest numeric version currently registered).
+  the highest numeric version currently registered), or `source_type="file"`
+  with a `model_path` naming a model file in the project. A file source
+  resolves its path through the runtime sandbox (a path outside the project is
+  refused), loads it through the family the suffix names, and scores under the
+  feature contract `feature_contract_path` names or, without one, the contract
+  saved beside the file (`<stem>.feature_contract.json`, then
+  `feature_contract.json`).
 - A Model Scoring node's config is parsed once into a typed model source,
   which owns every source default and validation rule, and is loaded through
   one entry point. The executor, column planning, a standalone run, the trace
   explanation and deploy all take that parsed source, so an invalid source
   fails with the same error everywhere and no context loads a different model
   for the same config.
+- A loaded model is bound to the feature contract it scores under before
+  anything scores it. A contract that records a model identity must describe
+  the loaded model. A CatBoost file records no baseline of its own, so its
+  offset must be declared: by the `haute_offset_column` metadata Haute stamps
+  at fit (an empty value declares no offset), or by a contract whose
+  `offset_column` names the column and whose `offset_link` (`log` or
+  `identity`) says how it enters the raw score, or whose `offset_column` is
+  null. A model whose metadata and contract disagree is refused. A run or
+  registered CatBoost model without the metadata and without an explicit
+  contract is bound to the contract the run logged beside it. A CatBoost model
+  with no declaration is refused, never scored from baseline zero, and a
+  declared offset column missing from the scoring input fails before
+  prediction.
+- A file-sourced model is cached in memory by its resolved path, `task` and
+  the byte identity of the contract it scores under, gated on the model
+  file's freshness token, in the same cache the deploy scorer serves bundled
+  models from. Replacing the model or only its contract reloads it; a failed
+  load or binding is never cached; a missing model or contract file raises
+  however warm the cache. The model file and its contract are runtime inputs
+  of execution-cache identity: an explicit contract is signed by its path, and
+  without one both sibling-contract candidates are signed (a missing one as
+  missing), so replacing the model, replacing or adding a sibling contract, or
+  deleting either invalidates preview, trace and downstream node-output
+  snapshot freshness. An unchanged path is never freshness evidence.
+- `GET /api/model-file?path=` inspects a project model file for the node
+  editor: its family, recorded task (from the contract, or the model's own
+  record), features, categorical features, offset column and link, and the
+  project-relative contract it would score under. Inspection loads the model
+  and binds the contract exactly as scoring does, so a file the node would
+  refuse is reported with the same error (`400`).
 - Loaded models are cached in two tiers. An in-memory LRU (16 entries)
   holds fully-loaded `ScoringModel` objects keyed by the resolved source
   identity plus `task` plus the byte-identity fingerprint of the locally
@@ -315,7 +357,8 @@ Out of scope (owned elsewhere):
   from the Model Score decorator.
 - Is consumed by [deploy](../deploy/high-level.md), which loads and
   bundles models via the same `load_mlflow_model` /
-  `resolve_mlflow_source` primitives for its own scorer, and by
+  `resolve_mlflow_source` primitives, bundles a file source's model and
+  contract, and serves bundled models through `load_local_model_cached`, and by
   [optimiser](../optimiser/high-level.md), which loads MLflow-backed
   models to evaluate during optimisation.
 - Feeds the [tracing](../tracing/high-level.md) component: per-prediction
@@ -348,9 +391,20 @@ Out of scope (owned elsewhere):
 - A model file or run artifact whose suffix no family registers:
   `ConfigError` naming the supported suffixes, raised before any download.
 - A CatBoost model whose metadata cannot be read: `ConfigError` naming the
-  model file or run artifact. Only an absent offset key means the model was
-  trained without an offset. An unreadable one is never taken to mean that,
-  because the model would then score from baseline zero.
+  model file or run artifact. An unreadable one is never taken to mean the
+  model has no offset, because the model would then score from baseline zero.
+- A CatBoost model whose offset is declared neither by its metadata nor by a
+  contract, a contract that names an offset column without its `offset_link`,
+  or metadata and a contract that disagree on the offset: `ConfigError` naming
+  the model and the remedy (save a contract beside it, or retrain). This holds
+  for file, run and registered sources; a model trained by an earlier Haute
+  without an offset and scored without its contract is refused where it was
+  once scored from baseline zero.
+- A file source whose `model_path` is empty (`IncompleteModelSourceError`),
+  resolves outside the project (`RuntimePathOutsideProjectError`), does not
+  exist, or has a suffix no family registers; an explicit
+  `feature_contract_path` that does not exist; and an EBM without its
+  contract: each a `ConfigError` naming the file.
 - A model artifact that is still corrupt/unloadable after the one bounded
   retry: `RuntimeError` naming the run ID, artifact path, flavor, and the
   last underlying error.

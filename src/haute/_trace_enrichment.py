@@ -664,6 +664,7 @@ def enrich_model_score(
         # Model identity
         model_identity = {
             "source_type": config.get("sourceType", ""),
+            "model_path": config.get("model_path", ""),
             "run_id": config.get("run_id", ""),
             "registered_model": config.get("registered_model", ""),
             "version": config.get("version", ""),

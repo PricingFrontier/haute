@@ -7824,6 +7824,102 @@
       "title": "ModelFileExportReceipt",
       "type": "object"
     },
+    "ModelFileInspectionResponse": {
+      "description": "What a project model file scores as (``GET /api/model-file``).",
+      "properties": {
+        "categorical_features": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Categorical Features",
+          "type": "array"
+        },
+        "contract_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Contract Path"
+        },
+        "features": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Features",
+          "type": "array"
+        },
+        "flavor": {
+          "title": "Flavor",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "model_path": {
+          "title": "Model Path",
+          "type": "string"
+        },
+        "offset_column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Offset Column"
+        },
+        "offset_link": {
+          "anyOf": [
+            {
+              "enum": [
+                "log",
+                "identity"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Offset Link"
+        },
+        "task": {
+          "anyOf": [
+            {
+              "enum": [
+                "regression",
+                "classification"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Task"
+        }
+      },
+      "required": [
+        "model_path",
+        "flavor",
+        "label",
+        "task",
+        "features",
+        "categorical_features",
+        "offset_column",
+        "offset_link",
+        "contract_path"
+      ],
+      "title": "ModelFileInspectionResponse",
+      "type": "object"
+    },
     "ModelSaveDestinationResponse": {
       "properties": {
         "path": {
@@ -13551,6 +13647,9 @@
     "MlflowTestConnectionResponse": {
       "$ref": "#/$defs/MlflowTestConnectionResponse"
     },
+    "ModelFileInspectionResponse": {
+      "$ref": "#/$defs/ModelFileInspectionResponse"
+    },
     "ModelSaveDestinationResponse": {
       "$ref": "#/$defs/ModelSaveDestinationResponse"
     },
@@ -13712,6 +13811,7 @@
     "IoCapabilitiesResponse",
     "SessionStatusResponse",
     "BrowseFilesResponse",
+    "ModelFileInspectionResponse",
     "EditorIdentitiesResponse",
     "PolarsStepsRenderResponse",
     "PolarsFreeCodeColumnsResponse",
@@ -13818,7 +13918,8 @@
     ],
     "session": [
       "SessionStatusResponse",
-      "BrowseFilesResponse"
+      "BrowseFilesResponse",
+      "ModelFileInspectionResponse"
     ],
     "training": [
       "TrainResponse",

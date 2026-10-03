@@ -30,10 +30,10 @@ from haute._graph_utils import edge_input_name, upstream_node_ids
 from haute._hashing import content_hash_bytes
 from haute._io import load_external_object
 from haute._logging import get_logger
+from haute._mlflow_io import clear_local_model_cache, load_local_model_cached
 from haute._node_builder import NodeBuildHooks, NodeFnResult, node_fn_name, wrap_builder
 from haute._polars_dtypes import contract_dtype_name
 from haute._polars_utils import streaming_collect
-from haute._stat_gated_cache import StatGatedCache, artifact_cache_key, resolve_artifact_path
 from haute._types import (
     GraphNode,
     NodeType,
@@ -47,7 +47,6 @@ from haute.execution import (
 from haute.executor import _build_node_fn
 
 if TYPE_CHECKING:
-    from haute._mlflow_io import ScoringModel
     from haute.modelling._feature_contract import FeatureContract
 
 _RUNTIME_PATH_NODE_TYPES = frozenset(
@@ -66,51 +65,14 @@ logger = get_logger(component="deploy_scorer")
 # A deployed container serves every ``/quote`` from the same bundled
 # artifacts; reloading the model and re-reading/re-hashing the feature
 # contract per request turns disk parsing into per-quote latency.  Models
-# are cached by ``(resolved path, task)``, contracts by resolved path, both
-# gated on ``(st_mtime_ns, st_size)`` — the same invalidation discipline as
-# :func:`haute.execution._stat_gated_runtime_path_fingerprint`.  One slot
-# per key, replaced when the stat gate changes, so the caches stay bounded
-# by the bundle's artifact count.
-#
-# Concurrency: the first ``/quote`` to need an artifact loads it under a
-# per-key lock; concurrent requests wait and reuse the cached value, so a
-# thundering herd on container start performs exactly one disk load.
-# Failed loads are never cached, and cached values are shared across
-# requests/threads — treated as immutable.  (See
-# :class:`haute._stat_gated_cache.StatGatedCache` for the full contract.)
-
-_local_model_cache: StatGatedCache[tuple[str, str, str | None], ScoringModel] = StatGatedCache(
-    artifact_kind="deploy model artifact"
-)
-
-
-def _load_local_model_cached(
-    path: str, task: str, contract_path: str | None = None
-) -> ScoringModel:
-    """Stat-gated process cache over :func:`haute._mlflow_io.load_local_model`.
-
-    *contract_path* is the bundled feature contract, which an EBM needs to load.
-    """
-    # The SLOT key is case-folded (normcase; a no-op on POSIX, so a macOS
-    # case-variant spelling still gets its own slot — accepted, as in
-    # haute._json_flatten._path_hash). The stat/open path keeps the on-disk
-    # case: a folded spelling need not exist on a case-sensitive filesystem.
-    io_path = resolve_artifact_path(path)
-    key = artifact_cache_key(io_path)
-
-    def _load() -> ScoringModel:
-        from haute._mlflow_io import load_local_model
-
-        if contract_path is None:
-            return load_local_model(io_path, task)
-        return load_local_model(io_path, task, contract_path=contract_path)
-
-    # The contract decides an EBM's offset, labels and loss: replacing only the
-    # sidecar must reload, so its identity (not just its path) is in the key.
-    contract_identity = (
-        artifact_identity_fingerprint({"contract": contract_path}) if contract_path else None
-    )
-    return _local_model_cache.get_or_load((key, task, contract_identity), io_path, _load)
+# load through :func:`haute._mlflow_io.load_local_model_cached`, the
+# stat-gated local-model cache file-sourced Model Scoring shares, which binds
+# each model to its bundled contract exactly as the preview does; contracts
+# are cached by resolved path. Both are gated on the file's freshness token —
+# the same invalidation discipline as
+# :func:`haute.execution._stat_gated_runtime_path_fingerprint` — and a failed
+# load is never cached. (See :class:`haute._stat_gated_cache.StatGatedCache`
+# for the full contract.)
 
 
 def _load_feature_contract_cached(path: str) -> FeatureContract:
@@ -130,7 +92,7 @@ def _clear_deploy_artifact_caches() -> None:
     """Drop every cached deploy artifact (test isolation / targeted resets)."""
     from haute.modelling._feature_contract import _clear_contract_cache
 
-    _local_model_cache.clear()
+    clear_local_model_cache()
     _clear_contract_cache()
 
 
@@ -331,12 +293,12 @@ def _attach_bundled_model_contract_inputs(
             nodes.append(node)
             continue
 
-        model_path = _remap_artifact(node.id, config, remap, "artifact_path")
+        model_path = _remap_artifact(node.id, config, remap, model_artifact_field(config))
         if model_path is None:
             nodes.append(node)
             continue
 
-        scoring_model = _load_local_model_cached(
+        scoring_model = load_local_model_cached(
             model_path,
             config.get("task", "regression"),
         )
@@ -447,6 +409,11 @@ def _remap_artifact(
     return remap.get(artifact_key)
 
 
+def model_artifact_field(config: Mapping[str, Any]) -> str:
+    """The config key whose basename names a Model Scoring node's bundled model."""
+    return "model_path" if config.get("sourceType") == "file" else "artifact_path"
+
+
 def _bundled_contract_path(node_id: str, remap: dict[str, str]) -> str | None:
     """Return the bundled feature-contract path for *node_id*, if any.
 
@@ -464,7 +431,7 @@ def _validate_deploy_model_score_source(node: GraphNode, remap: dict[str, str]) 
         return
     config = node.data.config
     if (
-        _remap_artifact(node.id, config, remap, "artifact_path") is not None
+        _remap_artifact(node.id, config, remap, model_artifact_field(config)) is not None
         or _bundled_contract_path(node.id, remap) is not None
     ):
         return
@@ -475,7 +442,7 @@ def _validate_deploy_model_score_source(node: GraphNode, remap: dict[str, str]) 
     message = (
         f"modelScore node {node.id!r} cannot be served: it has no usable "
         "model source (set sourceType with a run_id or "
-        "registered_model) and no bundled model artifact, so the "
+        "registered_model, or a model file) and no bundled model artifact, so the "
         "deployed endpoint would serve it as a silent identity "
         "passthrough that omits the model from every quote."
     )
@@ -946,7 +913,9 @@ def _score_graph_lazy(
         # This branch also covers configured non-bundled modelScore nodes.
         if node_type == NodeType.MODEL_SCORE:
             bundled_contract_path = _bundled_contract_path(nid, remap) if remap else None
-            remapped_path = _remap_artifact(nid, config, remap, "artifact_path") if remap else None
+            remapped_path = (
+                _remap_artifact(nid, config, remap, model_artifact_field(config)) if remap else None
+            )
             _task = config.get("task", "regression")
             _output_col = config.get("output_column", "prediction")
             _src_names = list(source_names)
@@ -984,7 +953,6 @@ def _score_graph_lazy(
 
                     lf = dfs[0] if dfs else pl.LazyFrame()
                     score_categorical_levels = dict(_categorical_levels)
-                    offset_column: str | None = None
                     if _contract_path is not None:
                         score_categorical_levels = _assert_runtime_contract_matches(
                             lf,
@@ -992,11 +960,9 @@ def _score_graph_lazy(
                             _t,
                             categorical_levels=_categorical_levels,
                         )
-                        # The bundled contract is the authoritative offset
-                        # source at serve time (the only one a pyfunc model
-                        # has); native models also self-describe.
-                        offset_column = _load_feature_contract_cached(_contract_path).offset_column
-                    scoring_model = _load_local_model_cached(_p, _t, _contract_path)
+                    # Bound to the bundled contract, which declares the offset
+                    # a pyfunc or an undeclared CatBoost model scores with.
+                    scoring_model = load_local_model_cached(_p, _t, _contract_path)
                     return _run_score_pipeline(
                         scoring_model,
                         lf,
@@ -1009,7 +975,6 @@ def _score_graph_lazy(
                         required_output_columns=_required,
                         temporary_paths=model_score_temp_paths,
                         categorical_levels=score_categorical_levels,
-                        offset_column=offset_column,
                     )
 
                 return func_name, model_score_fn, False

@@ -41,8 +41,13 @@ def _as_float(
     return result
 
 
-def _catboost_pool_for_row(scoring_model: Any, input_row: dict[str, Any]) -> Any:
-    """Build a one-row CatBoost Pool using Haute's scoring feature contract."""
+def _catboost_pool_for_row(scoring_model: Any, input_row: dict[str, Any]) -> tuple[Any, float]:
+    """Build a one-row CatBoost Pool using Haute's scoring feature contract.
+
+    Returns the pool and the row's raw-score baseline (``0.0`` without an
+    offset): the raw prediction includes the baseline, but CatBoost's
+    ShapValues do not.
+    """
     from catboost import Pool
 
     from haute._mlflow_io import _prepare_predict_frame
@@ -99,12 +104,13 @@ def _catboost_pool_for_row(scoring_model: Any, input_row: dict[str, Any]) -> Any
     else:
         baseline = None
     cat_indices = [features.index(column) for column in cat_cols]
-    return Pool(
+    pool = Pool(
         x_data,
         cat_features=cat_indices if cat_indices else None,
         feature_names=features,
         baseline=baseline,
     )
+    return pool, float(baseline[0]) if baseline is not None else 0.0
 
 
 def _normalise_shap_values(shap_values: Any, feature_count: int) -> np.ndarray:
@@ -222,16 +228,18 @@ def explain_catboost_prediction(
         )
 
     features = list(scoring_model.feature_names)
-    pool = _catboost_pool_for_row(scoring_model, input_row)
+    pool, row_baseline = _catboost_pool_for_row(scoring_model, input_row)
     shap_row = _normalise_shap_values(
         raw_model.get_feature_importance(data=pool, type="ShapValues"),
         len(features),
     )
     _assert_finite_shap_row(shap_row)
 
-    base_value = float(shap_row[-1])
+    # The bias carries the row's offset, as it does for the wrapper families:
+    # CatBoost's expected value excludes the Pool baseline its prediction adds.
+    base_value = float(shap_row[-1]) + row_baseline
     contribution_values = shap_row[:-1]
-    prediction_from_shap = float(shap_row.sum())
+    prediction_from_shap = float(contribution_values.sum()) + base_value
     # Additivity is always checked raw-vs-raw: ShapValues sum to the
     # raw-formula prediction for every CatBoost loss.
     model_prediction = _catboost_raw_prediction(raw_model, pool)
@@ -698,8 +706,10 @@ def _source_requests_supported_explanation(source: ModelSource) -> bool:
         ConfigError: the artifact has a suffix no family registers.
     """
     from haute._model_flavors import family_for_artifact
+    from haute._model_source import FileModelSource
 
-    return family_for_artifact(source.artifact_path).explanation is not None
+    artifact = source.model_path if isinstance(source, FileModelSource) else source.artifact_path
+    return family_for_artifact(artifact).explanation is not None
 
 
 def explanation_error_metadata_for_config(config: dict[str, Any]) -> dict[str, str]:
@@ -720,7 +730,8 @@ def explanation_error_metadata_for_config(config: dict[str, Any]) -> dict[str, s
     """
     from haute._model_flavors import family_for_artifact
 
-    artifact_path = str(config.get("artifact_path", ""))
+    artifact_key = "model_path" if config.get("sourceType") == "file" else "artifact_path"
+    artifact_path = str(config.get(artifact_key, ""))
     try:
         method = family_for_artifact(artifact_path).explanation
     except ConfigError:
@@ -747,15 +758,22 @@ def explain_model_score_from_config(
     ``None`` for a node with no source chosen or a model with no supported
     explanation. A source config that does not parse raises its ``ConfigError``.
     """
+    from haute._builders import _configured_pipeline_dir
     from haute._model_flavors import model_family
-    from haute._model_source import load_scoring_model, parse_model_source
+    from haute._model_source import load_scoring_model, parse_model_source, scoring_contract_path
 
     source = parse_model_source(config)
     if source is None or not _source_requests_supported_explanation(source):
         return None
 
     task = config.get("task", "regression")
-    scoring_model = load_scoring_model(source, task)
+    base_dir = _configured_pipeline_dir()
+    scoring_model = load_scoring_model(
+        source,
+        task,
+        feature_contract_path=scoring_contract_path(source, config, base_dir),
+        base_dir=base_dir,
+    )
     effective_prediction = (
         prediction_value if prediction_value is not None else output_row.get(prediction_column)
     )

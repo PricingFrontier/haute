@@ -220,6 +220,11 @@ serialize it as `null`; file items carry their byte size. `GET /api/schema` read
 column schema, a 5-row preview, and (for parquet) an exact row count or (for JSONL) an estimated
 one, without loading the whole file. XML is decoded through the API-input structured-record
 normaliser and returns an exact row count; invalid or unsafe XML returns 400.
+`GET /api/model-file` inspects a model file in the project for the Model Scoring editor
+(family, recorded task, features, offset and the contract it scores under) by loading it
+and binding its contract exactly as scoring does; a file scoring would refuse returns 400
+with the scoring error, and a path outside the project is refused as for every runtime
+input.
 `GET /api/io-capabilities` exposes provider groups, the Polars I/O
 format registry (read/write capability, modes, accepted arguments, missing optional engines),
 and cache/materialisation capabilities so the dataInput/dataOutput node editors never

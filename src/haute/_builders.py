@@ -1097,7 +1097,24 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
     if code or (isinstance(steps, list) and bool(steps)):
         return produced, None
 
+    from haute._model_source import (
+        FileModelSource,
+        load_scoring_model,
+        model_contract_path,
+        parse_model_source,
+    )
+
+    model_source = parse_model_source(config)
     feature_contract_path = config.get("feature_contract_path")
+    if (
+        not (isinstance(feature_contract_path, str) and feature_contract_path)
+        and isinstance(model_source, FileModelSource)
+        and _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY not in config
+    ):
+        # A model file scores under the contract saved beside it, so planning
+        # reads the same contract the scorer binds.
+        discovered = model_contract_path(model_source, None, _configured_pipeline_dir())
+        feature_contract_path = str(discovered) if discovered is not None else None
     if isinstance(feature_contract_path, str) and feature_contract_path:
         # Stat-gated cache: this planner runs during graph construction on
         # every deployed /quote and every preview — re-reading/re-hashing an
@@ -1140,9 +1157,6 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
         return produced, set(deploy_inputs) if deploy_inputs else None
 
     # Feature columns are only known after loading the model.
-    from haute._model_source import load_scoring_model, parse_model_source
-
-    model_source = parse_model_source(config)
     if model_source is None:
         # Distinguish two sub-cases cleanly:
         #
@@ -1167,7 +1181,9 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
     # swallow hid real config/infra problems from downstream nodes. Planning
     # loads exactly the model the scorer built for this node loads, from the
     # node's own destination.
-    scoring_model = load_scoring_model(model_source, config.get("task", "regression"))
+    scoring_model = load_scoring_model(
+        model_source, config.get("task", "regression"), base_dir=_configured_pipeline_dir()
+    )
     if scoring_model.feature_names:
         referenced = set(scoring_model.feature_names)
         model_offset = getattr(scoring_model, "offset_column", None)
@@ -1222,7 +1238,9 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         return ctx.func_name, _passthrough_fn, False
 
     from haute._model_scorer import ModelScorer
+    from haute._model_source import scoring_contract_path
 
+    base_dir = _configured_pipeline_dir()
     required_output_columns = projection.model_score_required_output_columns(
         config,
         ctx.required_output_columns,
@@ -1245,10 +1263,11 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         row_limit=ctx.row_limit,
         schema_only=ctx.schema_only,
         required_output_columns=required_output_columns,
-        feature_contract_path=config.get("feature_contract_path") or None,
+        feature_contract_path=scoring_contract_path(model_source, config, base_dir),
         categorical_levels=declared_categorical_levels,
         reuse_loaded_model=ctx.reuse_loaded_model,
         input_fanout=_upstream_scenario_fanout(ctx.upstream_ids, ctx.node_map),
+        base_dir=base_dir,
     )
 
     return ctx.func_name, scorer.score, False

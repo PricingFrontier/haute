@@ -48,7 +48,14 @@ def _write_cached_model(tmp_path: Path, run_id: str, artifact_path: str) -> Path
         tmp_path / ".cache" / "models", resolve_backend("").digest, run_id, artifact_path
     )
     cached.parent.mkdir(parents=True, exist_ok=True)
-    cached.write_bytes(b"fake model")
+    # The bundler reads a CatBoost model's offset declaration: a real model that
+    # declares no offset.
+    from catboost import CatBoostRegressor
+
+    model = CatBoostRegressor(iterations=2, depth=1, verbose=0, allow_writing_files=False)
+    model.fit([[1.0], [2.0], [3.0]], [1.0, 2.0, 3.0])
+    model.get_metadata()["haute_offset_column"] = ""
+    model.save_model(str(cached))
     return cached
 
 

@@ -2770,6 +2770,7 @@ class TestScoreGraphModelScoreRemap:
 
         mock_model = MagicMock()
         mock_model.feature_names_ = ["x"]
+        mock_model.get_metadata.return_value = {"haute_offset_column": ""}
         mock_model.predict.return_value = np.array([42.0])
 
         graph = _g(
@@ -2868,6 +2869,7 @@ class TestScoreGraphModelScoreRemap:
 
         mock_model = MagicMock()
         mock_model.feature_names_ = ["x"]
+        mock_model.get_metadata.return_value = {"haute_offset_column": ""}
         mock_model.predict.return_value = np.array([42.0])
 
         graph = _g(
@@ -2969,6 +2971,7 @@ class TestScoreGraphModelScoreRemap:
         )
         mock_model = MagicMock()
         mock_model.feature_names_ = ["region"]
+        mock_model.get_metadata.return_value = {"haute_offset_column": ""}
         mock_model.get_cat_feature_indices.return_value = [0]
         mock_model.predict.return_value = np.array([42.0])
         graph = _g(
@@ -3723,7 +3726,7 @@ class TestScoreGraphModelScoreRemap:
             ),
             contract_path,
         )
-        scoring_model = MagicMock()
+        scoring_model = MagicMock(offset_column=None, offset_link=None)
         captured: dict[str, object] = {}
 
         def fake_run_score_pipeline(*_args, **kwargs):
@@ -3822,7 +3825,7 @@ class TestScoreGraphModelScoreRemap:
             ),
             contract_path,
         )
-        scoring_model = MagicMock()
+        scoring_model = MagicMock(offset_column=None, offset_link=None)
         captured: dict[str, object] = {}
 
         def fake_run_score_pipeline(*_args, **kwargs):
@@ -3920,7 +3923,7 @@ class TestScoreGraphModelScoreRemap:
         """Configured non-bundled deploy modelScore scores eagerly in memory."""
         from haute.deploy._scorer import score_graph
 
-        scoring_model = MagicMock()
+        scoring_model = MagicMock(offset_column=None, offset_link=None)
         captured: dict[str, object] = {}
 
         def fake_run_score_pipeline(*_args, **kwargs):
@@ -4204,7 +4207,7 @@ class TestBundledModelContractInputs:
 
         with (
             patch(
-                "haute.deploy._scorer._load_local_model_cached",
+                "haute.deploy._scorer.load_local_model_cached",
                 return_value=scoring_model,
             ),
             pytest.raises(DeployError, match=message),
@@ -4225,7 +4228,7 @@ class TestBundledModelContractInputs:
         )
 
         with patch(
-            "haute.deploy._scorer._load_local_model_cached",
+            "haute.deploy._scorer.load_local_model_cached",
             return_value=scoring_model,
         ):
             result = _attach_bundled_model_contract_inputs(

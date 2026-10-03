@@ -186,6 +186,17 @@
    stored task that differs shows an alert naming both with a "Use <task>"
    button that writes the recorded one; a model without a recorded task (or
    whose run or versions are not loaded) keeps the explicit Task select.
+   **MODEL SOURCE** offers **Registered Model**, **Experiment Run** and **Model
+   file**. **Model file** hides the destination selector (a file source never
+   reads MLflow) and shows a `PathPickerField` whose browser lists only the
+   registered model-file suffixes (`modelFileSuffixes` from the generated
+   `modelFamilies.json`); choosing a file commits `{sourceType: "file",
+   model_path}`. While a path is set, the editor calls `GET /api/model-file`
+   (`inspectModelFile`) and shows the family, features, offset (column and
+   link, or "none") and the contract the file scores under, or the server's
+   refusal verbatim. A response for a path the node no longer holds is
+   discarded. A recorded task from that inspection renders Task read-only
+   ("Task recorded with the model.") with the same mismatch alert as a run.
    MLflow discovery state is scoped to the node's effective destination:
    `useMlflowBrowser({destination})` passes the node's value (`""` = the local folder) to
    every experiments/runs/models/versions request, so the pickers list only

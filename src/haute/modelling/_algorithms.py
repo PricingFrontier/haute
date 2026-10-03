@@ -579,10 +579,11 @@ class CatBoostAlgorithm(BaseAlgorithm):
 
         # Record the offset column and its link on the model so saved .cbm
         # artifacts are self-describing: predict/serve must re-supply this
-        # baseline exactly as it was built for the fit.
+        # baseline exactly as it was built for the fit. An empty column
+        # declares that the fit used no offset; an absent key declares nothing.
+        metadata = model.get_metadata()
+        metadata[CATBOOST_OFFSET_METADATA_KEY] = offset or ""
         if offset:
-            metadata = model.get_metadata()
-            metadata[CATBOOST_OFFSET_METADATA_KEY] = offset
             metadata[CATBOOST_OFFSET_LINK_METADATA_KEY] = offset_link
         # The job trains on the target encoded as positive = 1; record which
         # original labels those codes stand for so served labels are original.

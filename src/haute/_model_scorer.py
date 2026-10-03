@@ -570,6 +570,30 @@ def _declared_offset_column(scoring_model: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _declared_offset_link(scoring_model: Any) -> str | None:
+    """Read ``offset_link`` off a carrier (``None`` without an offset)."""
+    if _declared_offset_column(scoring_model) is None:
+        return None
+    value = getattr(scoring_model, "offset_link", None)
+    return value if isinstance(value, str) and value else None
+
+
+def _resolve_offset(
+    model: Any, flavor: str, offset_column: str | None, offset_link: str | None
+) -> tuple[str | None, str | None]:
+    """The offset a raw-model scoring call applies: the caller's, else the model's own.
+
+    Callers holding a bound :class:`~haute._mlflow_io.ScoringModel` pass its
+    offset; only a bare raw model handed to :func:`score_frame` describes itself.
+    """
+    if offset_column is None:
+        offset_column = _model_offset_column(model, flavor)
+        return offset_column, _model_offset_link(model, flavor) if offset_column else None
+    if offset_link is None:
+        offset_link = _model_offset_link(model, flavor)
+    return offset_column, offset_link
+
+
 def _model_offset_column(model: Any, flavor: str) -> str | None:
     """Return the offset column a raw model was trained with, if any.
 
@@ -818,6 +842,7 @@ def _score_eager_unified(
     write_projection: ScoreWriteProjection | None = None,
     categorical_levels: _CategoricalLevels = None,
     offset_column: str | None = None,
+    offset_link: str | None = None,
 ) -> pl.LazyFrame:
     """Eager in-memory scoring for a pre-validated flavor.
 
@@ -842,12 +867,7 @@ def _score_eager_unified(
     """
     from haute._polars_utils import streaming_collect
 
-    # An explicit offset (from the feature contract) is authoritative; only
-    # fall back to the model's self-description when the caller has none — so
-    # pyfunc models, which cannot self-describe an offset, still apply it.
-    offset_column = (
-        offset_column if offset_column is not None else _model_offset_column(model, flavor)
-    )
+    offset_column, offset_link = _resolve_offset(model, flavor, offset_column, offset_link)
     if offset_column:
         _require_offset_column(lf.collect_schema().names(), offset_column)
     collect_lf = lf
@@ -875,6 +895,7 @@ def _score_eager_unified(
         output_col,
         categorical_levels=categorical_levels,
         offset_column=offset_column,
+        offset_link=offset_link,
     )
     return _project_scored_output(
         scored.lazy(),
@@ -895,13 +916,13 @@ def _score_collected_frame(
     *,
     categorical_levels: _CategoricalLevels,
     offset_column: str | None,
+    offset_link: str | None,
 ) -> tuple[pl.DataFrame, list[str]]:
     """Validate and score one materialised frame; return it with predictions."""
     from haute._mlflow_io import _prepare_predict_frame
 
     _validate_runtime_categorical_values(frame, categorical_levels or {})
     predict_features = _offset_predict_features(features, flavor, offset_column)
-    offset_link = _model_offset_link(model, flavor) if offset_column else None
     if flavor == "rustystats":
         _require_positive_log_link_offset(frame, offset_column, offset_link)
     x_data = _prepare_predict_frame(
@@ -945,7 +966,6 @@ def _score_row_local_scan(
     *,
     write_projection: ScoreWriteProjection | None,
     categorical_levels: _CategoricalLevels,
-    offset_column: str | None,
 ) -> pl.LazyFrame:
     """Score through a row-local Python scan that Polars can push a limit into.
 
@@ -960,9 +980,8 @@ def _score_row_local_scan(
 
     model = scoring_model.raw_model
     flavor = scoring_model.flavor
-    offset_column = (
-        offset_column if offset_column is not None else _model_offset_column(model, flavor)
-    )
+    offset_column = _declared_offset_column(scoring_model)
+    offset_link = _declared_offset_link(scoring_model)
     schema = lf.collect_schema()
     if offset_column:
         _require_offset_column(schema.names(), offset_column)
@@ -1009,6 +1028,7 @@ def _score_row_local_scan(
             output_col,
             categorical_levels=categorical_levels,
             offset_column=offset_column,
+            offset_link=offset_link,
         )
         return scored.with_columns(
             pl.col(name).cast(dtype, strict=True) for name, dtype in output_dtypes.items()
@@ -1108,6 +1128,7 @@ def _score_batched_unified(
     temporary_paths: list[str] | None = None,
     categorical_levels: _CategoricalLevels = None,
     offset_column: str | None = None,
+    offset_link: str | None = None,
 ) -> pl.LazyFrame:
     """Sink → batch score → lazy scan (low-memory path) for the unified API.
 
@@ -1119,10 +1140,7 @@ def _score_batched_unified(
     """
     from haute._mlflow_io import ScoringModel
 
-    # Contract-supplied offset wins; fall back to model self-description.
-    offset_column = (
-        offset_column if offset_column is not None else _model_offset_column(model, flavor)
-    )
+    offset_column, offset_link = _resolve_offset(model, flavor, offset_column, offset_link)
     if offset_column:
         _require_offset_column(lf.collect_schema().names(), offset_column)
     carrier = ScoringModel(
@@ -1131,6 +1149,7 @@ def _score_batched_unified(
         cat_feature_names=cat_feature_names,
         flavor=flavor,
         offset_column=offset_column,
+        offset_link=offset_link,
     )
     sink_columns = _score_input_projection_columns(
         lf,
@@ -1197,6 +1216,7 @@ def score_frame(
     temporary_paths: list[str] | None = None,
     categorical_levels: _CategoricalLevels = None,
     offset_column: str | None = None,
+    offset_link: str | None = None,
 ) -> pl.LazyFrame:
     """Unified scoring entry point with explicit flavor dispatch.
 
@@ -1284,6 +1304,7 @@ def score_frame(
             temporary_paths=temporary_paths,
             categorical_levels=normalised_levels,
             offset_column=offset_column,
+            offset_link=offset_link,
         )
     return _score_eager_unified(
         model,
@@ -1296,6 +1317,7 @@ def score_frame(
         write_projection=write_projection,
         categorical_levels=normalised_levels,
         offset_column=offset_column,
+        offset_link=offset_link,
     )
 
 
@@ -1314,7 +1336,6 @@ def _run_score_pipeline(
     required_output_columns: frozenset[str] | set[str] | None = None,
     temporary_paths: list[str] | None = None,
     categorical_levels: _CategoricalLevels = None,
-    offset_column: str | None = None,
 ) -> _Frame:
     """Core scoring logic shared by ``ModelScorer.score()`` and deploy scorer.
 
@@ -1325,7 +1346,8 @@ def _run_score_pipeline(
     Parameters
     ----------
     scoring_model
-        A pre-loaded ``ScoringModel`` (from MLflow or local disk).
+        A pre-loaded ``ScoringModel`` (from MLflow or local disk), bound to its
+        feature contract: its offset column and link are the ones applied.
     lf
         The input LazyFrame to score.
     task, output_col, code, source_names
@@ -1341,19 +1363,12 @@ def _run_score_pipeline(
         (``execute_lazy_graph(schema_only=True)``): score through the lazy
         row-local scan, which reads no input rows until collected, never the
         batched path that sinks and scores the whole input at build time.
-    offset_column
-        Offset column from the feature contract, when the caller has one.
-        Authoritative over the model's self-description — the only offset
-        source a pyfunc model has, and a redundant confirmation for native
-        flavors that self-describe.
     """
     from haute._mlflow_io import _score_eager as score_eager_
 
     schema = lf.collect_schema()
     features, _missing = _validate_features(scoring_model, schema)
-    resolved_offset = (
-        offset_column if offset_column is not None else _declared_offset_column(scoring_model)
-    )
+    resolved_offset = _declared_offset_column(scoring_model)
     normalised_levels = _normalise_runtime_categorical_levels(
         categorical_levels,
         features=features,
@@ -1389,7 +1404,6 @@ def _run_score_pipeline(
             task,
             write_projection=write_projection,
             categorical_levels=normalised_levels,
-            offset_column=resolved_offset,
         )
     elif source == "live":
         eager_lf = lf
@@ -1426,7 +1440,6 @@ def _run_score_pipeline(
             features,
             output_col,
             task,
-            offset_column=resolved_offset,
         )
         result_lf = _project_scored_output(
             result_lf,
@@ -1443,7 +1456,6 @@ def _run_score_pipeline(
             write_projection=write_projection,
             temporary_paths=temporary_paths,
             categorical_levels=normalised_levels,
-            offset_column=resolved_offset,
         )
 
     if code:
@@ -1471,7 +1483,6 @@ def _score_batched_standalone(
     write_projection: ScoreWriteProjection | None = None,
     temporary_paths: list[str] | None = None,
     categorical_levels: _CategoricalLevels = None,
-    offset_column: str | None = None,
 ) -> pl.LazyFrame:
     """Sink → batch score → lazy scan (low-memory path).
 
@@ -1490,9 +1501,8 @@ def _score_batched_standalone(
         write_projection=write_projection,
         temporary_paths=temporary_paths,
         categorical_levels=categorical_levels,
-        offset_column=offset_column
-        if offset_column is not None
-        else _declared_offset_column(scoring_model),
+        offset_column=_declared_offset_column(scoring_model),
+        offset_link=_declared_offset_link(scoring_model),
     )
 
 
@@ -1529,9 +1539,13 @@ class ModelScorer:
         The build only needs the scored schema: score through the lazy
         row-local scan, never the batched path that scores the whole input.
     feature_contract_path : str | None
-        Optional train-time feature contract. When it declares categorical
-        value domains, runtime declarations must match and observed values
-        are checked before prediction.
+        The resolved feature contract the model scores under
+        (:func:`haute._model_source.scoring_contract_path`: explicit, or saved
+        beside a model file). The model is bound to it, and when it declares
+        categorical value domains, runtime declarations must match and
+        observed values are checked before prediction.
+    base_dir : str | Path | None
+        The pipeline directory a relative model file may resolve against.
     reuse_loaded_model : bool
         When true, pin the loaded model on this scorer instance. Intended for
         short-lived streaming jobs that reuse one scorer across many chunks.
@@ -1558,6 +1572,7 @@ class ModelScorer:
         categorical_levels: _CategoricalLevels = None,
         reuse_loaded_model: bool = False,
         input_fanout: int = 1,
+        base_dir: str | Path | None = None,
     ) -> None:
         from haute.modelling._feature_contract import normalise_categorical_levels
 
@@ -1582,22 +1597,20 @@ class ModelScorer:
         )
         self.reuse_loaded_model = reuse_loaded_model
         self.input_fanout = max(1, int(input_fanout))
+        self.base_dir = base_dir
         self._scoring_model: Any | None = None
         self._scoring_model_lock = threading.Lock()
 
     def _load_scoring_model_uncached(self) -> Any:
-        """Load the configured model through the model-source seam."""
-        from haute._mlflow_io import verify_contract_identity
+        """Load the configured model through the model-source seam, bound to its contract."""
         from haute._model_source import load_scoring_model
 
-        scoring_model = load_scoring_model(self.model_source, self.task)
-        if self.feature_contract_path is not None:
-            from haute.modelling._feature_contract import load_contract
-
-            identity = load_contract(self.feature_contract_path).model
-            if identity is not None:
-                verify_contract_identity(identity, scoring_model)
-        return scoring_model
+        return load_scoring_model(
+            self.model_source,
+            self.task,
+            feature_contract_path=self.feature_contract_path,
+            base_dir=self.base_dir,
+        )
 
     def _load_scoring_model(self) -> Any:
         """Load the configured model, optionally pinning it for this scorer."""
@@ -1647,21 +1660,6 @@ class ModelScorer:
             )
         return {column: list(levels) for column, levels in expected.categorical_levels.items()}
 
-    def _offset_column_for_score(self) -> str | None:
-        """Return the offset column the bundled contract declares, if any.
-
-        The contract is the authoritative offset source at score time — the
-        only one a pyfunc model has (its signature lists the offset as an
-        input but cannot mark which input it is). ``None`` when there is no
-        contract or it declares no offset, in which case the scorer falls
-        back to a native model's self-description.
-        """
-        if self.feature_contract_path is None:
-            return None
-        from haute.modelling._feature_contract import load_contract
-
-        return load_contract(self.feature_contract_path).offset_column
-
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
@@ -1676,7 +1674,6 @@ class ModelScorer:
         reconstructed in the scorer's declared-source order.
         """
         categorical_levels = self._categorical_levels_for_score()
-        offset_column = self._offset_column_for_score()
         scoring_model = self._load_scoring_model()
 
         if dfs_by_name:
@@ -1702,7 +1699,6 @@ class ModelScorer:
                 schema_only=self.schema_only,
                 required_output_columns=self.required_output_columns,
                 categorical_levels=categorical_levels,
-                offset_column=offset_column,
             )
         finally:
             _score_input_fanout.reset(fanout_token)
@@ -1720,9 +1716,9 @@ def score_from_config(
 ) -> pl.LazyFrame:
     """Score using model parameters from a JSON config file.
 
-    Reads the config, loads the model from MLflow (auto-detecting
-    CatBoost vs pyfunc flavor), and returns predictions appended to
-    the input DataFrame.
+    Reads the config, loads the model from its source (an MLflow run or
+    registered model, or a model file in the project) bound to its feature
+    contract, and returns predictions appended to the input DataFrame.
 
     This is what a Model Score node's decorator runs in a standalone
     ``pipeline.run()`` / ``score()`` of a saved file.
@@ -1749,13 +1745,17 @@ def score_from_config(
     if not resolved.is_relative_to(root):
         raise ValueError(f"Config path {config!r} resolves outside project root")
     cfg = json.loads(read_user_text(resolved))
+    from haute._model_source import scoring_contract_path
+
+    model_source = require_model_source(cfg)
     scorer = ModelScorer(
-        model_source=require_model_source(cfg),
+        model_source=model_source,
         task=cfg.get("task", "regression"),
         output_col=cfg.get("output_column", "prediction"),
         source=_scenario_ctx.get(),
-        feature_contract_path=cfg.get("feature_contract_path") or None,
+        feature_contract_path=scoring_contract_path(model_source, cfg, base_dir),
         categorical_levels=cfg.get("categorical_levels") or None,
+        base_dir=base_dir,
     )
     return scorer.score(*dfs)
 
@@ -1966,9 +1966,7 @@ def _batch_score_to_parquet(
         features=features,
     )
     offset_column = _declared_offset_column(scoring_model)
-    offset_link = (
-        _model_offset_link(scoring_model.raw_model, scoring_model.flavor) if offset_column else None
-    )
+    offset_link = _declared_offset_link(scoring_model)
     predict_features = _offset_predict_features(
         features,
         scoring_model.flavor,

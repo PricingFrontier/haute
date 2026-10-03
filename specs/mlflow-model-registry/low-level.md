@@ -8,7 +8,7 @@
 | `src/haute/_mlflow_utils.py` | Shared MLflow bootstrap used by `_mlflow_io.py`, the optimiser IO layer, and deploy's bundler: version resolution, safe model-version search, `runtime_environment_inference` (scopes MLflow's uv-project auto-detection and uv-file logging off so a logged model records the executing interpreter), `bind_mlflow_databricks_credentials` (binds every MLflow Databricks request to the dedicated MLflow pair or the selected profile; see modelling), `ensure_experiment` (a bound client's experiment id, first creating a new Databricks experiment's missing workspace folder with the bound credentials; see modelling), `resolve_backend` (a destination key — or the empty string for the local folder — to a `ResolvedBackend` carrying the tracking/registry URIs plus a secret-free backend identity and filesystem digest; see Key types), and `resolve_mlflow_source` (import mlflow, resolve that backend, build a client pinned to it, resolve `source_type` to a concrete run ID/version, and return the backend alongside the client). |
 | `src/haute/_mlflow_errors.py` | The one MLflow failure classifier (`classify_mlflow_error`: MLflow error codes, HTTP 401/403/404, and transport-only connectivity across the exception chain — any other local OS error is `unknown`; it runs inside error handlers and never raises, so when `mlflow.exceptions` or `requests` cannot be imported only the remaining rules apply), `MlflowRemoteError` (a classified write failure with haute's own message), the write-path copy `MLFLOW_LOG_FAILURE_MESSAGES`, and the shared missing-package status and detail. |
 | `src/haute/_model_flavors.py` | The model family registry, the one place a scoring family is described: `ModelFamily` (one adapter per family — see Key types), `register_model_family`, the lookups by flavor (`model_family`), by Haute training algorithm (`family_for_algorithm`) and by artifact suffix (`family_for_artifact`), the registered file suffixes (`model_file_suffixes`), and `model_family_fixture`, the table the frontend's generated `modelFamilies.json` mirrors. `ModelFlavor` (`Literal`) types the built-in flavors and `_SUPPORTED_FLAVORS` is derived from it via `get_args`; the built-in registrations are exactly that set. Dependency-free leaf module: loaders and offset readers are bound lazily by module path, so importing it imports no engine and no other `haute` module (see high-level Design rationale for why). |
-| `src/haute/_model_source.py` | The Model Scoring node's model source: `parse_model_source` turns a node config into a typed `ModelSource` once, owning every source default and validation rule, and `load_scoring_model(source, task)` is the one entry point that loads it. Every Model Scoring consumer — the executor's builder, the column-contract planner, the standalone scorer, the trace explanation and the deploy bundler and scorer — takes the parsed source, and only this module calls the MLflow loader. |
+| `src/haute/_model_source.py` | The Model Scoring node's model source: `parse_model_source` turns a node config into a typed `ModelSource` (`RunModelSource`, `RegisteredModelSource` or `FileModelSource`) once, owning every source default and validation rule; `resolve_model_file` and `model_contract_path` resolve a file source's model and the contract it scores under; and `load_scoring_model(source, task, ...)` is the one entry point that loads a source and binds it to that contract. Every Model Scoring consumer — the executor's builder, the column-contract planner, the standalone scorer, the trace explanation and the deploy bundler and scorer — takes the parsed source, and only this module calls the MLflow and local-file loaders. |
 | `src/haute/_model_scorer.py` | MODEL_SCORE node logic: the `ModelScorer` class, the unified `score_frame` dispatch (eager vs batched), the feature-validation cache, offset-column resolution, write-projection application, and `score_from_config` (codegen's delegation target). |
 | `src/haute/_model_explainability.py` | Per-prediction SHAP (CatBoost), native GLM contribution (RustyStats) and native wrapper contribution (XGBoost, LightGBM, EBM) explanations for trace enrichment, plus `explain_model_score_from_config`, the config-driven entry point trace enrichment calls, which dispatches on the loaded model's registered family's `explanation` (a family registering none gets no explanation). |
 | `src/haute/routes/mlflow.py` | FastAPI router (`/api/mlflow/*`) exposing read-only experiment/run/model/version discovery for the MODEL_SCORE node's config UI — every discovery route accepts a `destination` query (`""` = the local folder) — plus the connection surface: the destinations inventory with optional concurrent bounded probes, `[mlflow]` settings read/write, and a bounded per-destination test-connection probe. |
@@ -20,10 +20,15 @@
   loaded model: `_model` (the raw flavor-specific object), `feature_names`
   (ordered `list[str]`), `cat_feature_names` (`frozenset[str]`), `flavor`
   (`str`, the flavor of the registered family that loaded it),
-  `offset_column` (`str | None`). Exposes `predict()`
+  `offset_column` (`str | None`), `offset_link` (`log`, `identity` or
+  `None`) and `offset_declared` (`bool`; `False` only for a CatBoost model
+  whose metadata does not declare its offset and that no contract has bound
+  yet). Exposes `predict()`
   (flattened `np.ndarray`), `predict_proba()` (`np.ndarray | None`), and
   `raw_model` (property). No `__getattr__` proxying — every caller goes
-  through this declared surface.
+  through this declared surface. Scoring reads the offset column and link
+  from the carrier, so a contract-bound offset applies without touching the
+  raw model, which a cached carrier may share.
 - **`_ArtifactNotFoundError(FileNotFoundError)`** — internal sentinel
   raised by the artifact-probing helpers when a probe completes and finds
   nothing. Deliberately a subclass of `FileNotFoundError` (the public
@@ -112,16 +117,17 @@
 - **`ModelSource`** (`_model_source.py`) — the parsed model source of a
   Model Scoring node, a union discriminated by each class's `source_type`
   class variable: `RunModelSource` (`run_id`, `artifact_path`,
-  `mlflow_destination`) and `RegisteredModelSource` (`registered_model`,
-  `version`, `alias`, `artifact_path`, `mlflow_destination`). Both are frozen
+  `mlflow_destination`), `RegisteredModelSource` (`registered_model`,
+  `version`, `alias`, `artifact_path`, `mlflow_destination`) and
+  `FileModelSource` (`model_path`, as configured). All are frozen
   slotted dataclasses whose fields are named after the config keys they come
   from, so the typed node-config models (`PCFG-R07`) absorb them as the Model
   Scoring source slice rather than adding a second config model. A registered
   source carries `version` only when it names no `alias` (`"latest"` when the
   config names neither); a run source carries no version at all.
 - **`IncompleteModelSourceError(ConfigError)`** (`_model_source.py`) — a
-  source type is chosen but its identifying field (`run_id` or
-  `registered_model`) is empty. Interactive and standalone consumers let it
+  source type is chosen but its identifying field (`run_id`,
+  `registered_model` or `model_path`) is empty. Interactive and standalone consumers let it
   propagate like any `ConfigError`; the deploy bundler alone treats it as an
   unconfigured node and skips bundling (the deploy scorer then refuses the node
   as an identity passthrough).
@@ -227,29 +233,88 @@ compatible within a version; renaming or removing any listed item requires a new
    referenced columns, the trace explains nothing and the deploy bundler skips
    it. `require_model_source` — used by `score_from_config`, which runs only for
    configured nodes — turns `None` into a `ConfigError` naming `sourceType`.
-2. A non-string `sourceType` and one outside `run`/`registered` raise
+2. A non-string `sourceType` and one outside `run`/`registered`/`file` raise
    `ConfigError` naming the value and the supported types.
 3. A run source needs a non-empty string `run_id`; a registered source a
-   non-empty string `registered_model`. A non-string value raises
+   non-empty string `registered_model`; a file source a non-empty string
+   `model_path`. A non-string value raises
    `ConfigError`; an empty one raises `IncompleteModelSourceError` naming the
    missing field. A registered source then applies the shared
    `validate_registered_model_alias` rule (a malformed alias, or an alias beside
    any version, raises `ConfigError`).
 4. `artifact_path` (optional, a string when present) and `mlflow_destination`
-   (`""` = the local folder) are read for both kinds. A registered source's
-   version is the configured version, `""` beside an alias, and `"latest"` when
-   the config names neither.
+   (`""` = the local folder) are read for both MLflow kinds. A registered
+   source's version is the configured version, `""` beside an alias, and
+   `"latest"` when the config names neither. A file source reads neither: a
+   file source never consults MLflow.
 
 The defaults above live only in this parser. `load_scoring_model(source,
-task)` passes the source's fields to `load_mlflow_model` (a run source passes
-no version), and is the only caller of `load_mlflow_model` in the package:
-the builder (`ModelScorer`), the planner (`_model_score_columns`),
-`score_from_config` and `explain_model_score_from_config` all load through it,
-so every context loads the same model for the same config. The deploy bundler
-parses the source to decide what to download, and the deploy scorer's
-passthrough guard parses it to decide whether a node without a bundled
-artifact can be served; a source that does not parse is refused there as a
-`DeployError` chained from the parse failure.
+task, *, feature_contract_path=None, base_dir=None)` loads the source and binds
+it to its contract:
+
+- **Run and registered.** It passes the source's fields to `load_mlflow_model`
+  (a run source passes no version) and is the only caller of
+  `load_mlflow_model` in the package. The contract is the explicit
+  `feature_contract_path`; without one, a model whose offset is undeclared
+  (`offset_declared` false) is bound to the contract the run logged beside the
+  model artifact (`run_logged_contract_path`: the source is resolved to its run
+  and artifact, and `_resolve_run_contract` fetches the contract through the
+  disk cache, raising a `ConfigError` naming the run when there is none).
+- **File.** `resolve_model_file(model_path, base_dir)` resolves the path through
+  `resolve_runtime_file_path` (project preferred, pipeline directory
+  `base_dir`, project root enforced) and raises `ConfigError` naming the file
+  when it does not exist. `model_contract_path(source, feature_contract_path,
+  base_dir)` returns the explicit contract (resolved the same way, which must
+  exist) or the first existing entry of `model_contract_candidates(model)`, or
+  `None`. The model loads through `load_local_model_cached(path, task,
+  contract_path)` (below), named by its project path in errors.
+
+`bind_feature_contract(scoring_model, contract, *, model_name)` (`_mlflow_io.py`)
+is the one binding rule. A contract with a model identity runs
+`verify_contract_identity`. For the offset, a model that declares its own
+(every family except an undeclared CatBoost) must agree with the contract: a
+contract `offset_column` that differs from the model's, or a non-null contract
+`offset_link` that differs from the model's, raises `ConfigError`; pyfunc is
+exempt, because its contract is its only offset description. An undeclared
+CatBoost model takes the contract's declaration: a null `offset_column`
+declares no offset, a named one with an `offset_link` declares that offset, and
+a named one without a link, or no contract at all, raises `ConfigError` naming
+the model and the remedy. Binding returns a new `ScoringModel` sharing the raw
+model and never mutates the carrier it was given, which a cache may hold.
+
+For a file source the contract the model scores under is resolved once, by
+`model_contract_path`, and every consumer feeds that same path to binding,
+categorical-domain enforcement and the offset: the builder and
+`score_from_config` hand it to `ModelScorer` as its `feature_contract_path`,
+and column planning reads its features and offset. A discovered sibling is
+therefore enforced exactly as an explicit contract is.
+
+`load_local_model_cached(path, task, contract_path)` is the one in-memory
+local-model cache, shared by file sources and the deploy scorer: a
+`StatGatedCache` keyed on the case-folded path, the task and the contract's
+byte identity (`artifact_identity_fingerprint`), gated on the model file's
+`(st_mtime_ns, st_size)`. A miss loads through `load_local_model` and binds the
+contract, so replacing the model or only its contract reloads, and a failed
+load or bind is never cached.
+
+The builder (`ModelScorer`), the planner (`_model_score_columns`),
+`score_from_config` and `explain_model_score_from_config` all load through
+`load_scoring_model`, so every context loads and binds the same model for the
+same config. The deploy bundler parses the source to decide what to bundle, and
+the deploy scorer's passthrough guard parses it to decide whether a node
+without a bundled artifact can be served; a source that does not parse is
+refused there as a `DeployError` chained from the parse failure.
+
+`inspect_model_file(model_path, base_dir)` (`_model_source.py`) backs
+`GET /api/model-file`. It resolves the file and its contract as a file source
+does, loads the model through `load_local_model` under the contract's task
+(without a contract, under `regression`, and once more under the task a
+loader's task refusal records in its `trained_task` context), binds the
+contract, and returns `ModelFileInspection`: `model_path`, `flavor`, `label`,
+`task` (the contract's, else the trained task a loader reported, else
+`None`), `features`, `categorical_features`, `offset_column`, `offset_link`
+and the project-relative `contract_path` (or `None`). Its `ConfigError`s are
+the scoring errors and the route returns them as `400`.
 
 ### Model loading — `load_mlflow_model(...)` (`_mlflow_io.py`)
 
@@ -519,7 +584,10 @@ final exponential transform, so the function reports both an
 `output_space` (where the returned contributions live) and a
 `prediction_space` (where `prediction_value` and the traced-output check
 live), and re-predicts in both `RawFormulaVal` and default spaces to
-reconcile them. A regression also reports its `link` (`log` for Poisson/Tweedie,
+reconcile them. CatBoost's ShapValues exclude a `Pool` baseline that its raw
+prediction includes, so for a model with an offset the row's baseline (built
+with the carrier's `offset_link`) is added to `base_value`: the bias carries the
+row's offset, as it does for the wrapper families. A regression also reports its `link` (`log` for Poisson/Tweedie,
 `identity` otherwise) and the response-space `model_prediction_value`, so a
 consumer can show the transform from the summed raw score to the prediction; a
 classifier reports neither, since its label is not a transform of its raw score.
@@ -841,6 +909,9 @@ endpoint.
 | Model file or run artifact with a suffix no family registers | `ConfigError` naming the registered suffixes (`supported_suffixes`) | `family_for_artifact`, called by `load_local_model`, the `load_mlflow_model` fast and full paths, the deploy bundler and the trace explanation, before any download. |
 | Local path naming the directory family (a pyfunc model) | `ConfigError` (it loads only from MLflow) | `load_local_model`. |
 | CatBoost model metadata cannot be read | `ConfigError` naming the model source (chained from the read failure) | `_wrap_catboost`; re-raised immediately by `_load_with_bounded_retry`. |
+| CatBoost offset undeclared by metadata and contract, a contract offset column without its `offset_link` for such a model, or a model/contract offset disagreement | `ConfigError` naming the model and the remedy | `bind_feature_contract`, for file, run, registered and deployed models alike. |
+| A run or registered CatBoost model with undeclared offset and no contract logged beside it | `ConfigError` naming the run | `run_logged_contract_path` (`_resolve_run_contract`). |
+| File source with a missing model file, an explicit contract that does not exist, or a path outside the project | `ConfigError` naming the file / `RuntimePathOutsideProjectError` | `resolve_model_file`, `model_contract_path`; also `GET /api/model-file` as `400`. |
 | Corrupt/unloadable artifact after bounded retry | `RuntimeError` (chained `from last_err`) | `_load_with_bounded_retry`. |
 | Bug in load dispatch (bad attribute/type/key) | `AttributeError` / `TypeError` / `KeyError` | Re-raised immediately from `_load_with_bounded_retry`, never retried. |
 | Invalid disk-cache run_id/artifact_path | `ValueError` | `_validate_disk_cache_run_id` / `_validate_artifact_path`, called from `_artifact_cache_path` before any I/O. |
@@ -868,7 +939,10 @@ plain `RuntimeError`, not a `HauteError` subclass.
 
 - `tests/test_offset_scoring.py` verifies offset-aware GLM/CatBoost/pyfunc/canvas/deploy scoring, feature-name handling, metrics, and signature contracts.
 - `tests/test_model_families.py` verifies the registry: a stub family registered with one call loads and scores from a local file, loads from a run artifact both named and by discovery, appears in the suffix list and maps to its deploy distributions; an unrecognised suffix fails locally and from a run with a `ConfigError` naming the supported suffixes; artifact paths resolve to their family (case, separators, directories); the built-in registrations are exactly `_SUPPORTED_FLAVORS`; duplicates are refused; every training descriptor's suffix is its family's; and `frontend/src/utils/modelFamilies.json` equals `model_family_fixture()`.
-- `tests/test_model_source.py` verifies the parsed source: each invalid config (no run ID, no registered model, an unknown `sourceType`, a version beside an alias) fails with the same `ConfigError` through the builder, `score_from_config` and the trace explanation; the parser's defaults; the deploy passthrough guard chaining the parse failure; and that `load_mlflow_model` is called only from `_model_source.py`.
+- `tests/test_model_source.py` verifies the parsed source: each invalid config (no run ID, no registered model, no model path, an unknown `sourceType`, a version beside an alias) fails with the same `ConfigError` through the builder, `score_from_config` and the trace explanation; the parser's defaults; the deploy passthrough guard chaining the parse failure; and that `load_mlflow_model` is called only from `_model_source.py`.
+- `tests/test_model_family_acceptance.py` verifies that, for every native family, a model saved with its contract scores through a file source in the preview, in a standalone run (`score_from_config`) and in a deployed bundle with the predictions of the same model scored from its MLflow run.
+- `tests/test_model_file_source.py` verifies the file source and contract binding: a GLM file scores as its run does; an external CatBoost model trained with a nonzero, nonconstant baseline and saved without Haute metadata matches native prediction through a `Pool` baseline under a contract declaring its offset, and the trace reconstructs that prediction; an explicit no-offset contract scores; an undeclared offset, a model/contract disagreement and a missing declared offset input each fail for file, run and registered sources; a missing file, an unsupported suffix, a path outside the project and an EBM without its contract each fail naming the file; the trace explains a file-sourced CatBoost, GLM and XGBoost prediction; `GET /api/model-file` reports a saved model's family, task, features, offset and contract; and the bundler copies a file source's model and contract and bundles an undeclared run CatBoost's logged contract.
+- `tests/test_runtime_input_cache_invalidation.py` verifies file-source freshness with warm model, preview and trace caches and a downstream snapshot: replacing the model at the same path, changing only the discovered sibling contract, adding a higher-priority sibling contract, and changing an explicit contract each return the new predictions or refusal and leave the old snapshot not current; deleting the model or its required contract raises a named error.
 - `tests/test_scoring_path_unified.py` verifies explicit flavor dispatch, unified scoring regression guards, structural invariants, wrapper dispatch, and eager/batch equivalence.
 - `tests/test_scoring_prep_perf.py` verifies prediction-frame preparation correctness, pyfunc named-frame dispatch, downstream passthrough, edge cases, and benchmark behavior.
 

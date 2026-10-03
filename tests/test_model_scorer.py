@@ -1881,7 +1881,14 @@ class TestRowLocalScanScoring:
         )
 
     def test_limited_scoring_requires_the_contract_offset_column(self) -> None:
-        scoring_model = ScoringModel(_make_mock_model(["a", "b"]), ["a", "b"], flavor="catboost")
+        # The offset a contract declares is bound onto the carrier.
+        scoring_model = ScoringModel(
+            _make_mock_model(["a", "b"]),
+            ["a", "b"],
+            flavor="catboost",
+            offset_column="exposure",
+            offset_link="log",
+        )
 
         with pytest.raises(FeatureMismatchError, match="exposure"):
             _run_score_pipeline(
@@ -1891,7 +1898,6 @@ class TestRowLocalScanScoring:
                 output_col="pred",
                 source="batch",
                 row_limit=10,
-                offset_column="exposure",
             )
 
     def test_limit_reaching_the_scorer_predicts_only_limited_rows(

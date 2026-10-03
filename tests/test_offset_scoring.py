@@ -600,7 +600,8 @@ class TestOffsetInSignatureAndContract:
             "target_type": "Int64",
             "task": "regression",
             "offset_column": None,
-            "contract_version": 2,
+            "offset_link": None,
+            "contract_version": 3,
             "model": None,
         }
         import hashlib
@@ -916,10 +917,11 @@ class TestPyfuncScorerOffset:
             assert scored.columns == ["prediction"]
 
     def test_contract_offset_overrides_when_model_cannot_self_describe(self) -> None:
-        """When the model carries no offset but the caller passes one (the
-        contract-driven pyfunc path), the offset is applied and required."""
-        from haute._mlflow_io import ScoringModel
+        """When the model carries no offset but its contract declares one (the
+        contract-driven pyfunc path), binding applies and requires it."""
+        from haute._mlflow_io import ScoringModel, bind_feature_contract
         from haute._model_scorer import _run_score_pipeline
+        from haute.modelling._feature_contract import build_contract
 
         model = ScoringModel(
             model=_FakePyfunc(),
@@ -927,14 +929,23 @@ class TestPyfuncScorerOffset:
             flavor="pyfunc",
             offset_column=None,  # model cannot self-describe
         )
+        contract = build_contract(
+            features=["age"],
+            feature_types={"age": "Float64"},
+            categorical_features=[],
+            target_name="y",
+            target_type="Float64",
+            task="regression",
+            offset_column="exposure",
+        )
+        bound = bind_feature_contract(model, contract, model_name="'pyfunc'")
         df = self._frame()
         scored = (
             _run_score_pipeline(
-                model,
+                bound,
                 df.lazy(),
                 task="regression",
                 output_col="prediction",
-                offset_column="exposure",  # supplied by the feature contract
             )
             .collect()["prediction"]
             .to_numpy()

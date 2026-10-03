@@ -1425,6 +1425,7 @@ export type {
 export type {
   BrowseFilesResponse,
   FileItem as FileListItem,
+  ModelFileInspectionResponse,
   SessionStatusResponse,
 } from "../generated/api-contracts.generated"
 

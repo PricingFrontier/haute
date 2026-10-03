@@ -17,6 +17,7 @@ export function modelScoreTitle(detail: ModelScoreNodeDetail): string {
       ? `Model: ${identity.registered_model} v${identity.version}`
       : `Model: ${identity.registered_model}`
   }
+  if (identity.model_path) return `Model file: ${identity.model_path}`
   if (identity.run_id) return `Model run: ${identity.run_id}`
   return identity.source_type ? `Model source: ${identity.source_type}` : "Model Score"
 }

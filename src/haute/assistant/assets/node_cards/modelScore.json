@@ -2,7 +2,8 @@
   "node_type": "modelScore",
   "authorable": true,
   "fields": {
-    "sourceType": "Where the model comes from: \"run\" (an MLflow run_id with artifact_path) or \"registered\" (registered_model with a version such as \"3\" or \"latest\", or an alias such as \"champion\" instead of a version).",
+    "sourceType": "Where the model comes from: \"run\" (an MLflow run_id with artifact_path), \"registered\" (registered_model with a version such as \"3\" or \"latest\", or an alias such as \"champion\" instead of a version) or \"file\" (a model file in the project, in model_path).",
+    "model_path": "For a file source: the model file, relative to the project folder, such as \"models/frequency.cbm\". It scores with the feature contract saved beside it.",
     "run_id": "For a run source: the MLflow run id of the training run, as the analyst or the training result gives it. Never invent one; ask for it.",
     "artifact_path": "The model file within the run, such as \"model.cbm\" for a CatBoost model.",
     "task": "\"regression\" or \"classification\", as the model was trained.",
