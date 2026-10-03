@@ -195,13 +195,18 @@ export default function useNodeHandlers({
     // second node like any other. The guard lives here rather than in the
     // callers' enabled-state predicates so every entry point inherits it — the
     // paste path (useKeyboardShortcuts) and handleDuplicateNode enforce the same
-    // invariant, and downstream assembly relies on it (conflicting live_switch
-    // nodes raise during execution).
+    // invariant.
     if (isSingletonType(origNodeType)) {
       addToast(
         "info",
         `Cannot create instance of "${origData.label}": only one node of this type is allowed per pipeline`,
       )
+      return
+    }
+    // A Source Switch routes by its own input names, which an instance's
+    // inputs do not share; a second Source Switch is the supported layout.
+    if (origNodeType === NODE_TYPES.LIVE_SWITCH) {
+      addToast("info", `Cannot create instance of "${origData.label}": add another Source Switch instead`)
       return
     }
 

@@ -534,7 +534,6 @@ export default function useEdgeHandlers({
     const drop = connectionDropMenu
     if (!drop) return
     setConnectionDropMenu(null)
-    if (refuseOccupiedSingleton(type)) return
 
     const id = `${type}_${nodeIdCounterRef.current + 1}`
     const newNode = appNode({ id, type, position: drop.position })
@@ -578,7 +577,6 @@ export default function useEdgeHandlers({
     lastSelectedNodeRef,
     nodeIdCounterRef,
     pushSnapshot,
-    refuseOccupiedSingleton,
     reportConnectionValidationFailure,
     setEdgesRaw,
     setLastSelectedId,

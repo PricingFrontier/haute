@@ -1,16 +1,15 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, cleanup, fireEvent } from "@testing-library/react"
 import ConnectionDropMenu from "../ConnectionDropMenu"
-import { NODE_TYPES, type NodeTypeValue } from "../../utils/nodeTypes"
+import { NODE_TYPES } from "../../utils/nodeTypes"
 
-function renderMenu(existingSingletonTypes: ReadonlySet<NodeTypeValue> = new Set()) {
+function renderMenu() {
   const onSelect = vi.fn()
   const onClose = vi.fn()
   render(
     <ConnectionDropMenu
       x={120}
       y={80}
-      existingSingletonTypes={existingSingletonTypes}
       onSelect={onSelect}
       onClose={onClose}
     />,
@@ -48,22 +47,13 @@ describe("ConnectionDropMenu", () => {
     expect(onSelect).toHaveBeenCalledWith(NODE_TYPES.BANDING)
   })
 
-  it("disables an occupied singleton", () => {
-    const { onSelect } = renderMenu(new Set([NODE_TYPES.LIVE_SWITCH]))
-
-    const item = screen.getByRole("menuitem", { name: "Source Switch" })
-    expect(item).toBeDisabled()
-    fireEvent.click(item)
-    expect(onSelect).not.toHaveBeenCalled()
-  })
-
-  it("focuses the first item and moves focus with the arrow keys, skipping disabled items", () => {
-    renderMenu(new Set([NODE_TYPES.LIVE_SWITCH]))
+  it("focuses the first item and moves focus with the arrow keys", () => {
+    renderMenu()
     const menu = screen.getByRole("menu", { name: "Add node" })
 
     expect(screen.getByRole("menuitem", { name: "Edge Join" })).toHaveFocus()
     fireEvent.keyDown(menu, { key: "ArrowDown" })
-    expect(screen.getByRole("menuitem", { name: "Data Output" })).toHaveFocus()
+    expect(screen.getByRole("menuitem", { name: "Source Switch" })).toHaveFocus()
     fireEvent.keyDown(menu, { key: "ArrowUp" })
     fireEvent.keyDown(menu, { key: "ArrowUp" })
     expect(screen.getByRole("menuitem", { name: "Apply Optimisation" })).toHaveFocus()

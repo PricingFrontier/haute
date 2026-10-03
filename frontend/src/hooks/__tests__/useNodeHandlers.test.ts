@@ -390,7 +390,7 @@ describe("useNodeHandlers", () => {
   // An instance is a second node like any other, so the singleton rule that
   // handleDuplicateNode and the paste path enforce has to hold here too — the
   // toolbar's Instance button reaches every node type, not just submodels.
-  it.each(["apiInput", "output", "liveSwitch"])(
+  it.each(["apiInput", "output"])(
     "handleCreateInstance refuses singleton node type %s",
     (nodeType) => {
       const params = makeParams()
@@ -405,6 +405,20 @@ describe("useNodeHandlers", () => {
       expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/only one node of this type/)
     },
   )
+
+  // A Source Switch routes by its own input names, which an instance's inputs do not share.
+  it("handleCreateInstance refuses a Source Switch", () => {
+    const params = makeParams()
+    const sourceSwitch = makeNode("switch_1")
+    sourceSwitch.data = { ...sourceSwitch.data, nodeType: "liveSwitch" }
+    params.graphRef.current = { nodes: [sourceSwitch], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+    act(() => {
+      result.current.handleCreateInstance("switch_1")
+    })
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/add another Source Switch instead/)
+  })
 
   // Instancing an instance must produce a SIBLING, not a chain: resolveInstanceOriginal
   // does no chain-walking, so a chained instanceOf would resolve the "original" to

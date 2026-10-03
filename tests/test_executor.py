@@ -2008,6 +2008,52 @@ class TestLiveSwitch:
         # With empty map, should fall back to first input (live_src, 3 rows)
         assert results["switch"].row_count == 3
 
+    @pytest.mark.parametrize(("source", "rows"), [("live", 1 + 2), ("test_batch", 10 + 20)])
+    def test_every_switch_follows_the_active_source(self, tmp_path, source, rows):
+        """Two Source Switches in one pipeline each route the input mapped to the source."""
+        frames = {"policy_live": 1, "policy_batch": 10, "claims_live": 2, "claims_batch": 20}
+        nodes = []
+        for name, row_count in frames.items():
+            path = tmp_path / f"{name}.parquet"
+            pl.DataFrame({"x": list(range(row_count))}).write_parquet(path)
+            nodes.append(_ready_source_node(name, str(path)))
+        for switch in ("policy", "claims"):
+            live, batch = f"{switch}_live", f"{switch}_batch"
+            nodes.append(
+                _n(
+                    {
+                        "id": switch,
+                        "data": {
+                            "label": switch,
+                            "nodeType": "liveSwitch",
+                            "config": {
+                                "input_scenario_map": {live: "live", batch: "test_batch"},
+                                "inputs": [live, batch],
+                            },
+                        },
+                    }
+                )
+            )
+        nodes.append(_transform_node("combined", "df = pl.concat([policy, claims])"))
+        graph = _g(
+            {
+                "nodes": nodes,
+                "edges": [
+                    _edge("policy_live", "policy"),
+                    _edge("policy_batch", "policy"),
+                    _edge("claims_live", "claims"),
+                    _edge("claims_batch", "claims"),
+                    _edge("policy", "combined"),
+                    _edge("claims", "combined"),
+                ],
+            }
+        )
+
+        results = execute_graph(graph, target_node_id="combined", source=source)
+
+        assert results["combined"].status == "ok"
+        assert results["combined"].row_count == rows
+
 
 # ---------------------------------------------------------------------------
 # Error path tests

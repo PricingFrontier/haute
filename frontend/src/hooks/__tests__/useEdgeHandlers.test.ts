@@ -2826,23 +2826,6 @@ describe("useEdgeHandlers connection drop menu", () => {
     ])
   })
 
-  it("refuses an occupied singleton without creating anything", async () => {
-    const params = makeDropParams()
-    params.existingSingletonTypes = new Set([NODE_TYPES.LIVE_SWITCH])
-    const { result } = renderHook(() => useEdgeHandlers(params))
-    releaseOnCanvas(result)
-
-    act(() => result.current.createNodeFromConnectionDrop(NODE_TYPES.LIVE_SWITCH))
-    await flushIdentityCommit()
-
-    expect(result.current.connectionDropMenu).toBeNull()
-    expect(params.resolveGraphIdentities).not.toHaveBeenCalled()
-    expect(params.setNodesRaw).not.toHaveBeenCalled()
-    expect(useToastStore.getState().toasts.at(-1)?.text).toBe(
-      "Only one Source Switch node is allowed per pipeline",
-    )
-  })
-
   it("refuses a connection the new node cannot accept before allocating an id", async () => {
     const params = makeDropParams(identifiedNode("a", NODE_TYPES.API_INPUT))
     const { result } = renderHook(() => useEdgeHandlers(params))

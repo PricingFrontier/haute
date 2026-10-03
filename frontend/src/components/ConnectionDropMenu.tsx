@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react"
 import useClickOutside from "../hooks/useClickOutside"
-import { CONNECTION_DROP_TYPES, NODE_TYPE_META, SINGLETON_TYPES, type NodeTypeValue } from "../utils/nodeTypes"
+import { CONNECTION_DROP_TYPES, NODE_TYPE_META, type NodeTypeValue } from "../utils/nodeTypes"
 
 const VIEWPORT_MARGIN = 8
 
@@ -8,7 +8,6 @@ interface ConnectionDropMenuProps {
   /** Client coordinates of the connection release point. */
   x: number
   y: number
-  existingSingletonTypes: ReadonlySet<NodeTypeValue>
   onSelect: (type: NodeTypeValue) => void
   onClose: () => void
 }
@@ -17,7 +16,6 @@ interface ConnectionDropMenuProps {
 export default function ConnectionDropMenu({
   x,
   y,
-  existingSingletonTypes,
   onSelect,
   onClose,
 }: ConnectionDropMenuProps) {
@@ -38,10 +36,8 @@ export default function ConnectionDropMenu({
     })
   }, [x, y])
 
-  const isDisabled = (type: NodeTypeValue) => SINGLETON_TYPES.has(type) && existingSingletonTypes.has(type)
-
   useLayoutEffect(() => {
-    itemRefs.current.find((item) => item && !item.disabled)?.focus()
+    itemRefs.current[0]?.focus()
   }, [])
 
   // Escape closes the menu wherever focus is. The document listener runs
@@ -59,12 +55,12 @@ export default function ConnectionDropMenu({
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return
     event.preventDefault()
-    const enabled = itemRefs.current.filter((item): item is HTMLButtonElement => !!item && !item.disabled)
-    if (enabled.length === 0) return
-    const current = enabled.findIndex((item) => item === document.activeElement)
+    const items = itemRefs.current.filter((item): item is HTMLButtonElement => !!item)
+    if (items.length === 0) return
+    const current = items.findIndex((item) => item === document.activeElement)
     const step = event.key === "ArrowDown" ? 1 : -1
-    const next = current === -1 ? 0 : (current + step + enabled.length) % enabled.length
-    enabled[next].focus()
+    const next = current === -1 ? 0 : (current + step + items.length) % items.length
+    items[next].focus()
   }
 
   return (
@@ -86,7 +82,6 @@ export default function ConnectionDropMenu({
       {CONNECTION_DROP_TYPES.map((type, i) => {
         const meta = NODE_TYPE_META[type]
         const Icon = meta.icon
-        const disabled = isDisabled(type)
         return (
           <button
             key={type}
@@ -94,10 +89,9 @@ export default function ConnectionDropMenu({
             type="button"
             role="menuitem"
             data-testid={`connection-drop-item-${type}`}
-            disabled={disabled}
-            title={disabled ? `Only one ${meta.name} allowed per pipeline` : meta.description}
+            title={meta.description}
             onClick={() => onSelect(type)}
-            className={`w-full flex items-center gap-2.5 px-3 py-1.5 text-[12px] ${disabled ? "opacity-35 cursor-not-allowed" : "hover-chrome"}`}
+            className="w-full flex items-center gap-2.5 px-3 py-1.5 text-[12px] hover-chrome"
           >
             <span className="w-5 h-5 rounded-md flex items-center justify-center shrink-0" style={{ background: `${meta.color}18` }}>
               <Icon size={12} style={{ color: meta.color }} aria-hidden="true" />

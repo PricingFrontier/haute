@@ -97,7 +97,6 @@ class StaleDocumentRevisionError(Exception):
 _SINGLETON_NODE_TYPES: list[tuple[NodeType, str]] = [
     (NodeType.API_INPUT, "API Input"),
     (NodeType.OUTPUT, "Output"),
-    (NodeType.LIVE_SWITCH, "Source Switch"),
 ]
 
 # Allowlist for codegen output paths.
@@ -605,6 +604,7 @@ class SavePipelineService:
         self._validate_support_code_names(graph)
         flattened = flatten_graph(graph)
         self._validate_singletons(flattened)
+        self._validate_no_source_switch_instances(flattened)
         self._validate_nothing_leaves_a_sink(flattened)
         self._validate_edge_join_configs(flattened)
         self._validate_optimiser_input_selectors(flattened)
@@ -832,6 +832,25 @@ class SavePipelineService:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Only one {label} node is allowed per pipeline (found {count}).",
+                )
+
+    @staticmethod
+    def _validate_no_source_switch_instances(graph: PipelineGraph) -> None:
+        """Refuse an instance of a Source Switch.
+
+        A switch routes by its own input names, which an instance's inputs do
+        not share, so the instance would have no input for any source.
+        """
+        nodes = graph.node_map
+        for node in graph.nodes:
+            original = nodes.get(node.data.config.get("instanceOf") or "")
+            if original is not None and original.data.nodeType == NodeType.LIVE_SWITCH:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"{node.data.label!r} cannot be an instance of the Source Switch "
+                        f"{original.data.label!r}; add another Source Switch instead."
+                    ),
                 )
 
     @staticmethod
