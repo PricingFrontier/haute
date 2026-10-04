@@ -5,8 +5,8 @@
 Defects found outside a component's own roadmap work, kept here until they
 are fixed. `BUG-18` was found on 4 October 2026 while making standalone runs
 execute submodels: `haute run` then ran a pipeline without its submodels, and
-deploy still parses the same way. `BUG-19` is the part of the fixed `BUG-12`
-that covered only the pipeline file.
+deploy still parses the same way. `BUG-19` extends the
+check for statements a save would drop from the pipeline file to submodel files.
 
 ## Priorities
 
