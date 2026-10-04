@@ -161,7 +161,11 @@ def _scan_with_reader(target: Path, reader: Mapping[str, Any]) -> pl.LazyFrame:
         raise PolarsIoConfigError(
             f"The {fmt.label} scanner does not accept the argument(s) {', '.join(rejected)}."
         )
-    return scan_polars_input_for_schema(config)[0]
+    try:
+        return scan_polars_input_for_schema(config)[0]
+    except TypeError as exc:
+        # Polars checks argument values' types as it opens the scan.
+        raise PolarsIoConfigError(f"The {fmt.label} scanner rejected its arguments: {exc}") from exc
 
 
 def _read_schema_blocking(

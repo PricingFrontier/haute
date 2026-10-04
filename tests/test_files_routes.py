@@ -361,6 +361,10 @@ class TestGetSchemaCsv:
             ({"arguments": "{}"}, "arguments need a format"),
             ({"format": "csv", "arguments": "[1]"}, "arguments must be a JSON object"),
             ({"format": "csv", "arguments": json.dumps({"no_such": 1})}, "no_such"),
+            (
+                {"format": "csv", "arguments": json.dumps({"schema_overrides": 42})},
+                "schema_overrides",
+            ),
         ],
     )
     def test_reader_settings_that_cannot_read_the_file_are_400(
