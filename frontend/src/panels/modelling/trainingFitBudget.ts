@@ -1,8 +1,13 @@
-/** Top-level selection fits and the final development fit (not GLM's internal penalty CV). */
+/**
+ * Top-level selection fits and the one fit beyond them (not GLM's internal penalty CV):
+ * the final development fit, or for a family that publishes its validation fit
+ * (t-boost) the winning trial's fit a study reproduces. *finalFit* says whether
+ * that fit runs.
+ */
 export function trainingFitBudget(
   evaluation: Record<string, unknown>,
   tuning: Record<string, unknown> | null,
-  refitOnDevelopment = true,
+  finalFit = true,
 ): { selection: number; total: number; folds: number; trials: number } | null {
   const validation = evaluation.validation as
     Record<string, unknown> | undefined
@@ -25,5 +30,5 @@ export function trainingFitBudget(
   )
     return null
   const selection = folds * trials
-  return { selection, total: selection + Number(refitOnDevelopment), folds, trials }
+  return { selection, total: selection + Number(finalFit), folds, trials }
 }

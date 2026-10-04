@@ -38,6 +38,37 @@ function categoricalEncoding(): string | null {
   return term?.nextElementSibling?.textContent ?? null
 }
 
+/** The run summary's fit budget line. */
+function fitBudget(): string | null {
+  const summary = screen.getByRole("region", { name: "Training run summary" })
+  const term = [...summary.querySelectorAll("dt")].find(
+    (element) => element.textContent === "Fit budget",
+  )
+  return term?.nextElementSibling?.textContent ?? null
+}
+
+describe("TrainingRunSummary fit budget for a family that publishes its validation fit", () => {
+  const tboost = (overrides: Record<string, unknown> = {}) =>
+    catboostConfig({ algorithm: "tboost", loss_function: "Poisson", params: { n_trees: 4000 }, ...overrides })
+
+  it("counts the one validation fit it publishes", () => {
+    render(<TrainingRunSummary config={tboost()} columns={COLUMNS} preview={null} />)
+    expect(fitBudget()).toBe("1 validation fit (saved model)")
+  })
+
+  it("counts a study's trials and the reproduced winning fit", () => {
+    const tuning = { schema_version: 1, trial_count: 6, seed: 42, metric: "gini", search_space: {} }
+    render(<TrainingRunSummary config={tboost({ tuning })} columns={COLUMNS} preview={null} />)
+    expect(fitBudget()).toBe("7 total fits: 6 tuning fits + 1 winning validation fit")
+  })
+
+  it("counts the one fit of a plan with no validation", () => {
+    const evaluation = { schema_version: 1, strategy: "random", seed: 42, validation: { method: "none" } }
+    render(<TrainingRunSummary config={tboost({ evaluation })} columns={COLUMNS} preview={null} />)
+    expect(fitBudget()).toBe("1 final fit")
+  })
+})
+
 describe("TrainingRunSummary categorical encoding", () => {
   it("names one-hot encoding up to one_hot_max_size levels", () => {
     render(

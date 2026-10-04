@@ -38,6 +38,7 @@ import { useGraph } from "./useGraph"
 import {
   ALGORITHM_CAPABILITIES,
   algorithmCapability,
+  publishesValidationFit,
   isKnownAlgorithm,
   usesSharedPanes,
 } from "./modelling/algorithmCapabilities"
@@ -514,16 +515,19 @@ export default function ModellingConfig({
   const trainedResultExpired = useNodeResultsStore(
     (state) => Object.hasOwn(state.expiredTrainJobs, nodeId),
   )
+  // A family whose early-stopped validation fit is the model (t-boost) has no
+  // refit setting at all, so its config never carries refit_on_development.
+  const validationFit = publishesValidationFit(String(config.algorithm ?? ""))
   const onEvaluationChange = useCallback(
     (nextEvaluation: Record<string, unknown>) => {
       const method = (nextEvaluation.validation as Record<string, unknown> | undefined)?.method
-      if (config.refit_on_development === false && method !== "single") {
+      if (!validationFit && config.refit_on_development === false && method !== "single") {
         onUpdate({ evaluation: nextEvaluation, refit_on_development: true })
       } else {
         onUpdate("evaluation", nextEvaluation)
       }
     },
-    [config.refit_on_development, onUpdate],
+    [config.refit_on_development, onUpdate, validationFit],
   )
   const onEstimateDispersion = useCallback(
     (param: DispersionParam, signal: AbortSignal) => runDispersionEstimate({
@@ -651,6 +655,7 @@ export default function ModellingConfig({
       onEvaluationChange={onEvaluationChange}
       refitOnDevelopment={config.refit_on_development !== false}
       onRefitOnDevelopmentChange={(value) => onUpdate("refit_on_development", value)}
+      publishesValidationFit={validationFit}
       tuningEnabled={Boolean(tuning)}
       preview={estimate.estimate?.evaluation_preview ?? null}
       previewError={estimate.error?.startsWith("Evaluation preview failed:") ? estimate.error : null}
@@ -723,6 +728,7 @@ export default function ModellingConfig({
           onReviewSplit={() => reviewPane("split")}
           algorithmLabel={algorithmCapability(algorithm)?.label ?? algorithm}
           starterSearchSpace={STARTER_SEARCH_SPACES[algorithm]}
+          publishesValidationFit={validationFit}
           params={params}
           reservedKeys={reservedParams.keys}
           reservedKeysHelp={reservedParams.help}

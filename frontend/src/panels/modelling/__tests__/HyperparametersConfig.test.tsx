@@ -37,11 +37,13 @@ function Harness({
     validation: { method: "cross_validation", fold_count: 5 },
   },
   onUpdate = vi.fn<OnUpdateConfig>(() => ({ ok: true })),
+  publishesValidationFit = false,
 }: {
   params?: Record<string, unknown>
   tuning?: Record<string, unknown> | null
   evaluation?: Record<string, unknown>
   onUpdate?: OnUpdateConfig
+  publishesValidationFit?: boolean
 }) {
   const [draft, setDraft] = useState(
     formatHyperparameters(params, ["task_type"]),
@@ -65,6 +67,7 @@ function Harness({
       metrics={["gini", "rmse"]}
       searchSpaceDraft={searchSpaceDraft}
       setSearchSpaceDraft={setSearchSpaceDraft}
+      publishesValidationFit={publishesValidationFit}
     />
   )
 }
@@ -169,6 +172,14 @@ describe("HyperparametersConfig", () => {
       expect(onUpdate).not.toHaveBeenCalled()
     },
   )
+
+  it("seeds tuning without a refit for a family that publishes its validation fit", () => {
+    const onUpdate = vi.fn<OnUpdateConfig>(() => ({ ok: true }))
+    render(<Harness onUpdate={onUpdate} publishesValidationFit />)
+    fireEvent.click(screen.getByRole("radio", { name: "Tune parameters" }))
+    const update = onUpdate.mock.calls[0][0] as Record<string, unknown>
+    expect(Object.keys(update)).toEqual(["tuning"])
+  })
 
   it("keeps a reserved fixed key local instead of silently overriding it", () => {
     const onUpdate = vi.fn<OnUpdateConfig>(() => ({ ok: true }))

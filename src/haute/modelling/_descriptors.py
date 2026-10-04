@@ -19,7 +19,11 @@ from typing import Any, Literal
 from haute.errors import HauteValidationError
 
 Link = Literal["identity", "log", "logit"]
-RefitPolicy = Literal["validation_weighted_rounds", "fixed_budget", "none"]
+#: How the deployed model relates to the selection fits: refit with the
+#: validation-weighted round count, refit with the configured budget unchanged,
+#: never refit because the early-stopped validation fit is the model
+#: (``validation_fit``), or no tuning at all (``none``, the GLM).
+RefitPolicy = Literal["validation_weighted_rounds", "fixed_budget", "validation_fit", "none"]
 FeatureControl = Literal["monotone_constraints", "feature_weights", "interactions"]
 
 #: The Haute loss vocabulary shared by every tree and EBM family. A family's
@@ -95,6 +99,11 @@ class AlgorithmDescriptor:
     @property
     def supports_tuning(self) -> bool:
         return self.refit_policy != "none"
+
+    @property
+    def publishes_validation_fit(self) -> bool:
+        """The early-stopped holdout fit is the deployed model; the family never refits."""
+        return self.refit_policy == "validation_fit"
 
     @property
     def refit_round_key(self) -> str:
@@ -690,7 +699,7 @@ TBOOST = AlgorithmDescriptor(
     round_key="n_trees",
     round_key_aliases=("n_trees",),
     validation_only_params=(),
-    refit_policy="fixed_budget",
+    refit_policy="validation_fit",
     feature_controls=frozenset({"monotone_constraints"}),
     suffix=".tboost",
     engine_module="t_boost",
@@ -754,12 +763,14 @@ def tuning_family(final_params: Mapping[str, Any]) -> AlgorithmDescriptor:
     """The tunable family a study's final parameters belong to.
 
     A round-refitting family's projection carries exactly its round key; a
-    fixed-budget family (EBM, t-boost) keeps its own explicit budget key.
+    fixed-budget family (EBM) or a validation-fit family (t-boost) keeps its own
+    explicit budget key.
     """
     matches = [
         descriptor
         for descriptor in DESCRIPTORS.values()
-        if descriptor.refit_policy in ("validation_weighted_rounds", "fixed_budget")
+        if descriptor.refit_policy
+        in ("validation_weighted_rounds", "fixed_budget", "validation_fit")
         and descriptor.round_key in final_params
     ]
     if len(matches) != 1:

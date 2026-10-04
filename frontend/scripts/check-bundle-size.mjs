@@ -99,7 +99,9 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // shares with the EBM Terms tab, and the tboost_tables response parser. The
 // complete production bundle, with main's trace-card formulas, is 1,593.5 KiB; 1,594 KiB
 // restores about 0.5 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1594
+// Main's bug-fix round (PR #293) and t-boost's validation-fit split pane bring
+// it to 1,594.4 KiB; 1,595 KiB, approved, restores about 0.6 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1595
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

@@ -97,6 +97,24 @@ describe("trainingConfigurationIssues", () => {
     })])
   })
 
+  it("mirrors the backend's t-boost validation-fit rules", () => {
+    const base = {
+      algorithm: "tboost",
+      target: "y",
+      feature_columns: ["age"],
+      loss_function: "Poisson",
+      params: { n_trees: 4000 },
+    }
+    const codes = (config: Record<string, unknown>) =>
+      trainingConfigurationIssues({ ...base, ...config }).map((issue) => [issue.code, trainingIssuePane(issue)])
+    expect(codes({ evaluation })).toEqual([])
+    const folds = { ...evaluation, validation: { method: "cross_validation", fold_count: 3 } }
+    expect(codes({ evaluation: folds })).toEqual([["validation-fit", "split"]])
+    expect(codes({ evaluation, refit_on_development: false })).toEqual([["validation-fit", "split"]])
+    const tuning = { schema_version: 1, trial_count: 5, seed: 1, metric: "gini", search_space: { learning_rate: [0.03, 0.1] } }
+    expect(codes({ evaluation, tuning })).toEqual([])
+  })
+
   it("mirrors the backend's t-boost round ceiling rule", () => {
     const base = { algorithm: "tboost", target: "y", feature_columns: ["age"], loss_function: "Poisson", evaluation }
     const codes = (config: Record<string, unknown>) =>

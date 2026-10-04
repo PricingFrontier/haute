@@ -1698,9 +1698,12 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
   feature weights fail before fitting, and a feature name with `:` trains and explains; with a
   log-link offset the response is the rate times the offset and the margin is the raw score
   plus `log(offset)`, and an `RMSE` offset matches an independent native fit with `offset` and
-  is added verbatim to the margin; the selection fit passes the validation rows as `eval_set`
-  and the refit passes none; with the refit off, the published model is the early-stopped
-  fit; fit evidence records the trees kept and `validation` or `none` as the stopping reason;
+  is added verbatim to the margin; with holdout validation the job runs one fit, on the
+  training partition with the validation rows as `eval_set`, and publishes it (fit count 1,
+  no refit); with no validation the one fit is on the development rows without an
+  `eval_set`; the configuration refuses cross-validation and any `refit_on_development`, and
+  `TrainingJob` refuses an explicit refit; a study publishes the winning trial's reproduced
+  fit, whose validation metric equals the winner's objective; fit evidence records the trees kept and `validation` or `none` as the stopping reason;
   the loss history is the per-round bag mean of `evals_result_`; contributions plus bias rebuild the margin for every row and per-feature
   Shapley values sum to the same total; a categorical value outside the fitted levels scores
   exactly as a level t-boost pooled into `<rare>` does, in the default cell when the axis
@@ -2022,7 +2025,16 @@ used for staged input.
   study's final parameters and tree count that the job, `build_tuning_report`, the report
   artifact and `TuningReportPayload` all use: a round-refitting family refits with the
   validation-weighted count under its round key; a `fixed_budget` family (EBM) refits with the
-  winner's parameters unchanged and no tree count (`final_tree_count` is `None`). The report
+  winner's parameters unchanged and no tree count (`final_tree_count` is `None`), and a
+  `validation_fit` family (t-boost) publishes the winning trial's fit, reproduced from those
+  unchanged parameters, also with no tree count. `AlgorithmDescriptor.publishes_validation_fit`
+  marks that policy: `build_training_job_kwargs` refuses cross-validation and any
+  `refit_on_development` key for such a family and sets the flag to `method == "none"`;
+  `TrainingJob(refit_on_development=None)` derives the same value, refuses cross-validation,
+  and refuses an explicit value that disagrees; a tuned job without a refit runs, after the
+  trials, a `_new_evaluation_job` for fit 0 with the winning parameters into the output
+  directory and publishes it as the validation-fit result. The worker's tuned-response check
+  requires only that the evaluation's `fit_count` equals the study's `total_fit_count`. The report
   identifies its family with `tuning_family` from the one round key its final parameters carry.
 - `AlgorithmDescriptor.config_issue` combines the per-loss monotonicity rule with the family's
   `value_check` (EBM: `ebm_value_issue`); `build_training_job_kwargs` and `TrainingJob.__init__`
@@ -2267,7 +2279,7 @@ used for staged input.
   `cat_min_data_per_group` and `cat_direct_max_levels`; Haute owns `objective`, `tweedie_rho`,
   `seed`, `n_jobs`, `monotone_constraints`, `categorical_features` and `unknown_category`. Its
   `round_key` is
-  `n_trees`, searchable by tuning, its `refit_policy` is `fixed_budget`, and `tboost_value_issue`
+  `n_trees`, searchable by tuning, its `refit_policy` is `validation_fit`, and `tboost_value_issue`
   requires `n_trees` to be a positive integer. Every other value rule (depth and order ranges,
   fractions) is t-boost's own, raised by the fit.
 - The `tboost` scoring family registers `.tboost` as self-describing with a Polars predict

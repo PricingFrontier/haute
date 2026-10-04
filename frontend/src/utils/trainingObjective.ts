@@ -1,4 +1,7 @@
-import { algorithmCapability } from "../panels/modelling/algorithmCapabilities"
+import {
+  algorithmCapability,
+  publishesValidationFit,
+} from "../panels/modelling/algorithmCapabilities"
 import {
   interactionEntryIssue,
   monotoneConstraintTerms,
@@ -37,6 +40,7 @@ export type TrainingConfigurationIssueCode =
   | "tboost-n-trees"
   | "evaluation-config"
   | "final-refit"
+  | "validation-fit"
   | "tuning-config"
 
 export type TrainingConfigurationIssue = {
@@ -204,9 +208,24 @@ export function trainingConfigurationIssues(
   const validation = evaluation?.validation as Record<string, unknown> | undefined
   const method = validation?.method
   const refit = config.refit_on_development
-  if ((refit !== undefined && typeof refit !== "boolean") || (
+  const validationFit = publishesValidationFit(String(config.algorithm ?? ""))
+  // Mirrors build_training_job_kwargs: the early-stopped validation fit is the
+  // model, so there is no refit setting and no cross-validation.
+  if (validationFit && method === "cross_validation") {
+    issues.push({
+      code: "validation-fit",
+      message: "t-boost publishes its early-stopped validation fit: choose holdout validation or no validation.",
+    })
+  }
+  if (validationFit && refit !== undefined) {
+    issues.push({
+      code: "validation-fit",
+      message: "t-boost is never refit: remove refit_on_development from the configuration.",
+    })
+  }
+  if (!validationFit && ((refit !== undefined && typeof refit !== "boolean") || (
     refit === false && method !== "single"
-  )) {
+  ))) {
     issues.push({
       code: "final-refit",
       message: "Skipping the final refit requires holdout validation.",
@@ -221,7 +240,7 @@ export function trainingConfigurationIssues(
     ? config.tuning as Record<string, unknown>
     : null
   if (tuning) {
-    if (refit === false && method === "single") {
+    if (!validationFit && refit === false && method === "single") {
       issues.push({
         code: "final-refit",
         message: "Parameter tuning requires a final refit.",
@@ -528,7 +547,8 @@ function hasMonotoneConstraints(config: Record<string, unknown>): boolean {
 export function trainingIssuePane(issue: TrainingConfigurationIssue): "target" | "features" | "params" | "split" {
   switch (issue.code) {
     case "evaluation-config": return "split"
-    case "final-refit": return "split"
+    case "final-refit":
+    case "validation-fit": return "split"
     case "catboost-params":
     case "tuning-config":
     case "glm-elastic-net-l1-ratio":

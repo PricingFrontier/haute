@@ -45,7 +45,7 @@ while a model trains. The node has no **COLUMNS** tab.
 | Losses | RMSE, MAE, Poisson, Tweedie, Logloss, CrossEntropy | RMSE, MAE, Poisson, Gamma, Tweedie, Logloss | RMSE, MAE, Poisson, Gamma, Tweedie, Logloss | RMSE, Poisson, Gamma, Tweedie, Logloss | RMSE, Poisson, Gamma, Tweedie, Logloss | **Family** and **Link Function** |
 | Round budget (in **Parameters JSON**) | `iterations` | `num_boost_round` | `num_iterations` | `n_trees` (required ceiling) | `max_rounds` (required) | — |
 | Early stopping | `early_stopping_rounds` | `early_stopping_rounds` | `early_stopping_round` | On the validation rows, each bag at its own round; else on its own holdout | Never | — |
-| Final refit (when refitting) | Validation-weighted round count | Validation-weighted round count | Validation-weighted round count | Winning parameters, unchanged | Winning `max_rounds`, unchanged | Same settings |
+| Final refit (when refitting) | Validation-weighted round count | Validation-weighted round count | Validation-weighted round count | Never: the early-stopped validation fit is the model | Winning `max_rounds`, unchanged | Same settings |
 | Tuning | Yes | Yes | Yes | Yes | Yes (`max_rounds` searchable) | No |
 | Monotone constraints | Yes | Yes, except with MAE | Yes, except with MAE | Yes | Yes, not on an interaction | Per term |
 | Feature weights | Yes (pipeline file only) | No | No | No | No | No |
@@ -309,10 +309,10 @@ For CatBoost, GPU training is set in the **TRAIN** pane rather than here.
     are the model that scores. Early stopping fits the model: when a fit has validation rows
     (from the **SPLIT** pane), every bagged fit (`n_bags`) stops at its own best round on
     them (`early_stopping_rounds`), and the validation rows never train, prune or shape the
-    tables. Untick **Refit on training + validation** to publish exactly that early-stopped
-    model. A fit without validation rows, such as the refit on training plus validation,
-    holds out a share of its own rows to stop on (`validation_fraction`); no round count is
-    carried over from the validation fit. t-boost also prunes tables that do not improve its
+    tables. That early-stopped fit is the model: t-boost is never refit, so its **SPLIT**
+    pane has no **Refit on training + validation** box and no **Cross-validation** option.
+    With **No validation**, the one fit holds out a share of its own rows to stop on
+    (`validation_fraction`). t-boost also prunes tables that do not improve its
     own held-out deviance (`prune`). `n_trees` is the ceiling every fit stops early within,
     and is required. When the **SPLIT** pane groups rows by an entity column, t-boost's own
     holdouts keep each entity on one side. A fit gives the same model whatever the number of
@@ -360,7 +360,8 @@ For CatBoost, GPU training is set in the **TRAIN** pane rather than here.
 
 Every family except the GLM can tune a bounded search over the validation plan set in the
 **SPLIT** pane. Choosing **Tune parameters** hides **Parameters JSON**, ticks **Refit on
-training + validation** in the **SPLIT** pane (tuning requires the refit) and shows:
+training + validation** in the **SPLIT** pane (tuning requires the refit; t-boost has no
+refit) and shows:
 
 - A note saying whether a test set is held out during tuning (**No test set is reserved.
   Reserve one in Split for an independent evaluation.** otherwise), with **Review split →**,
@@ -392,8 +393,9 @@ Tuning needs holdout validation or cross-validation and evaluates every trial in
 deterministic seeded sampler. The selected parameters are refitted once on all development
 data; the test set, when there is one, is then evaluated once. A tree family refits with the
 winner's validation-weighted round count (the **final tree count**); an EBM refits with the
-winner's `max_rounds` unchanged, and t-boost with the winner's parameters unchanged (the
-refit stops early on its own holdout). Choosing **Fixed parameters** again turns tuning off.
+winner's `max_rounds` unchanged. t-boost is not refitted: it publishes the winning trial's
+holdout fit, reproduced exactly from the winning parameters as the one fit after the
+trials. Choosing **Fixed parameters** again turns tuning off.
 
 ### GLM penalty and solver { #glm-parameters }
 
@@ -433,7 +435,7 @@ separates three roles:
 | **Validation set (%)** | Holdout validation with a random or group split: the share of source rows held out, above 0 and below 100 (20 to start). |
 | **Validation starts** | Holdout validation with a time-based split: rows from this date on form the validation set. |
 | **Fold count** | Cross-validation: from 2 to 10 folds (5 to start). With a time-based split the folds use an expanding window. |
-| **Refit on training + validation** | Holdout validation only, ticked by default: refits the final model on all development rows. Untick it to keep the one model trained on the training rows during validation, with no second fit; without a test set, its diagnostics are then labelled as validation diagnostics. Cross-validation and no validation always perform their final fit, and tuning requires the refit, so the box is ticked and locked while **Tune parameters** is on. |
+| **Refit on training + validation** | Holdout validation only, ticked by default: refits the final model on all development rows. Untick it to keep the one model trained on the training rows during validation, with no second fit; without a test set, its diagnostics are then labelled as validation diagnostics. Cross-validation and no validation always perform their final fit, and tuning requires the refit, so the box is ticked and locked while **Tune parameters** is on. A t-boost node has no box: its early-stopped validation fit is always the model. |
 | **Test set (%)** | Random or group split: the share of source rows reserved as the test set, from 0 (no test set) to below 100. |
 | **Test starts** | Time-based split: rows from this date on form the test set; leave it blank for none. |
 

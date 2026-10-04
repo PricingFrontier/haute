@@ -656,5 +656,12 @@ this discrete solve a positive λ can sit beside positive slack.
   A traced t-boost prediction lists one contribution per table, an interaction as one row.
 - The response guard treats fit-evidence fields and a tuning report's `final_tree_count` as
   optional, because the backend drops nulls: a GLM's evidence is its threads alone, and a
-  fixed-budget (EBM, t-boost) study refits with the winner's parameters and has no tree count.
+  fixed-budget (EBM) study refits with the winner's parameters and a validation-fit (t-boost)
+  study publishes the winning trial's fit; neither has a tree count.
+- A family whose capability `refit_policy` is `validation_fit` (t-boost,
+  `publishesValidationFit`) is never refit: its Split pane has no **Refit on training +
+  validation** box and no Cross-validation option, choosing a validation method or turning
+  on tuning never writes `refit_on_development`, and the readiness issue `validation-fit` (on
+  Split) mirrors the backend's refusals. The Train summary's fit budget counts its one
+  validation fit, or a study's trials plus the winning validation fit.
 

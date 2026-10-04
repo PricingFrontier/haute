@@ -388,7 +388,9 @@ option. Unchecking it publishes the one model trained on the training partition
 with validation used for selection and, for CatBoost, early stopping. The
 validation model is saved with its diagnostics and optional final-test metrics;
 there is no second fit. The run reports one total fit and labels diagnostics as
-validation when there is no final test. This option is unavailable for
+validation when there is no final test. A t-boost node has no such option: its
+early-stopped validation fit is always the published model (see Model families).
+For the other families this option is unavailable for
 cross-validation, no-validation, and parameter tuning, which require their
 existing final fit. Older configurations default to refitting.
 
@@ -897,15 +899,17 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   rating tables, one per main effect and per interaction up to `max_interaction_order`, so an
   intercept plus one table value per table is the raw score with no approximation. Losses are
   `RMSE`, `Poisson`, `Gamma`, `Tweedie` (the variance power is t-boost's `tweedie_rho`) and
-  `Logloss`; `MAE` and `CrossEntropy` are not offered. Early stopping fits the model: a fit
-  that has validation rows (a selection fit) passes them to t-boost as its `eval_set`, so every
-  bag stops at its own best round on them and they never reach training, pruning or the
-  tables, and the early-stopped fit is the model. With the refit switched off, that fit is
-  the published model. A fit without validation rows (the development refit, or a plan with
-  no validation) stops on t-boost's own holdout of the rows it is given
-  (`validation_fraction`). No round count passes between fits: the refit reuses the configured
-  parameters unchanged (`fixed_budget`), `n_trees` is the ceiling every fit stops early within,
-  and tuning may search it. Final-test rows never reach a fit. When the evaluation strategy is
+  `Logloss`; `MAE` and `CrossEntropy` are not offered. Early stopping fits the model, and a
+  t-boost model is never refit (refit policy `validation_fit`): with holdout validation, the
+  published model is the one fit on the training partition, whose validation rows are
+  t-boost's `eval_set`, so every bag stops at its own best round on them and they never reach
+  training, pruning or the tables. The node has no refit setting, and cross-validation is
+  refused because it leaves no single fit to publish. With no validation, the one fit on the
+  development rows stops on t-boost's own holdout of those rows (`validation_fraction`). A
+  study compares its trials on the holdout and publishes the winning trial's fit, reproduced
+  from the winning parameters (fits are deterministic) as the one fit beyond the trials;
+  `n_trees` is the ceiling every fit stops early within, and tuning may search it. Final-test
+  rows never reach a fit. When the evaluation strategy is
   `group`, the group column is passed as t-boost's `groups`, so its holdout and bags never
   split an entity. Fits are deterministic for a seed whatever the thread allotment. Fit
   evidence records the ceiling, the trees kept (the largest bag's count, as t-boost reports

@@ -119,7 +119,14 @@ def test_each_loss_trains_weighted_and_reloads_with_its_objective(
 def test_fit_evidence_records_the_ceiling_the_fitted_trees_and_why_they_stopped(
     tmp_path: Path,
 ) -> None:
-    _job, result = train(tmp_path, target="claims", loss="Poisson", offset="exposure")
+    _job, result = train(
+        tmp_path,
+        target="claims",
+        loss="Poisson",
+        offset="exposure",
+        data=frame(8000, seed=4),
+        params={**FAST, "learning_rate": 0.05},
+    )
     evidence = result.fit_evidence
     assert evidence["rounds_configured"] == FAST["n_trees"]
     assert 0 < evidence["rounds_fitted"] <= FAST["n_trees"]
@@ -385,51 +392,112 @@ def test_reordered_categories_score_identically() -> None:
     assert np.array_equal(model.predict(reordered), model.predict(data))
 
 
-def test_the_selection_fit_early_stops_on_the_validation_rows_and_the_refit_on_its_own(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    seen: list[tuple[int, int | None]] = []
+def _fit_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, int, dict[str, Any]]]:
+    calls: list[tuple[Any, int, dict[str, Any]]] = []
     original = TBoostRegressor.fit
 
     def spy(self: Any, X: Any, y: Any, **kwargs: Any) -> Any:  # noqa: N803 - sklearn's name
-        eval_set = kwargs.get("eval_set")
-        seen.append((len(X), None if eval_set is None else len(eval_set[0])))
+        calls.append((self, len(X), kwargs))
         return original(self, X, y, **kwargs)
 
     monkeypatch.setattr(TBoostRegressor, "fit", spy)
+    return calls
+
+
+def test_the_early_stopped_validation_fit_is_the_published_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _fit_calls(monkeypatch)
     evaluation = {**EVALUATION, "test": {"size": 0.25}}
     _job, result = train(
         tmp_path, target="claims", loss="Poisson", offset="exposure", evaluation=evaluation
     )
-    (selection, eval_rows), (final, final_eval) = seen
-    fit = result.evaluation["selection_fits"][0]
-    assert (selection, eval_rows) == (fit["train_rows"], fit["validation_rows"])
-    assert (final, final_eval) == (result.development_rows, None)
-
-
-def test_without_a_refit_the_early_stopped_fit_is_the_published_model(tmp_path: Path) -> None:
-    calls: list[tuple[Any, dict[str, Any]]] = []
-    original = TBoostRegressor.fit
-
-    def spy(self: Any, X: Any, y: Any, **kwargs: Any) -> Any:  # noqa: N803 - sklearn's name
-        calls.append((self, kwargs))
-        return original(self, X, y, **kwargs)
-
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(TBoostRegressor, "fit", spy)
-        _job, result = train(
-            tmp_path,
-            target="claims",
-            loss="Poisson",
-            offset="exposure",
-            refit_on_development=False,
-        )
+    # One fit: the training partition, early-stopped on the validation rows. No refit.
     assert len(calls) == 1
-    fitted, kwargs = calls[0]
-    assert kwargs["eval_set"] is not None
-    assert result.fit_evidence["stopping_reason"] == "validation"
+    fitted, rows, kwargs = calls[0]
+    fit = result.evaluation["selection_fits"][0]
+    assert (rows, len(kwargs["eval_set"][0])) == (fit["train_rows"], fit["validation_rows"])
+    assert result.evaluation["refit_on_development"] is False
+    assert result.evaluation["fit_count"] == 1
+    assert result.diagnostics_set == "final_test"
     published = TBoostModel.load(result.model_path).estimator
     assert published.n_trees_per_bag_ == fitted.n_trees_per_bag_
+
+
+def test_without_validation_the_one_fit_stops_on_its_own_holdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _fit_calls(monkeypatch)
+    evaluation = {**EVALUATION, "validation": {"method": "none"}}
+    _job, result = train(
+        tmp_path, target="claims", loss="Poisson", offset="exposure", evaluation=evaluation
+    )
+    assert len(calls) == 1
+    _fitted, rows, kwargs = calls[0]
+    assert (rows, kwargs.get("eval_set")) == (result.development_rows, None)
+
+
+def test_a_source_changed_during_the_trials_is_refused_before_the_winning_fit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = TrainingJob._run_tuning_trials
+
+    def trials_then_change_source(self: Any, **kwargs: Any) -> Any:
+        outcome = original(self, **kwargs)
+        path = kwargs["prepared"].data_path
+        changed = pl.read_parquet(path).with_columns(pl.col("age") + 1.0)
+        changed.write_parquet(path)
+        return outcome
+
+    monkeypatch.setattr(TrainingJob, "_run_tuning_trials", trials_then_change_source)
+    with pytest.raises(HauteValidationError, match="source changed before the winning"):
+        train(
+            tmp_path,
+            target="severity",
+            loss="RMSE",
+            tuning={
+                "schema_version": 1,
+                "trial_count": 5,
+                "seed": 7,
+                "metric": "rmse",
+                "search_space": {"learning_rate": [0.1, 0.3]},
+            },
+        )
+
+
+def test_t_boost_has_no_refit_and_no_cross_validation() -> None:
+    config = {
+        "target": "claims",
+        "algorithm": "tboost",
+        "loss_function": "Poisson",
+        "params": {"n_trees": 100},
+        "evaluation": EVALUATION,
+        "feature_columns": ["region", "age"],
+    }
+    assert build_training_job_kwargs(config, data="d.parquet")["refit_on_development"] is False
+    none = {**config, "evaluation": {**EVALUATION, "validation": {"method": "none"}}}
+    assert build_training_job_kwargs(none, data="d.parquet")["refit_on_development"] is True
+    for refit in (True, False):
+        with pytest.raises(TrainingConfigError, match="t-boost is never refit"):
+            build_training_job_kwargs({**config, "refit_on_development": refit}, data="d.parquet")
+    folds = {
+        **config,
+        "evaluation": {**EVALUATION, "validation": {"method": "cross_validation", "fold_count": 3}},
+    }
+    with pytest.raises(TrainingConfigError, match="not cross-validation"):
+        build_training_job_kwargs(folds, data="d.parquet")
+    with pytest.raises(HauteValidationError, match="t-boost is never refit"):
+        TrainingJob(
+            name="tb",
+            data=frame(),
+            target="claims",
+            algorithm="tboost",
+            loss_function="Poisson",
+            params=FAST,
+            evaluation=EVALUATION,
+            feature_columns=["region", "age"],
+            refit_on_development=True,
+        )
 
 
 def test_a_fit_is_identical_whatever_the_thread_allotment() -> None:
@@ -469,11 +537,11 @@ def test_a_group_plan_passes_its_column_to_every_fit_as_groups(
         evaluation=evaluation,
         feature_columns=features,
     )
-    assert len(calls) == 2  # the selection fit and the final refit
+    assert len(calls) == 1  # the published validation fit; t-boost is never refit
     for columns, groups in calls:
         assert columns == features
         assert groups is not None and set(groups) <= set(data["policy"].to_list())
-    assert len(calls[-1][1]) == result.development_rows
+    assert len(calls[-1][1]) == result.evaluation["selection_fits"][0]["train_rows"]
 
 
 def _cell(axis: dict[str, Any], value: Any) -> int:
@@ -903,6 +971,12 @@ def test_a_study_searches_parameters_and_refits_with_the_winning_ones(tmp_path: 
     winner = tuning["trials"][tuning["winner_trial_index"]]
     assert tuning["final_params"] == winner["resolved_params"]
     assert tuning["final_tree_count"] is None
+    # No refit: the published model is the winning trial's holdout fit, reproduced
+    # exactly, as the one fit beyond the trials.
+    assert result.evaluation["refit_on_development"] is False
+    assert result.evaluation["fit_count"] == tuning["total_fit_count"]
+    assert result.diagnostics_set == "validation"
+    assert result.metrics["rmse"] == pytest.approx(winner["objective"], rel=1e-9)
     payload = TuningReportPayload.model_validate(
         {key: value for key, value in tuning.items() if value is not None}
     )
