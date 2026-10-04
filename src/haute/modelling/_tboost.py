@@ -402,7 +402,8 @@ class TBoostModel:
             offset_link=record["offset_link"],
             class_labels=record["class_labels"],
         )
-        model.validate_native(document.get("cat_indices"), name)
+        # t-boost omits ``cat_indices`` for a model with no categorical feature.
+        model.validate_native(document.get("cat_indices", []), name)
         return model
 
     def validate_native(self, cat_indices: Any, name: str) -> None:
@@ -699,7 +700,10 @@ class TBoostAlgorithm(BaseAlgorithm):
             rounds_configured=n_trees,
             rounds_fitted=int(estimator.n_trees_),
             stopping_reason=_STOPPING_REASONS[reason],
-            categorical_levels=dict(model.categorical_levels),
+            # No fitted level list for the contract: an unseen value is t-boost's to
+            # score (UNKNOWN_CATEGORY), so the contract keeps only a declared domain,
+            # which scoring still enforces.
+            categorical_levels=None,
         )
 
     def predict(

@@ -370,6 +370,71 @@ def test_validation_rows_with_values_the_training_rows_lack_train_and_are_logged
     assert all(entry["scored_as"] == "rare" and entry["rows"] >= 1 for entry in unseen)
 
 
+def test_saved_models_score_unseen_levels_through_their_contract(tmp_path: Path) -> None:
+    from haute.errors import FeatureMismatchError
+
+    data = frame(3000, seed=4)
+    _job, result = train(
+        tmp_path,
+        target="claims",
+        loss="Poisson",
+        offset="exposure",
+        data=data,
+        params={**FAST, "learning_rate": 0.1},
+    )
+    contract = load_contract(Path(result.model_path).parent / model_contract_filename("tb"))
+    # Undeclared categoricals carry no domain, so scoring leaves unseen values to t-boost.
+    assert "region" not in contract.categorical_levels
+    scoring = load_local_model(result.model_path)
+    unseen = data.head(5).with_columns(pl.lit("mars").alias("region"))
+    scored = score_frame(
+        model=scoring.raw_model,
+        lf=unseen.lazy(),
+        features=scoring.feature_names,
+        cat_feature_names=scoring.cat_feature_names,
+        flavor="tboost",
+        offset_column=scoring.offset_column,
+        categorical_levels=contract.categorical_levels,
+    ).collect()["prediction"]
+    np.testing.assert_allclose(scored.to_numpy(), scoring.raw_model.predict(unseen), rtol=1e-12)
+
+    # A declared domain is schema: a value outside it still fails at scoring.
+    declared_root = tmp_path / "declared"
+    _job, declared = train(
+        declared_root,
+        target="claims",
+        loss="Poisson",
+        offset="exposure",
+        data=data,
+        params={**FAST, "learning_rate": 0.1},
+        categorical_levels={"region": [*LEVELS, "west", None]},
+    )
+    declared_contract = load_contract(
+        Path(declared.model_path).parent / model_contract_filename("tb")
+    )
+    assert declared_contract.categorical_levels["region"] == [*LEVELS, "west", None]
+    declared_scoring = load_local_model(declared.model_path)
+    with pytest.raises(FeatureMismatchError):
+        score_frame(
+            model=declared_scoring.raw_model,
+            lf=unseen.lazy(),
+            features=declared_scoring.feature_names,
+            cat_feature_names=declared_scoring.cat_feature_names,
+            flavor="tboost",
+            offset_column=declared_scoring.offset_column,
+            categorical_levels=declared_contract.categorical_levels,
+        ).collect()
+
+
+def test_a_model_without_categorical_features_saves_and_loads(tmp_path: Path) -> None:
+    data = frame(3000, seed=4)
+    model = fit_adapter(data, features=["age"], cat_features=[], offset="exposure").model
+    path = tmp_path / "numeric.tboost"
+    model.save(path)
+    assert "cat_indices" not in json.loads(path.read_text(encoding="utf-8"))
+    assert np.array_equal(TBoostModel.load(path).predict(data), model.predict(data))
+
+
 def test_a_declared_domain_does_not_hide_validation_values_the_training_rows_lack() -> None:
     from structlog.testing import capture_logs
 

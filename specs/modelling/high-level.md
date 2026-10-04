@@ -923,7 +923,9 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   fitted levels never fails, in training or scoring: t-boost scores it in the cell its
   `unknown_category` policy names, which Haute sets to `rare`: the pooled `<rare>` cell, priced
   like the levels too thin to model alone, or t-boost's default cell on an axis that pooled
-  nothing. A fit logs each feature whose validation rows hold such values. Nulls score in the
+  nothing. A fit logs each feature whose validation rows hold such values. The feature
+  contract therefore records only a categorical domain the user declared upstream, which
+  Model Scoring still enforces; an undeclared feature's values reach t-boost unchecked. Nulls score in the
   missing level, and every other feature is cast to `Float64`. Monotone constraints are
   supported; feature weights and an interaction list are not (the order cap is a parameter).
   The model is its tables: results show every table with its cells' link-scale values,

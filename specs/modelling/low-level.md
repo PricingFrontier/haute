@@ -1694,7 +1694,10 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
   sends SHAP views with missing values and categorical levels through the worker and the
   service's publication and proves their nulls survive.
 - `test_tboost_family.py` trains real t-boost models and proves: each loss reaches its native
-  objective and link (Tweedie with the job's variance power), a classification offset and
+  objective and link (Tweedie with the job's variance power), a model saved through
+  `TrainingJob` scores an unseen level through its real contract with `score_frame` while a
+  declared domain still refuses a value outside it, a model with no categorical feature (whose
+  document has no `cat_indices`) saves and loads, a classification offset and
   feature weights fail before fitting, and a feature name with `:` trains and explains; with a
   log-link offset the response is the rate times the offset and the margin is the raw score
   plus `log(offset)`, and an `RMSE` offset matches an independent native fit with `offset` and
@@ -2224,7 +2227,9 @@ used for staged input.
   `rounds_configured = n_trees`, `rounds_fitted = n_trees_` (the largest per-bag kept count),
   `stopping_reason` mapped from t-boost's `stopping_reason_` (`early_stopping` → `validation`,
   `max_trees` → `none`, `no_split` → `native_exhaustion`; any other value fails),
-  `best_iteration = None`, a `loss_history` from `_loss_history(evals_result_)` (one row per
+  `best_iteration = None`, `categorical_levels = None` (so the contract keeps only a declared
+  domain, which scoring enforces, and an undeclared feature's unseen values reach t-boost's
+  `unknown_category` policy), a `loss_history` from `_loss_history(evals_result_)` (one row per
   round with the mean `train_deviance` and `eval_deviance` over the bags whose curves reach it),
   and the table report computed on the fit's own rows.
 - `TBoostModel` holds the estimator with the record's features, levels, task, link, offset
