@@ -97,7 +97,8 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // restores about 1.7 KiB.
 // The t-boost family adds its lazy Tables result tab, the chart components it
 // shares with the EBM Terms tab, and the tboost_tables response parser. The
-// complete production bundle is 1,593.2 KiB; 1,594 KiB restores about 0.8 KiB.
+// complete production bundle, with main's trace-card formulas, is 1,593.5 KiB; 1,594 KiB
+// restores about 0.5 KiB.
 const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1594
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
