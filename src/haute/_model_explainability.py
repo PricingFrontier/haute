@@ -140,6 +140,12 @@ def _assert_finite_shap_row(shap_row: np.ndarray) -> None:
 #: engine accumulates in float32.
 FLOAT32_CONTRIBUTION_TOLERANCE = 1e-5
 
+#: Families whose served margin is a float32 sum, checked against contributions
+#: with :data:`FLOAT32_CONTRIBUTION_TOLERANCE` (t-boost scores float32 features).
+_FLOAT32_MARGIN_FLAVORS = frozenset({"xgboost", "tboost"})
+#: Families whose contributions are additive model terms (an interaction is one term).
+_ADDITIVE_TERM_FLAVORS = frozenset({"ebm", "tboost"})
+
 
 def prediction_tolerance(value: float, *, relative: float = 1e-6) -> float:
     """The absolute tolerance every prediction-parity check allows around *value*."""
@@ -566,14 +572,14 @@ def explain_native_prediction(
     prediction_value: Any = None,
     max_contributions: int | None = None,
 ) -> dict[str, Any]:
-    """Native contributions for one traced prediction of an XGBoost, LightGBM or EBM model.
+    """Native contributions for one traced prediction of an XGBoost, LightGBM, EBM or t-boost model.
 
-    The bias carries the row's offset (and an EBM's intercept), so bias plus
+    The bias carries the row's offset (and an EBM's or t-boost's intercept), so bias plus
     contributions is the raw margin; its inverse link must reproduce the served
     response, or the positive-class probability for a classifier. XGBoost
     accumulates its contributions in float32, so its margin check uses the named
-    float32 bound. An EBM contributes one additive score per term, and a
-    pairwise interaction stays a single two-feature term.
+    float32 bound. An EBM or t-boost model contributes one additive score per
+    term (t-boost: per table), and an interaction stays a single term.
     """
     import polars as pl
 
@@ -583,7 +589,7 @@ def explain_native_prediction(
     family = model_family(flavor) if is_registered_flavor(flavor) else None
     if family is None or not family.self_describing or family.explanation is None:
         raise ModelExplanationError(
-            "Native contribution explanation requires an XGBoost, LightGBM or EBM model."
+            "Native contribution explanation requires an XGBoost, LightGBM, EBM or t-boost model."
         )
     label = family.label
     model = scoring_model.raw_model
@@ -607,7 +613,7 @@ def explain_native_prediction(
     reconstructed = float(bias + values.sum())
     tolerance = (
         prediction_tolerance(margin, relative=FLOAT32_CONTRIBUTION_TOLERANCE)
-        if flavor == "xgboost"
+        if flavor in _FLOAT32_MARGIN_FLAVORS
         else prediction_tolerance(margin)
     )
     if abs(reconstructed - margin) > tolerance:
@@ -656,7 +662,7 @@ def explain_native_prediction(
             "is_categorical": any(feature in categorical for feature in term),
             "_feature_index": index,
         }
-        if flavor == "ebm":
+        if flavor in _ADDITIVE_TERM_FLAVORS:
             entry["term"] = name
             entry["term_type"] = "main" if len(term) == 1 else "interaction"
             entry["term_features"] = list(term)

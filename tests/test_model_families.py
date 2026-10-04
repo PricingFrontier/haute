@@ -26,7 +26,7 @@ from haute._model_flavors import (
 )
 from haute.errors import ConfigError
 
-BUILT_IN_SUFFIXES = [".cbm", ".rsglm", ".ubj", ".lgbm", ".ebm"]
+BUILT_IN_SUFFIXES = [".cbm", ".rsglm", ".ubj", ".lgbm", ".ebm", ".tboost"]
 
 
 class _StubModel:
@@ -157,9 +157,10 @@ def test_a_registered_family_is_in_the_suffix_list_and_maps_to_its_distributions
 
 
 def test_an_unrecognised_suffix_is_refused_naming_the_supported_suffixes() -> None:
-    with pytest.raises(ConfigError, match=r"\.cbm, \.rsglm, \.ubj, \.lgbm, \.ebm") as local:
+    suffixes = r"\.cbm, \.rsglm, \.ubj, \.lgbm, \.ebm, \.tboost"
+    with pytest.raises(ConfigError, match=suffixes) as local:
         load_local_model("model.pkl")
-    with pytest.raises(ConfigError, match=r"\.cbm, \.rsglm, \.ubj, \.lgbm, \.ebm") as run:
+    with pytest.raises(ConfigError, match=suffixes) as run:
         load_mlflow_model(source_type="run", run_id="abc123", artifact_path="model.pkl")
 
     assert local.value.context["supported_suffixes"] == BUILT_IN_SUFFIXES

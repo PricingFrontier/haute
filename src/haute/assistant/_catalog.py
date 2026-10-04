@@ -209,7 +209,7 @@ _SUMMARIES: dict[NodeType, str] = {
     NodeType.EXPLORE: "Analyse an upstream frame with summaries, pivots and charts.",
     NodeType.EXTERNAL_FILE: "Load a pickle, JSON, joblib or CatBoost file for use in steps.",
     NodeType.LIVE_SWITCH: "Route the live request or a batch source by scenario.",
-    NodeType.MODELLING: "Train a gradient boosting, EBM or GLM model.",
+    NodeType.MODELLING: "Train a gradient boosting, t-boost, EBM or GLM model.",
     NodeType.OPTIMISER: "Optimise prices under an objective and constraints.",
     NodeType.SCENARIO_EXPANDER: "Repeat each row across a grid of scenario values.",
     NodeType.OPTIMISER_APPLY: "Apply a saved optimisation result to price rows.",

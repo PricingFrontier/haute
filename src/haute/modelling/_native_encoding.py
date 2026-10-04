@@ -49,6 +49,32 @@ def fit_categorical_levels(
     return levels
 
 
+def unseen_categorical_values(values: pl.Series, levels: Sequence[str | None]) -> list[str]:
+    """The distinct non-null *values* (already strings) outside *levels*, sorted."""
+    known = {level for level in levels if level is not None}
+    return sorted({value for value in values.unique().to_list() if value is not None} - known)
+
+
+def require_known_levels(
+    series: pl.Series, name: str, levels: Sequence[str | None], *, context: str
+) -> pl.Series:
+    """*series* cast to strings, or ``HauteValidationError`` naming its unseen values.
+
+    A null always passes: every family scores it as the native missing value.
+    """
+    values = series.cast(pl.String)
+    unseen = unseen_categorical_values(values, levels)
+    if unseen:
+        shown = ", ".join(repr(value) for value in unseen[:5])
+        more = f" and {len(unseen) - 5} more" if len(unseen) > 5 else ""
+        raise HauteValidationError(
+            f"{context}: feature '{name}' has values the model was not trained on: "
+            f"{shown}{more}. Declare the categorical domain upstream or retrain with "
+            "these values."
+        )
+    return values
+
+
 def encode_frame(
     frame: pl.DataFrame,
     features: Sequence[str],
@@ -68,19 +94,7 @@ def encode_frame(
         series = frame.get_column(name)
         if name in levels:
             categories = [level for level in levels[name] if level is not None]
-            values = series.cast(pl.String)
-            unseen = sorted(
-                {value for value in values.unique().to_list() if value is not None}
-                - set(categories)
-            )
-            if unseen:
-                shown = ", ".join(repr(value) for value in unseen[:5])
-                more = f" and {len(unseen) - 5} more" if len(unseen) > 5 else ""
-                raise HauteValidationError(
-                    f"{context}: feature '{name}' has values the model was not trained on: "
-                    f"{shown}{more}. Declare the categorical domain upstream or retrain with "
-                    "these values."
-                )
+            values = require_known_levels(series, name, levels[name], context=context)
             columns[name] = pd.Categorical(values.to_list(), categories=categories)
         else:
             columns[name] = series.cast(pl.Float64).to_numpy()

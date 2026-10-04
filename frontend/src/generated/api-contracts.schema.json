@@ -12514,6 +12514,19 @@
           "title": "Status",
           "type": "string"
         },
+        "tboost_tables": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tboost Tables"
+        },
         "total_source_rows": {
           "anyOf": [
             {
@@ -12597,6 +12610,7 @@
         "glm_smooth_terms",
         "glm_regularization",
         "ebm_terms",
+        "tboost_tables",
         "diagnostics_errors",
         "warning",
         "total_source_rows",

@@ -226,6 +226,7 @@ export function makeTrainResult(
     glm_smooth_terms: [],
     glm_regularization: null,
     ebm_terms: [],
+    tboost_tables: null,
     diagnostics_errors: [],
     feature_selection: null,
     evaluation: {

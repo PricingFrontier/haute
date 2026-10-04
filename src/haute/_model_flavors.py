@@ -33,7 +33,9 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, get_args
 if TYPE_CHECKING:
     from haute._mlflow_io import ScoringModel
 
-ModelFlavor: TypeAlias = Literal["catboost", "pyfunc", "rustystats", "xgboost", "lightgbm", "ebm"]
+ModelFlavor: TypeAlias = Literal[
+    "catboost", "pyfunc", "rustystats", "xgboost", "lightgbm", "ebm", "tboost"
+]
 
 # Derived — never hand-duplicated.  ``get_args`` reads the literal members off
 # ``ModelFlavor`` so the frozenset cannot fall out of sync with the type.
@@ -331,6 +333,22 @@ for _family in (
         offset_link=_attribute("offset_link"),
         explanation="ebm_terms",
         distributions=("interpret-core", "pandas"),
+    ),
+    ModelFamily(
+        flavor="tboost",
+        label="t-boost",
+        suffixes=(".tboost",),
+        load_file=_lazy(_MLFLOW_IO, "_load_tboost_file"),
+        algorithm="tboost",
+        requires_contract=False,
+        self_describing=True,
+        predict_frame="polars",
+        offset_input="column",
+        offset_column=_attribute("offset_column"),
+        offset_link=_attribute("offset_link"),
+        explanation="tboost_tables",
+        # t-boost scores Polars frames, so its runtime needs no pandas.
+        distributions=("t-boost",),
     ),
     ModelFamily(
         flavor="pyfunc",

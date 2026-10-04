@@ -497,8 +497,9 @@ def _require_consistent_completed_response(response: TrainResponse) -> None:
                 raise ValueError("evaluation fit_count must equal validation_fit_count + final fit")
             raise ValueError("evaluation fit_count must equal validation_fit_count without refit")
         return
-    if not evaluation.refit_on_development:
-        raise ValueError("parameter tuning requires a final refit")
+    # A refitting family's study ends in the refit; a validation-fit family's
+    # (t-boost) in the reproduced winning holdout fit. Either is the one fit
+    # beyond the trials.
     if evaluation.fit_count != tuning.total_fit_count:
         raise ValueError("evaluation fit_count must equal tuning total_fit_count")
     if tuning.evaluation_plan_sha256 != evaluation.plan_sha256:
@@ -573,6 +574,7 @@ def _training_response_payload(
         glm_smooth_terms=train_result.glm_smooth_terms,
         glm_regularization=train_result.glm_regularization,
         ebm_terms=train_result.ebm_terms,
+        tboost_tables=train_result.tboost_tables,
         diagnostics_errors=train_result.diagnostics_errors,
         evaluation=evaluation_payload,
         tuning=tuning_payload,

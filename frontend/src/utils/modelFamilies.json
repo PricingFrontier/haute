@@ -32,6 +32,13 @@
       ".rsglm"
     ]
   },
+  "tboost": {
+    "algorithm": "tboost",
+    "label": "t-boost",
+    "suffixes": [
+      ".tboost"
+    ]
+  },
   "xgboost": {
     "algorithm": "xgboost",
     "label": "XGBoost",

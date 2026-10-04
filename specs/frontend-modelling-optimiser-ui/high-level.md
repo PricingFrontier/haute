@@ -35,7 +35,7 @@ results are supplied by API and result-store layers.
   says the last result is no longer available and to train the model again to export it.
 - The Features tab switches between importance measures with one button each: Prediction,
   then Loss and SHAP (mean absolute SHAP) when the result has them, then SHAP beeswarm when
-  it has beeswarm rows (CatBoost, XGBoost, LightGBM). The beeswarm draws one row per feature,
+  it has beeswarm rows (CatBoost, XGBoost, LightGBM, t-boost). The beeswarm draws one row per feature,
   in mean-absolute-SHAP order, and one dot per sampled row (up to 2,000) placed by its SHAP
   value on the link scale around a zero line; a numeric feature's dots run from the low (blue)
   to the high (red) colour by the value's rank, and a categorical feature's or a missing
@@ -49,7 +49,8 @@ results are supplied by API and result-store layers.
   level for a categorical feature) and SHAP value; each feature row is a single tab stop
   whose focus states that feature's rows and SHAP range. A closed values table lists, per
   feature, the rows and the minimum, median and maximum SHAP value.
-- A SHAP curves tab follows PDP when the result has curves (CatBoost, XGBoost, LightGBM). It
+- A SHAP curves tab follows PDP when the result has curves (CatBoost, XGBoost, LightGBM,
+  t-boost). It
   uses the AvE/PDP per-feature layout and shares their selected feature. Under a log link
   (`shap_link` `log`) it shows relativities, exp of the mean SHAP value, around a 1.0
   baseline; otherwise mean SHAP values around 0. A numeric feature draws a line through each
@@ -622,8 +623,8 @@ this discrete solve a positive λ can sit beside positive slack.
 - The model type is chosen once, when the node is created, and cannot be changed afterwards;
   a different family is a new node.
 - The palette describes the Model Training node by what it trains rather than by engine: "Train
-  a model: gradient boosting, EBM or GLM", where CatBoost, XGBoost and LightGBM are its gradient
-  boosting; the engines are named where the family is chosen. A test maps every family in the
+  a model: gradient boosting, t-boost, EBM or GLM", where CatBoost, XGBoost and LightGBM are
+  its gradient boosting; the engines are named where the family is chosen. A test maps every family in the
   capability table to its word in that description, so a new family fails it until the
   description names it.
 - A classification objective on a target that is neither Boolean nor 0/1 shows a positive-class
@@ -640,7 +641,27 @@ this discrete solve a positive λ can sit beside positive slack.
   interaction as a score table over its two axes, all additive link-scale term scores and
   never labelled as SHAP. A traced EBM prediction lists one contribution per term, an interaction
   as one row.
+- A t-boost node starts with `n_trees` 4000 and `max_interaction_order` 3 in its parameters and
+  no other key, so every other setting is t-boost's own recommended recipe; its starter search
+  space varies `learning_rate`, `max_interaction_order` and `lambda_`. Its readiness issue
+  `tboost-n-trees` mirrors the backend's `n_trees` rule on Parameters.
+- A t-boost result adds a Tables tab: the model's rating tables ranked by importance, with the
+  base value. A main effect is drawn over its cells (bars per level group, a step line over
+  numeric intervals, the missing cell stated) with each cell's training mass, labelled as
+  weight × exposure; a two-way
+  table is a heatmap over its two axes; a table of three or more factors is a heatmap of two
+  chosen axes with a selector for each remaining axis. Under a log link the tab shows
+  relativities by default and can switch to link-scale values; other links show link-scale
+  values only. Factored effects, which have no dense table, are listed by name and importance.
+  A traced t-boost prediction lists one contribution per table, an interaction as one row.
 - The response guard treats fit-evidence fields and a tuning report's `final_tree_count` as
   optional, because the backend drops nulls: a GLM's evidence is its threads alone, and a
-  fixed-budget (EBM) study refits with the winner's parameters and has no tree count.
+  fixed-budget (EBM) study refits with the winner's parameters and a validation-fit (t-boost)
+  study publishes the winning trial's fit; neither has a tree count.
+- A family whose capability `refit_policy` is `validation_fit` (t-boost,
+  `publishesValidationFit`) is never refit: its Split pane has no **Refit on training +
+  validation** box and no Cross-validation option, choosing a validation method or turning
+  on tuning never writes `refit_on_development`, and the readiness issue `validation-fit` (on
+  Split) mirrors the backend's refusals. The Train summary's fit budget counts its one
+  validation fit, or a study's trials plus the winning validation fit.
 

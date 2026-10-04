@@ -526,6 +526,6 @@ Generated training scripts build every family's job through the shared training 
 identity and effective parameters, `positive_class` included. A generated Model Score node is
 suffix-agnostic: its decorator scores through `score_from_config`, which selects the configured
 artifact, and the loader dispatches `.cbm`, `.rsglm`,
-`.ubj`, `.lgbm` and `.ebm` to their flavors, so an XGBoost, LightGBM or EBM model scores
+`.ubj`, `.lgbm`, `.ebm` and `.tboost` to their flavors, so an XGBoost, LightGBM, EBM or t-boost model scores
 through the same adapter as the GUI; an EBM also needs the feature contract saved beside it.
 

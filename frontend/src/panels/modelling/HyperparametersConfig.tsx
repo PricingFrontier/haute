@@ -29,6 +29,8 @@ type Props = {
   onReviewSplit?: () => void
   /** The search space "Tune parameters" starts from; it must use the family's own keys. */
   starterSearchSpace?: Record<string, unknown>
+  /** The family publishes its winning validation fit (t-boost): tuning needs no refit. */
+  publishesValidationFit?: boolean
 }
 
 const CATBOOST_STARTER_SEARCH_SPACE: Record<string, unknown> = {
@@ -39,6 +41,7 @@ const CATBOOST_STARTER_SEARCH_SPACE: Record<string, unknown> = {
 
 export function HyperparametersConfig({
   starterSearchSpace = CATBOOST_STARTER_SEARCH_SPACE,
+  publishesValidationFit = false,
   algorithmLabel,
   params,
   reservedKeys = [],
@@ -111,7 +114,7 @@ export function HyperparametersConfig({
     setDraft(stored)
     setSearchSpaceDraft(formatTuningSearchSpace(searchSpace))
     onUpdate({
-      refit_on_development: true,
+      ...(publishesValidationFit ? {} : { refit_on_development: true }),
       tuning: {
         schema_version: 1,
         trial_count: 20,

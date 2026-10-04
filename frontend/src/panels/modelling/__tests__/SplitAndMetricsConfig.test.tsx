@@ -52,6 +52,14 @@ describe("SplitAndMetricsConfig", () => {
     expect(screen.getByRole("checkbox", { name: "Refit on training + validation" })).toBeDisabled()
   })
 
+  it("offers a family that publishes its validation fit no refit and no cross-validation", () => {
+    render(<SplitAndMetricsConfig {...makeProps({ publishesValidationFit: true })} />)
+    expect(screen.queryByRole("checkbox", { name: "Refit on training + validation" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Cross-validation" })).toBeNull()
+    expect(screen.getByRole("button", { name: "Holdout validation" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "No validation" })).toBeInTheDocument()
+  })
+
   it("labels the three evaluation sections", () => {
     render(<SplitAndMetricsConfig {...makeProps()} />)
 

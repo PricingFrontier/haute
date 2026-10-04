@@ -11,7 +11,7 @@ export type AlgorithmCapability = {
   tasks: ModellingTask[]
   losses: Partial<Record<ModellingTask, string[]>>
   feature_controls: string[]
-  refit_policy: "validation_weighted_rounds" | "fixed_budget" | "none"
+  refit_policy: "validation_weighted_rounds" | "fixed_budget" | "validation_fit" | "none"
   /** ``null`` keeps the family's own parameter contract (CatBoost, the GLM). */
   allowed_params: string[] | null
   reserved_params: string[]
@@ -66,6 +66,15 @@ export function fixedBudgetCapability(finalParams: Record<string, unknown>): Alg
       && capability.round_key in finalParams,
   )
   return matches.length === 1 ? matches[0] : null
+}
+
+/**
+ * Whether the family's early-stopped validation fit is the deployed model
+ * (t-boost): it is never refit, so it has no refit setting and takes holdout
+ * validation or none, never cross-validation.
+ */
+export function publishesValidationFit(algorithm: string): boolean {
+  return algorithmCapability(algorithm)?.refit_policy === "validation_fit"
 }
 
 /**

@@ -29,7 +29,7 @@ When a request matches one of these summaries, write it as a recipe operation in
 - `explore` (Explore): Analyse an upstream frame with summaries, pivots and charts.
 - `externalFile` (Load File): Load a pickle, JSON, joblib or CatBoost file for use in steps.
 - `liveSwitch` (Source Switch): Route the live request or a batch source by scenario.
-- `modelling` (Model Training): Train a gradient boosting, EBM or GLM model.
+- `modelling` (Model Training): Train a gradient boosting, t-boost, EBM or GLM model.
 - `optimiser` (Optimisation): Optimise prices under an objective and constraints.
 - `scenarioExpander` (Expander): Repeat each row across a grid of scenario values.
 - `optimiserApply` (Apply Optimisation): Apply a saved optimisation result to price rows.

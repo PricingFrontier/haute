@@ -335,10 +335,12 @@ def test_skipped_refit_counts_only_the_saved_validation_fit() -> None:
         check_completed(raw)
 
 
-def test_tuned_response_requires_a_final_refit() -> None:
+def test_a_tuned_response_without_a_refit_counts_the_trials_and_the_published_fit() -> None:
+    # A validation-fit family (t-boost) publishes the winning trial's holdout fit
+    # instead of a refit; it is still the one fit beyond the trials.
     raw = saved_holdout_response()
     raw["tuning"] = tuning_payload()
-    with pytest.raises(ValueError, match="parameter tuning requires a final refit"):
+    with pytest.raises(ValueError, match="fit_count must equal tuning total_fit_count"):
         check_completed(raw)
 
 

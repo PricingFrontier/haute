@@ -925,6 +925,38 @@ export interface EbmTerm {
   scores: number[] | number[][]
 }
 
+/** A table's values nested one array level per axis, in axis order. */
+export type NestedNumbers = number | NestedNumbers[]
+
+/** One rating table of a t-boost model; ``scores`` are link-scale. */
+export interface TBoostTable {
+  term: string
+  features: string[]
+  order: number
+  importance: number
+  axes: EbmTermAxis[]
+  scores: NestedNumbers[]
+  /** ``exp`` of the scores under a log link, else null. */
+  relativities: NestedNumbers[] | null
+  /** Training mass per cell: the sum of weight times offset. */
+  support: NestedNumbers[]
+}
+
+/** An effect over t-boost's dense-cell budget, which has no table. */
+export interface TBoostFactoredEffect {
+  term: string
+  features: string[]
+  importance: number
+}
+
+/** A t-boost model's rating tables, ranked by importance. */
+export interface TBoostTables {
+  link: "identity" | "log" | "logit"
+  base_value: number
+  tables: TBoostTable[]
+  factored: TBoostFactoredEffect[]
+}
+
 // The training contracts are generated (scripts/generate_api_contracts.py).
 export type {
   EvaluationFitPayload as EvaluationFit,
@@ -965,6 +997,7 @@ type TrainResponseUiFields = {
   glm_smooth_terms: GlmSmoothTerm[]
   glm_regularization: GlmRegularization | null
   ebm_terms: EbmTerm[]
+  tboost_tables: TBoostTables | null
   diagnostics_errors: TrainDiagnosticsError[]
   feature_selection: TrainFeatureSelection | null
 }
@@ -1247,7 +1280,7 @@ export type ExplorePivotMembersResponse = Omit<GeneratedExplorePivotMembersRespo
 export interface ModelSaveDestinationRequest {
   /** A bare filename saves under models/; paths are project-root-relative. */
   output_path: string
-  algorithm: "catboost" | "glm" | "xgboost" | "lightgbm" | "ebm"
+  algorithm: "catboost" | "glm" | "xgboost" | "lightgbm" | "ebm" | "tboost"
 }
 
 export interface SaveModelRequest {

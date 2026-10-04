@@ -366,7 +366,7 @@ most: a silent wrong answer here mis-prices real policies.
   JSON static sources are not batch-deployable; a project-local import other than the
   `utility` package is refused at validation; bundled local `modelScore` serving supports
   every family the model family registry loads from a file (CatBoost `.cbm`, RustyStats
-  `.rsglm`, XGBoost `.ubj`, LightGBM `.lgbm`, EBM `.ebm`), while a discovered MLflow pyfunc
+  `.rsglm`, XGBoost `.ubj`, LightGBM `.lgbm`, EBM `.ebm`, t-boost `.tboost`), while a discovered MLflow pyfunc
   directory cannot currently be bundled and served by this path.
 - **Impact-analysis arithmetic** raises `ValueError` rather than producing a misleading
   percentage when predictions contain non-finite values, or when a percent-change or
@@ -397,14 +397,14 @@ unimportable, and the weekly container-smoke lane builds and serves the real ima
 
 A Databricks Model Serving deployment installs `haute` at the deploying version, whose core
 dependencies bring each model family's engine with the platform marker: `xgboost-cpu`
-(capped below 3.3) on Linux and Windows and `xgboost` on macOS, plus `lightgbm` (below 5)
-and `interpret-core` (0.7.x). A container image adds the engine each bundled model needs
+(capped below 3.3) on Linux and Windows and `xgboost` on macOS, plus `lightgbm` (below 5),
+`interpret-core` (0.7.x) and `t-boost` (0.8.x). A container image adds the engine each bundled model needs
 from its suffix instead: `.cbm` → `catboost`, `.ubj` → the installed XGBoost distribution
 plus `pandas`, `.lgbm` → `lightgbm` plus `pandas`, `.ebm` → `interpret-core` plus `pandas`,
-and `.rsglm` → `rustystats`. A pickled or joblib artefact (`.pkl`, `.pickle`, `.joblib`) may
+`.tboost` → `t-boost` (it scores Polars frames, so no `pandas`), and `.rsglm` → `rustystats`. A pickled or joblib artefact (`.pkl`, `.pickle`, `.joblib`) may
 hold an object of any third-party package haute's restricted unpickler allows, so it adds all
 of them: `catboost`, `interpret-core`, `pandas` and `scikit-learn`. Both
-score XGBoost, LightGBM and EBM on CPU with no extra requirement. Bundling discovers `.ubj`, `.lgbm` and `.ebm`
+score XGBoost, LightGBM, EBM and t-boost on CPU with no extra requirement. Bundling discovers `.ubj`, `.lgbm`, `.ebm` and `.tboost`
 artifacts with the other native suffixes and carries each model's feature contract; for an
 `.ebm` it fetches the contract the run logged beside the model, and the deployed scorer loads
 the EBM under that bundled contract. A macOS image must provide `libomp`.

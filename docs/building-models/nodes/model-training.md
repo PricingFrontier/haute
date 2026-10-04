@@ -1,9 +1,10 @@
 # Model Training
 
 You want to train a machine learning model from your pipeline data. The Model Training
-node supports three gradient-boosted tree families (CatBoost, XGBoost and LightGBM), the
-Explainable Boosting Machine (EBM, from InterpretML), and the GLM (generalised linear
-model, via RustyStats). You choose the family when you add the node, and it stays fixed:
+node supports three gradient-boosted tree families (CatBoost, XGBoost and LightGBM),
+t-boost (gradient boosting whose model is exactly a set of rating tables), the Explainable
+Boosting Machine (EBM, from InterpretML), and the GLM (generalised linear model, via
+RustyStats). You choose the family when you add the node, and it stays fixed:
 a different family is a new node. Every run records reproducible evaluation evidence and
 saves a native model plus its feature contract. A completed result can then be logged to MLflow
 as a candidate run and scored by a [Model Scoring](model-score.md) node.
@@ -26,9 +27,10 @@ A new Model Training node opens on **Select algorithm**, with one button per fam
 | **EBM** | Explainable boosting - additive shape functions and pairwise interactions you can read directly |
 | **GLM** | Generalised linear model - interpretable coefficients, regulatory-friendly |
 | **LightGBM** | Gradient boosting - fast leaf-wise trees with native categoricals and early stopping on CPU |
+| **t-boost** | Rating-table boosting - gradient boosting whose model is exactly a set of rating tables |
 | **XGBoost** | Gradient boosting - histogram trees with native categoricals and early stopping on CPU |
 
-Choosing a tree or EBM family fills in its starting parameters (see
+Choosing a tree, t-boost or EBM family fills in its starting parameters (see
 [The PARAMETERS pane](#the-parameters-pane)), and every family starts from a default split: a random split with seed 42, a 20% holdout validation set and no test
 set. The panel then shows six panes, **TARGET**, **FEATURES**, **PARAMETERS**, **SPLIT**,
 **TRAIN** and **EXPORT**, described below in that order. A pane whose settings stop the model
@@ -37,21 +39,21 @@ while a model trains. The node has no **COLUMNS** tab.
 
 ### Model families
 
-| | CatBoost | XGBoost | LightGBM | EBM | GLM |
-|---|---|---|---|---|---|
-| Tasks | Regression, binary classification | Regression, binary classification | Regression, binary classification | Regression, binary classification | Regression |
-| Losses | RMSE, MAE, Poisson, Tweedie, Logloss, CrossEntropy | RMSE, MAE, Poisson, Gamma, Tweedie, Logloss | RMSE, MAE, Poisson, Gamma, Tweedie, Logloss | RMSE, Poisson, Gamma, Tweedie, Logloss | **Family** and **Link Function** |
-| Round budget (in **Parameters JSON**) | `iterations` | `num_boost_round` | `num_iterations` | `max_rounds` (required) | — |
-| Early stopping | `early_stopping_rounds` | `early_stopping_rounds` | `early_stopping_round` | Never | — |
-| Final refit (when refitting) | Validation-weighted round count | Validation-weighted round count | Validation-weighted round count | Winning `max_rounds`, unchanged | Same settings |
-| Tuning | Yes | Yes | Yes | Yes (`max_rounds` searchable) | No |
-| Monotone constraints | Yes | Yes, except with MAE | Yes, except with MAE | Yes, not on an interaction | Per term |
-| Feature weights | Yes (pipeline file only) | No | No | No | No |
-| Interactions | Learned by trees | Learned by trees | Learned by trees | Chosen count or explicit pairs | Explicit cards |
-| Offset | Baseline | `base_margin` | `init_score` (added at prediction) | `init_score` | Offset term |
-| Trace explanation | SHAP values | Native contributions | Native contributions | Term scores (an interaction is one term) | Term contributions |
-| Model file | `.cbm` | `.ubj` | `.lgbm` | `.ebm` | `.rsglm` |
-| Compute | CPU, optional GPU | CPU, optional CUDA GPU | CPU | CPU, one thread | CPU |
+| | CatBoost | XGBoost | LightGBM | t-boost | EBM | GLM |
+|---|---|---|---|---|---|---|
+| Tasks | Regression, binary classification | Regression, binary classification | Regression, binary classification | Regression, binary classification | Regression, binary classification | Regression |
+| Losses | RMSE, MAE, Poisson, Tweedie, Logloss, CrossEntropy | RMSE, MAE, Poisson, Gamma, Tweedie, Logloss | RMSE, MAE, Poisson, Gamma, Tweedie, Logloss | RMSE, Poisson, Gamma, Tweedie, Logloss | RMSE, Poisson, Gamma, Tweedie, Logloss | **Family** and **Link Function** |
+| Round budget (in **Parameters JSON**) | `iterations` | `num_boost_round` | `num_iterations` | `n_trees` (required ceiling) | `max_rounds` (required) | — |
+| Early stopping | `early_stopping_rounds` | `early_stopping_rounds` | `early_stopping_round` | On the validation rows, each bag at its own round; else on its own holdout | Never | — |
+| Final refit (when refitting) | Validation-weighted round count | Validation-weighted round count | Validation-weighted round count | Never: the early-stopped validation fit is the model | Winning `max_rounds`, unchanged | Same settings |
+| Tuning | Yes | Yes | Yes | Yes | Yes (`max_rounds` searchable) | No |
+| Monotone constraints | Yes | Yes, except with MAE | Yes, except with MAE | Yes | Yes, not on an interaction | Per term |
+| Feature weights | Yes (pipeline file only) | No | No | No | No | No |
+| Interactions | Learned by trees | Learned by trees | Learned by trees | Learned, up to `max_interaction_order` features per table | Chosen count or explicit pairs | Explicit cards |
+| Offset | Baseline | `base_margin` | `init_score` (added at prediction) | Exposure (Poisson, Gamma, Tweedie); added to the raw score (RMSE) | `init_score` | Offset term |
+| Trace explanation | SHAP values | Native contributions | Native contributions | Table values (an interaction is one table) | Term scores (an interaction is one term) | Term contributions |
+| Model file | `.cbm` | `.ubj` | `.lgbm` | `.tboost` | `.ebm` | `.rsglm` |
+| Compute | CPU, optional GPU | CPU, optional CUDA GPU | CPU | CPU | CPU, one thread | CPU |
 
 Tree families train with `HAUTE_TRAINING_THREADS` threads (default: every logical CPU).
 On macOS, XGBoost and LightGBM need Homebrew's `libomp` (`brew install libomp`).
@@ -59,7 +61,7 @@ On macOS, XGBoost and LightGBM need Homebrew's `libomp` (`brew install libomp`).
 ## The TARGET pane
 
 The pane opens with the chosen family (for example **Algorithm: CatBoost**). For CatBoost,
-XGBoost, LightGBM and EBM it has three sections; the GLM's version is described in
+XGBoost, LightGBM, t-boost and EBM it has three sections; the GLM's version is described in
 [GLM target](#glm-target) below.
 
 **Target and objective**
@@ -242,7 +244,7 @@ mode shows **Duplicate interaction: another card fits these features the same wa
 
 ## The PARAMETERS pane
 
-For CatBoost, XGBoost, LightGBM and EBM, **Parameter strategy** chooses between
+For CatBoost, XGBoost, LightGBM, t-boost and EBM, **Parameter strategy** chooses between
 **Fixed parameters** and **Tune parameters**. The GLM's version is described in
 [GLM penalty and solver](#glm-parameters) below.
 
@@ -256,6 +258,7 @@ from:
 | CatBoost | `iterations` 1000, `learning_rate` 0.05, `depth` 6, `l2_leaf_reg` 3, `early_stopping_rounds` 50, `one_hot_max_size` 10 |
 | XGBoost | `num_boost_round` 1000, `eta` 0.1, `max_depth` 6, `early_stopping_rounds` 50 |
 | LightGBM | `num_iterations` 1000, `learning_rate` 0.05, `num_leaves` 31, `early_stopping_round` 50 |
+| t-boost | `n_trees` 4000, `max_interaction_order` 3 (every other setting is t-boost's own recommended recipe) |
 | EBM | `max_rounds` 2000, `learning_rate` 0.02, `interactions` 10 |
 
 Invalid JSON, or a key Haute sets itself, shows **Parameters JSON:** with the reason under
@@ -298,6 +301,41 @@ For CatBoost, GPU training is set in the **TRAIN** pane rather than here.
     budget records `native_exhaustion` as its stopping reason. LightGBM cannot apply
     monotone constraints with the MAE loss.
 
+??? info "t-boost parameters"
+    A t-boost model is gradient boosting on symmetric trees whose fitted model is exactly a
+    set of rating tables: one table per main effect and per interaction, each coupling at
+    most `max_interaction_order` features (3 to start). The prediction is a base value plus
+    one value from each table, with no approximation, so the tables you read in the result
+    are the model that scores. Early stopping fits the model: when a fit has validation rows
+    (from the **SPLIT** pane), every bagged fit (`n_bags`) stops at its own best round on
+    them (`early_stopping_rounds`), and the validation rows never train, prune or shape the
+    tables. That early-stopped fit is the model: t-boost is never refit, so its **SPLIT**
+    pane has no **Refit on training + validation** box and no **Cross-validation** option.
+    With **No validation**, the one fit holds out a share of its own rows to stop on
+    (`validation_fraction`). t-boost also prunes tables that do not improve its
+    own held-out deviance (`prune`). `n_trees` is the ceiling every fit stops early within,
+    and is required. When the **SPLIT** pane groups rows by an entity column, t-boost's own
+    holdouts keep each entity on one side. A fit gives the same model whatever the number of
+    threads. The **Loss** view draws each round's training and early-stopping deviance,
+    averaged over the bags still boosting.
+
+    **Parameters JSON** also accepts `learning_rate`, `lambda_`, `max_depth`,
+    `max_interaction_order`, `max_bin`, `min_data_in_leaf`, `min_sum_hessian_in_leaf`,
+    `min_split_gain`, `l1_leaf`, `path_smooth`, `colsample_bytree`, `subsample`, `n_bags`,
+    `bag_subsample`, `validation_fraction`, `early_stopping_rounds`,
+    `early_stopping_adaptive`, `leaf_refine_steps`, `interaction_gain_hurdle`, `prune`,
+    `prune_se_rule`, `prune_n_folds`, `prune_min_stability`, `cat_smooth`,
+    `cat_min_data_per_group` and `cat_direct_max_levels`. t-boost checks their values itself
+    when training starts.
+
+    Under Poisson, Gamma or Tweedie the offset is an exposure: the model learns a rate and
+    scores the rate times the offset. Under RMSE the offset is added to the prediction as it
+    is. Logloss takes no offset, and MAE and CrossEntropy are not available. A categorical
+    value the model never saw, such as a make that only appears in the validation rows or
+    arrives after training, never fails: t-boost scores it in its pooled rare level, like the levels too thin to model alone (the default level on a feature where nothing was pooled). t-boost scores numeric features as 32-bit floats. The `.tboost` file is t-boost's own JSON model with
+    Haute's record in its metadata, so it describes its own inputs and offset, and plain
+    t-boost (0.8 or later) can read it too.
+
 ??? info "EBM parameters"
     An Explainable Boosting Machine is a sum of one learned shape per feature plus chosen
     pairwise interactions, so the model is readable term by term. EBM never stops early:
@@ -322,7 +360,8 @@ For CatBoost, GPU training is set in the **TRAIN** pane rather than here.
 
 Every family except the GLM can tune a bounded search over the validation plan set in the
 **SPLIT** pane. Choosing **Tune parameters** hides **Parameters JSON**, ticks **Refit on
-training + validation** in the **SPLIT** pane (tuning requires the refit) and shows:
+training + validation** in the **SPLIT** pane (tuning requires the refit; t-boost has no
+refit) and shows:
 
 - A note saying whether a test set is held out during tuning (**No test set is reserved.
   Reserve one in Split for an independent evaluation.** otherwise), with **Review split →**,
@@ -337,7 +376,8 @@ training + validation** in the **SPLIT** pane (tuning requires the refit) and sh
 - **Search space JSON**: the values to search, keyed by the family's own parameter names.
   It starts from a small family-specific search: CatBoost `depth`, `learning_rate` and
   `l2_leaf_reg`; XGBoost `max_depth`, `eta` and `lambda`; LightGBM `num_leaves`,
-  `learning_rate` and `min_data_in_leaf`; EBM `max_rounds`, `learning_rate` and
+  `learning_rate` and `min_data_in_leaf`; t-boost `learning_rate`,
+  `max_interaction_order` and `lambda_`; EBM `max_rounds`, `learning_rate` and
   `interactions`.
 
 For an ordinary search entry, list every candidate value directly. Values keep their JSON
@@ -353,7 +393,9 @@ Tuning needs holdout validation or cross-validation and evaluates every trial in
 deterministic seeded sampler. The selected parameters are refitted once on all development
 data; the test set, when there is one, is then evaluated once. A tree family refits with the
 winner's validation-weighted round count (the **final tree count**); an EBM refits with the
-winner's `max_rounds` unchanged. Choosing **Fixed parameters** again turns tuning off.
+winner's `max_rounds` unchanged. t-boost is not refitted: it publishes the winning trial's
+holdout fit, reproduced exactly from the winning parameters as the one fit after the
+trials. Choosing **Fixed parameters** again turns tuning off.
 
 ### GLM penalty and solver { #glm-parameters }
 
@@ -393,7 +435,7 @@ separates three roles:
 | **Validation set (%)** | Holdout validation with a random or group split: the share of source rows held out, above 0 and below 100 (20 to start). |
 | **Validation starts** | Holdout validation with a time-based split: rows from this date on form the validation set. |
 | **Fold count** | Cross-validation: from 2 to 10 folds (5 to start). With a time-based split the folds use an expanding window. |
-| **Refit on training + validation** | Holdout validation only, ticked by default: refits the final model on all development rows. Untick it to keep the one model trained on the training rows during validation, with no second fit; without a test set, its diagnostics are then labelled as validation diagnostics. Cross-validation and no validation always perform their final fit, and tuning requires the refit, so the box is ticked and locked while **Tune parameters** is on. |
+| **Refit on training + validation** | Holdout validation only, ticked by default: refits the final model on all development rows. Untick it to keep the one model trained on the training rows during validation, with no second fit; without a test set, its diagnostics are then labelled as validation diagnostics. Cross-validation and no validation always perform their final fit, and tuning requires the refit, so the box is ticked and locked while **Tune parameters** is on. A t-boost node has no box: its early-stopped validation fit is always the model. |
 | **Test set (%)** | Random or group split: the share of source rows reserved as the test set, from 0 (no test set) to below 100. |
 | **Test starts** | Time-based split: rows from this date on form the test set; leave it blank for none. |
 
@@ -431,7 +473,7 @@ and for a cross-validated GLM penalty the internal folds each fit uses) and **Co
 
 CatBoost trains on a GPU when its **GPU training** box is ticked. XGBoost trains on an
 NVIDIA GPU when its **GPU training** box is ticked; the box names the device once the server
-has found one. LightGBM, EBM and the GLM train on the CPU only.
+has found one. LightGBM, t-boost, EBM and the GLM train on the CPU only.
 
 Haute installs XGBoost's CPU-only build, so XGBoost trains on the CPU with no extra
 setup. GPU training is an optional extra: if you want it, run `haute gpu-setup` once in the
@@ -548,13 +590,14 @@ appears only when the result has something to show in it:
 - **Coefficients** and **Relativities** (GLM): each term's estimate and uncertainty, and
   its effect relative to a baseline of 1.
 - **Terms** (EBM): each main effect's shape and each interaction's score table.
+- **Tables** (t-boost): the model's rating tables.
 - **Loss**: training and validation loss across iterations. After a holdout validation fit
   and a refit, it draws the validation fit and says which fit it is.
 - **Lift**: how well predictions separate lower and higher outcomes.
 - **Residuals**: prediction errors and actual against predicted.
 - **Features**: feature importance, with a button per measure. **Prediction** is the
   model's own importance; **Loss** (CatBoost) is how much the loss worsens without each
-  feature, which can be negative, and features are ranked by its size; **SHAP** (CatBoost, XGBoost, LightGBM) is each feature's mean absolute SHAP
+  feature, which can be negative, and features are ranked by its size; **SHAP** (CatBoost, XGBoost, LightGBM, t-boost) is each feature's mean absolute SHAP
   value. **SHAP beeswarm** shows the top 20 of those features, one dot per sampled row:
   how far right or left a dot sits is how much that row's value pushed its prediction up
   or down (on the model's link scale), and its colour runs from blue for a low value to
@@ -563,7 +606,7 @@ appears only when the result has something to show in it:
   5,000 diagnostics rows, and the beeswarm draws 2,000 of them.
 - **AvE**: actual against expected across each feature's groups, with exposure.
 - **PDP**: partial dependence, how predictions change as one feature varies.
-- **SHAP curves** (CatBoost, XGBoost, LightGBM): for each feature, the average SHAP value
+- **SHAP curves** (CatBoost, XGBoost, LightGBM, t-boost): for each feature, the average SHAP value
   of the sampled rows in each band of its values (up to 20 bands) or in each of its 30
   most common levels, with a shaded range from the 10th to the 90th percentile and the
   rows with a missing value shown on their own. For a Poisson, Gamma or Tweedie loss the
@@ -597,6 +640,24 @@ The Summary keeps model-selection evidence distinct from final performance:
   missing values) and each interaction's score table, as additive scores on the model's
   link scale (log for Poisson, Gamma and Tweedie; log-odds for Logloss): the prediction is
   the intercept plus every term's score. They are the model itself, not SHAP values.
+- A t-boost result's **Tables** view lists the model's rating tables, most important
+  first, with the model's **base** value. The prediction is the base plus one value from
+  every table (for Poisson, Gamma and Tweedie, the base times one relativity from every
+  table, times the exposure when the model has an offset), so the tables are the model
+  itself. Under those log-link losses the view shows relativities, with **Link scale** to
+  switch to the additive log-scale values; for RMSE and Logloss it shows link-scale values
+  (log-odds for Logloss). A main effect is drawn over its cells: a bar per group of levels
+  (levels t-boost cannot tell apart share a cell, and missing values are their own level),
+  or a step line over numeric ranges, each range including its upper bound, with the value
+  for missing numbers stated above it. A two-feature table is a value grid; for a table of
+  three or more features, **Rows** and **Columns** choose the grid's features and a list
+  per remaining feature chooses its cell. Point at a cell to see its value and its
+  training mass: the sum of weight times exposure over the training rows in it (the
+  exposure is the offset under Poisson, Gamma and Tweedie; an RMSE offset does not count),
+  which is the exposure when the weight or offset is the exposure. A factored effect, one too large
+  for a dense table, is listed by name and importance only. **Importance** is each table's
+  share of the model's variance, and the **SHAP** importances and curves are t-boost's
+  exact Shapley values (an interaction shared equally among its features).
 - A GLM shows its fit statistics, the penalty actually applied (with the folds, rule,
   and seed when it was cross-validated), and each automatic spline's effective degrees
   of freedom. Standard errors and p-values are valid only for an unpenalised,
@@ -638,16 +699,16 @@ A Poisson claim-frequency GLM with an exposure offset:
 
     | Setting in the editor | Stored as |
     |---|---|
-    | **Select algorithm** | `algorithm`: `"catboost"`, `"xgboost"`, `"lightgbm"`, `"ebm"` or `"glm"` |
+    | **Select algorithm** | `algorithm`: `"catboost"`, `"xgboost"`, `"lightgbm"`, `"tboost"`, `"ebm"` or `"glm"` |
     | **Target column** | `target` |
     | **Objective** | `loss_function` (the loss name, for example `"Poisson"`), and `task`: `"regression"` or `"classification"` |
-    | **Variance power** (tree and EBM Tweedie) | `variance_power` |
+    | **Variance power** (tree, t-boost and EBM Tweedie) | `variance_power` |
     | **Positive class** | `positive_class` (a Boolean, an integer or a string label) |
     | **Weight column (optional)** | `weight` |
     | **Offset column (optional)** | `offset` |
     | **Metrics** | `metrics`: `"gini"`, `"rmse"`, `"mae"`, `"mse"`, `"r2"`, `"auc"`, `"logloss"`, `"poisson_deviance"`, `"tweedie_deviance"`, `"gamma_deviance"` |
-    | Feature tick boxes | `feature_columns` (the ticked columns; tree and EBM families) |
-    | **Monotonicity** | `monotone_constraints`, a map of column to `-1` or `1` (tree and EBM families) |
+    | Feature tick boxes | `feature_columns` (the ticked columns; tree, t-boost and EBM families) |
+    | **Monotonicity** | `monotone_constraints`, a map of column to `-1` or `1` (tree, t-boost and EBM families) |
     | **Pairwise interactions** | `params.interactions` (EBM) |
     | **Parameters JSON** | `params` |
     | **Tune parameters** | `tuning` (absent while **Fixed parameters** is chosen) |

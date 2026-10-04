@@ -388,7 +388,9 @@ option. Unchecking it publishes the one model trained on the training partition
 with validation used for selection and, for CatBoost, early stopping. The
 validation model is saved with its diagnostics and optional final-test metrics;
 there is no second fit. The run reports one total fit and labels diagnostics as
-validation when there is no final test. This option is unavailable for
+validation when there is no final test. A t-boost node has no such option: its
+early-stopped validation fit is always the published model (see Model families).
+For the other families this option is unavailable for
 cross-validation, no-validation, and parameter tuning, which require their
 existing final fit. Older configurations default to refitting.
 
@@ -892,6 +894,52 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   offset and one contribution per term, an interaction staying one term. The `.ebm` file is
   the joblib-dumped estimator, loaded only through the restricted unpickler and only under its
   feature contract, which must record the installed `interpret-core` version exactly.
+- **t-boost.** The `tboost` family trains a t-boost model (regressor, or binary classifier
+  for `Logloss`): gradient boosting on symmetric trees whose fitted model is exactly a set of
+  rating tables, one per main effect and per interaction up to `max_interaction_order`, so an
+  intercept plus one table value per table is the raw score with no approximation. Losses are
+  `RMSE`, `Poisson`, `Gamma`, `Tweedie` (the variance power is t-boost's `tweedie_rho`) and
+  `Logloss`; `MAE` and `CrossEntropy` are not offered. Early stopping fits the model, and a
+  t-boost model is never refit (refit policy `validation_fit`): with holdout validation, the
+  published model is the one fit on the training partition, whose validation rows are
+  t-boost's `eval_set`, so every bag stops at its own best round on them and they never reach
+  training, pruning or the tables. The node has no refit setting, and cross-validation is
+  refused because it leaves no single fit to publish. With no validation, the one fit on the
+  development rows stops on t-boost's own holdout of those rows (`validation_fraction`). A
+  study compares its trials on the holdout and publishes the winning trial's fit, reproduced
+  from the winning parameters (fits are deterministic) as the one fit beyond the trials;
+  `n_trees` is the ceiling every fit stops early within, and tuning may search it. Final-test
+  rows never reach a fit. When the evaluation strategy is
+  `group`, the group column is passed as t-boost's `groups`, so its holdout and bags never
+  split an entity. Fits are deterministic for a seed whatever the thread allotment. Fit
+  evidence records the ceiling, the trees kept (the largest bag's count, as t-boost reports
+  it) and why the fit stopped (`validation` for early stopping, `none` at the ceiling,
+  `native_exhaustion` when no split remained), and the loss curve is each round's mean
+  training and early-stopping deviance over the bags still boosting. A regression offset
+  enters as t-boost's exposure under the log-link losses (the model scores the rate times the
+  offset) and is added verbatim to the raw score under `RMSE`; a classification offset fails,
+  as for the other new families.
+  Contract categoricals reach t-boost as strings, which it encodes itself. A value outside the
+  fitted levels never fails, in training or scoring: t-boost scores it in the cell its
+  `unknown_category` policy names, which Haute sets to `rare`: the pooled `<rare>` cell, priced
+  like the levels too thin to model alone, or t-boost's default cell on an axis that pooled
+  nothing. A fit logs each feature whose validation rows hold such values. The feature
+  contract therefore records only a categorical domain the user declared upstream, which
+  Model Scoring still enforces; an undeclared feature's values reach t-boost unchecked. Nulls score in the
+  missing level, and every other feature is cast to `Float64`. Monotone constraints are
+  supported; feature weights and an interaction list are not (the order cap is a parameter).
+  The model is its tables: results show every table with its cells' link-scale values,
+  relativities under a log link, and training mass (weight times the exposure a log-link
+  offset carries; an `RMSE` offset does not enter it), a main effect over its bins or level
+  groups and an interaction over its axes; feature importances are t-boost's variance shares,
+  SHAP values are its exact interventional Shapley values, and a traced prediction is
+  explained by the intercept, the offset and one contribution per table, an interaction
+  staying one term. The `.tboost` file is t-boost's own JSON model document with Haute's
+  record (features, categorical levels, task, link, offset and its link, class labels) in
+  t-boost's `metadata` slot, so plain t-boost still loads it and no pickle is involved. It
+  needs t-boost 0.8 or later. Loading checks that
+  record against the native model (estimator kind, binary 0/1 classes, link, offset, feature
+  order and categorical set) and refuses any file where they disagree.
 - **GPU training.** CatBoost keeps its own `task_type: "GPU"` parameter. A family whose
   descriptor sets `gpu_device` (XGBoost only) takes the node's top-level `device`, `"cpu"`
   (default) or `"gpu"`; any other value, or `"gpu"` on another family, fails before data is
@@ -907,7 +955,7 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   same settings (12–44% maximum relative prediction difference in the probes). Before launch,
   an XGBoost GPU job is refused when `estimate_xgboost_gpu_vram_bytes` exceeds free VRAM.
   LightGBM's wheels have no GPU or CUDA learner on Windows and only OpenCL on Linux (no OpenCL
-  device under WSL), so LightGBM, like EBM, trains on the CPU only.
+  device under WSL), so LightGBM, like EBM and t-boost, trains on the CPU only.
 - **Model identity.** A version-3 feature contract carries an optional model identity:
   algorithm, Haute loss or GLM family, link, variance power, class labels, native feature names,
   and exact engine and Haute versions, all inside the hashed payload. Training always writes

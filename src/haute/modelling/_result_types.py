@@ -44,6 +44,8 @@ class ModelDiagnostics:
     glm_regularization: dict[str, Any] | None = None
     # EBM-specific
     ebm_terms: list[dict[str, Any]] = field(default_factory=list)
+    # t-boost-specific
+    tboost_tables: dict[str, Any] | None = None
 
 
 @dataclass

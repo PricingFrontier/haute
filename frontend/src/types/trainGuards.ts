@@ -4,6 +4,9 @@ import type {
   EbmTerm,
   EbmTermAxis,
   EvaluationPreview,
+  NestedNumbers,
+  TBoostTable,
+  TBoostTables,
   TrainEstimate,
   TrainEstimateUnavailable,
   TrainResponse,
@@ -239,6 +242,77 @@ function parseEbmTerm(value: unknown, field: string): EbmTerm {
   }
 }
 
+/** A tensor nested one array level per axis whose lengths are exactly *sizes*. */
+function parseTensor(value: unknown, field: string, sizes: number[]): NestedNumbers[] {
+  const [size, ...rest] = sizes
+  const items: NestedNumbers[] = rest.length === 0
+    ? parseArray("parseTrainResponse", value, field, (item, itemField) =>
+        expectFiniteTrainNumber(item, itemField),
+      )
+    : parseArray("parseTrainResponse", value, field, (item, itemField) =>
+        parseTensor(item, itemField, rest),
+      )
+  if (items.length !== size) {
+    throw new Error(`parseTrainResponse: ${field} must have ${size} entries, one per axis cell`)
+  }
+  return items
+}
+
+function parseTBoostTable(value: unknown, field: string): TBoostTable {
+  const obj = expectPlainObject("parseTrainResponse", value, field)
+  const axes = parseArray("parseTrainResponse", obj.axes, `${field}.axes`, parseEbmTermAxis)
+  const features = parseArray("parseTrainResponse", obj.features, `${field}.features`, (name, nameField) =>
+    expectNonEmptyTrainString(name, nameField),
+  )
+  const order = expectInteger(obj.order, `${field}.order`, true)
+  if (axes.length !== order || features.length !== order) {
+    throw new Error(`parseTrainResponse: ${field} must have one axis and feature per order`)
+  }
+  const sizes = axes.map((axis) => axis.labels.length)
+  return {
+    term: expectNonEmptyTrainString(obj.term, `${field}.term`),
+    features,
+    order,
+    importance: expectFiniteTrainNumber(obj.importance, `${field}.importance`),
+    axes,
+    scores: parseTensor(obj.scores, `${field}.scores`, sizes),
+    relativities: obj.relativities === null
+      ? null
+      : parseTensor(obj.relativities, `${field}.relativities`, sizes),
+    support: parseTensor(obj.support, `${field}.support`, sizes),
+  }
+}
+
+function parseTBoostTables(value: unknown): TBoostTables {
+  const field = "tboost_tables"
+  const obj = expectPlainObject("parseTrainResponse", value, field)
+  const link = expectStringLiteral(
+    "parseTrainResponse",
+    obj.link,
+    `${field}.link`,
+    ["identity", "log", "logit"] as const,
+  )
+  const tables = parseArray("parseTrainResponse", obj.tables, `${field}.tables`, parseTBoostTable)
+  if (tables.some((table) => (table.relativities === null) !== (link !== "log"))) {
+    throw new Error(`parseTrainResponse: ${field} has relativities exactly under a log link`)
+  }
+  return {
+    link,
+    base_value: expectFiniteTrainNumber(obj.base_value, `${field}.base_value`),
+    tables,
+    factored: parseArray("parseTrainResponse", obj.factored, `${field}.factored`, (item, itemField) => {
+      const effect = expectPlainObject("parseTrainResponse", item, itemField)
+      return {
+        term: expectNonEmptyTrainString(effect.term, `${itemField}.term`),
+        features: parseArray("parseTrainResponse", effect.features, `${itemField}.features`, (name, nameField) =>
+          expectNonEmptyTrainString(name, nameField),
+        ),
+        importance: expectFiniteTrainNumber(effect.importance, `${itemField}.importance`),
+      }
+    }),
+  }
+}
+
 function parseGlmSmoothTerm(value: unknown, field: string): TrainResponse["glm_smooth_terms"][number] {
   const obj = expectPlainObject("parseTrainResponse", value, field)
   return {
@@ -388,6 +462,7 @@ function trainResponseFromContract(response: GeneratedTrainResponse): TrainRespo
       ? null
       : parseGlmRegularization(response.glm_regularization),
     ebm_terms: parseArray(p, response.ebm_terms, "ebm_terms", parseEbmTerm),
+    tboost_tables: response.tboost_tables === null ? null : parseTBoostTables(response.tboost_tables),
     diagnostics_errors: parseArray(p, response.diagnostics_errors, "diagnostics_errors", parseTrainDiagnosticsError),
     feature_selection: response.feature_selection === null
       ? null

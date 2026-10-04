@@ -52,11 +52,12 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/modelling/__init__.py` | Public API surface: `FitResult`, `MLflowLogResult`, `TrainingJob`, `TrainResult`, `generate_training_script`, `log_experiment`. |
 | `src/haute/modelling/_descriptors.py` | `AlgorithmDescriptor` and `NativeLoss` per family, `DESCRIPTORS`, the Haute loss vocabulary `HAUTE_LOSSES`, `algorithm_descriptor()`, parameter validation, refit projection (`project_refit_params`, `refit_descriptor`, `tuning_family`, `round_ceiling`), the `training_threads()` allotment, and `capability_fixture()`. Imports no engine. |
 | `src/haute/modelling/_algorithm_base.py` | `BaseAlgorithm`, `FitResult` and `IterationCallback`, shared by every adapter without importing the registry. |
-| `src/haute/modelling/_native_encoding.py` | Shared categorical encoding for the native-dataset families: `fit_categorical_levels` and `encode_frame`. |
+| `src/haute/modelling/_native_encoding.py` | Shared categorical encoding for the native-dataset families: `fit_categorical_levels`, `unseen_categorical_values` and `encode_frame`. |
 | `src/haute/modelling/_xgboost.py` | The XGBoost adapter: `XGBoostModel` (self-describing booster wrapper) and `XGBoostAlgorithm`. |
 | `src/haute/modelling/_gpu.py` | XGBoost GPU capability: `GpuStatus`, `xgboost_cuda_build`, `booster_device`, the once-per-process `xgboost_gpu_status` probe, `require_xgboost_gpu` and `verify_trained_on_gpu`. |
 | `src/haute/modelling/_lightgbm.py` | The LightGBM adapter: `LightGBMModel` (self-describing model-text wrapper) and `LightGBMAlgorithm`. |
 | `src/haute/modelling/_ebm.py` | The EBM adapter: `EBMModel` (the estimator plus its contract facts, and the term report) and `EBMAlgorithm`. |
+| `src/haute/modelling/_tboost.py` | The t-boost adapter: `TBoostModel` (the estimator plus its `haute` record, and the table report) and `TBoostAlgorithm`. |
 | `src/haute/modelling/_algorithms.py` | `BaseAlgorithm` ABC (re-exported from the base module), `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |
 | `src/haute/modelling/_rustystats.py` | `GLMAlgorithm` implementing `BaseAlgorithm` via RustyStats; `prepare_glm_design()` (frame-dtype validation, reference-level translation, interaction resolution); `glm_fit_kwargs()` (fixed or cross-validated penalty, solver controls, robust standard errors); `GLMAlgorithm.glm_result()` over `glm_inference`, `glm_coefficient_rows`, `glm_relativity_rows`, `glm_fit_statistics`, `glm_smooth_term_rows`, and `glm_regularization_summary`; `estimate_glm_dispersion()` profile-likelihood estimation. |
 | `src/haute/modelling/_training_job.py` | `TrainingJob` orchestrator — prepare one eligible source, persist/reload its evaluation plan, run selection or tuning fits, perform one deployable final fit, compute diagnostics, stage artifacts, and optionally log once to MLflow; also defines `TrainResult` and intermediate stage types. |
@@ -1692,6 +1693,39 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
   `test_training_worker_protocol.py::test_train_service_publishes_shap_views_with_their_nulls`
   sends SHAP views with missing values and categorical levels through the worker and the
   service's publication and proves their nulls survive.
+- `test_tboost_family.py` trains real t-boost models and proves: each loss reaches its native
+  objective and link (Tweedie with the job's variance power), a model saved through
+  `TrainingJob` scores an unseen level through its real contract with `score_frame` while a
+  declared domain still refuses a value outside it, a model with no categorical feature (whose
+  document has no `cat_indices`) saves and loads, a classification offset and
+  feature weights fail before fitting, and a feature name with `:` trains and explains; with a
+  log-link offset the response is the rate times the offset and the margin is the raw score
+  plus `log(offset)`, and an `RMSE` offset matches an independent native fit with `offset` and
+  is added verbatim to the margin; with holdout validation the job runs one fit, on the
+  training partition with the validation rows as `eval_set`, and publishes it (fit count 1,
+  no refit); with no validation the one fit is on the development rows without an
+  `eval_set`; the configuration refuses cross-validation and any `refit_on_development`, and
+  `TrainingJob` refuses an explicit refit; a study publishes the winning trial's reproduced
+  fit, whose validation metric equals the winner's objective; fit evidence records the trees kept and `validation` or `none` as the stopping reason;
+  the loss history is the per-round bag mean of `evals_result_`; contributions plus bias rebuild the margin for every row and per-feature
+  Shapley values sum to the same total; a categorical value outside the fitted levels scores
+  exactly as a level t-boost pooled into `<rare>` does, in the default cell when the axis
+  pooled nothing (`unseen_cell`), and a null in the missing level; `unseen_values` counts it; a training run whose validation
+  rows hold levels the training rows lack completes and logs
+  `tboost_validation_values_not_in_training`, including a level a declared domain lists; a fit is identical across thread allotments for a seed; a group plan's column, which is not a
+  feature, reaches the selection and final fits as `groups`; a model with no tables (t-boost's
+  `intercept` placeholder) has no terms, an empty table report and still explains; the table report's scores, read at the cell each row's feature
+  values select (right-closed numeric intervals, categorical member levels, row-major axes,
+  gapped categorical cells dropped), equal that row's contribution for every table; `support`
+  sums to the training rows' weight times exposure for an unweighted, a weighted, an
+  exposure-only and a weighted-with-exposure Poisson fit, and to the weights alone for an
+  `RMSE` fit with an offset; every bag's every round reaches the progress callback (so a
+  cancellation during a later bag stops the fit), and through `_FitRounds` with a still clock
+  four bags boosted to the ceiling send only the first and the final round; `save`/`load` round-trips predictions exactly through plain
+  t-boost as well; and `load`, through a project file and through an MLflow run, refuses a
+  document without the record, each malformed record field, a multiclass classifier, a record
+  whose task, link, features or categorical set disagree with the native model, and an
+  offset under a non-log link.
 - `test_algorithms_coverage.py` — targeted coverage of `_algorithms.py` /
   `_training_job.py` paths not hit elsewhere (platform-specific RSS reads, CatBoost and
   MLflow mocked out via `unittest.mock`).
@@ -1994,7 +2028,16 @@ used for staged input.
   study's final parameters and tree count that the job, `build_tuning_report`, the report
   artifact and `TuningReportPayload` all use: a round-refitting family refits with the
   validation-weighted count under its round key; a `fixed_budget` family (EBM) refits with the
-  winner's parameters unchanged and no tree count (`final_tree_count` is `None`). The report
+  winner's parameters unchanged and no tree count (`final_tree_count` is `None`), and a
+  `validation_fit` family (t-boost) publishes the winning trial's fit, reproduced from those
+  unchanged parameters, also with no tree count. `AlgorithmDescriptor.publishes_validation_fit`
+  marks that policy: `build_training_job_kwargs` refuses cross-validation and any
+  `refit_on_development` key for such a family and sets the flag to `method == "none"`;
+  `TrainingJob(refit_on_development=None)` derives the same value, refuses cross-validation,
+  and refuses an explicit value that disagrees; a tuned job without a refit runs, after the
+  trials, a `_new_evaluation_job` for fit 0 with the winning parameters into the output
+  directory and publishes it as the validation-fit result. The worker's tuned-response check
+  requires only that the evaluation's `fit_count` equals the study's `total_fit_count`. The report
   identifies its family with `tuning_family` from the one round key its final parameters carry.
 - `AlgorithmDescriptor.config_issue` combines the per-loss monotonicity rule with the family's
   `value_check` (EBM: `ebm_value_issue`); `build_training_job_kwargs` and `TrainingJob.__init__`
@@ -2147,6 +2190,109 @@ used for staged input.
   `ebm_value_issue` requires `max_rounds`, and an `interactions` value that is a non-negative
   count or a list of distinct two-feature pairs none of which involves a monotone-constrained
   feature.
+- `TBoostAlgorithm.fit` in `src/haute/modelling/_tboost.py` resolves the loss through the
+  `tboost` descriptor (`RMSE` → `squared_error`, `Poisson` → `poisson`, `Gamma` → `gamma`,
+  `Tweedie` → `tweedie` with `tweedie_rho` set to the job's variance power, `Logloss` →
+  `logistic` through `TBoostClassifier`), raises the descriptor's `config_issue`, rejects
+  feature weights and a classification offset, and fits one estimator with the job seed,
+  `n_jobs` set to the thread allotment, `monotone_constraints` as a feature-name dict, `eval_set`
+  (with `eval_sample_weight` and the evaluation offset) built from `eval_df` when the fit has
+  validation rows, and, for a `group` evaluation
+  strategy, `groups` as the training rows' group values cast to strings (an evaluation key is
+  never a feature, which `TrainingJob` already refuses, so the column reaches t-boost only as
+  `groups`). `TrainingJob._plan_group_column()` names the
+  plan's group column; the frame-family projection (`_catboost_select_columns`, which every
+  non-GLM family reads through `_scan_with_columns`) keeps it beside the features, target,
+  weight and offset, and the adapter kwargs carry it as `groups`. Every selection, tuning and
+  final fit is a `_new_evaluation_job` child with the same evaluation, so each passes it. The
+  fitted levels come from `fit_categorical_levels`; `TBoostModel.prepared(frame)` selects the
+  features in contract order, casts contract categoricals to `String` without checking them
+  against the levels (t-boost scores a value it never saw under `unknown_category`, which
+  Haute owns and sets to `UNKNOWN_CATEGORY` = `rare`), and casts every other feature
+  to `Float64`, so a Date or
+  Boolean feature is numeric exactly as `encode_frame` makes it. `unseen_values(frame)` is
+  t-boost's `unseen_values` frame (`feature`, `value`, `rows`), which compares with t-boost's
+  fitted levels, not the contract's levels (a declared domain may be wider); after a fit with
+  validation rows, `_log_unseen_validation_values` logs `tboost_validation_values_not_in_training`
+  per feature with the value count, the rows, up to five examples and the policy. `_rows_kwargs` builds one
+  frame's arguments, the same for the training and the evaluation rows: the offset column is
+  t-boost's `exposure` (the exponent of the log baseline) under a log link and its link-scale
+  `offset` under the identity link. t-boost's `PrecisionWarning` about its float32 features is
+  suppressed inside the adapter (it is a property of the family, stated here). `_RoundProgress`
+  is t-boost's per-round `callbacks` entry: bags report interleaved, so every report is
+  forwarded (Haute's callback is also its cancellation check) with progress as the furthest
+  round any bag has reached, capped one round below `n_trees` during the fit because Haute's
+  progress gate always passes a final round; `finish()` reports the final round once after
+  the fit when a bag reached the ceiling. It adds no live loss row. The result carries
+  `rounds_configured = n_trees`, `rounds_fitted = n_trees_` (the largest per-bag kept count),
+  `stopping_reason` mapped from t-boost's `stopping_reason_` (`early_stopping` → `validation`,
+  `max_trees` → `none`, `no_split` → `native_exhaustion`; any other value fails),
+  `best_iteration = None`, `categorical_levels = None` (so the contract keeps only a declared
+  domain, which scoring enforces, and an undeclared feature's unseen values reach t-boost's
+  `unknown_category` policy), a `loss_history` from `_loss_history(evals_result_)` (one row per
+  round with the mean `train_deviance` and `eval_deviance` over the bags whose curves reach it),
+  and the table report computed on the fit's own rows.
+- `TBoostModel` holds the estimator with the record's features, levels, task, link, offset
+  column and link, and class labels. Its margin is `predict_raw(prepared)` (or
+  `decision_function` for a classifier) plus the transformed offset; the response is the
+  inverse link of the margin (`predict(prepared)` times the offset under a log link,
+  `predict_proba[:, 1]` for a classifier); `predict` gives original labels for a classifier by
+  the `> 0.5` rule. `contributions` returns t-boost's `predict_contributions(...,
+  return_format="matrix", validate=False)`: one column per table, each term the tuple of its
+  feature names (so feature names may contain any character), the bias being t-boost's
+  `base_value` plus the transformed offset; a model with no tables has no columns, and a matrix
+  whose shape is not rows by terms fails. `shapley_values` returns the same matrix with
+  `split_interactions=True`, whose terms must be exactly the contract features in order, which
+  feed the shared SHAP diagnostics. `table_report(frame)` returns `{link, base_value, tables, factored}`: per dense
+  table its term name (features joined by ` × `), features, order, importance (t-boost's
+  `sobol` share), axes, nested link-scale `scores`, nested `relativities` (`exp` of the scores
+  under a log link, else `None`) and nested `support`; `support` is t-boost's training mass per
+  cell, the sum over training rows of weight times exposure (an absent weight or exposure
+  counting as one); under a log link the offset is the exposure, and an identity-link offset
+  shifts the target without entering the mass. A numeric
+  axis lists every cell: the missing cell first, then t-boost's right-closed border intervals
+  (`<= b0`, `> b0 to <= b1`, ..., `> bk`, the closure t-boost scores a value equal to a border
+  with) with their `cuts`. A categorical axis keeps only the cells that hold levels, in cell
+  order, each labelled by its member levels (t-boost's missing level as `Missing`). The native
+  tensors are reshaped to the table's `shape` in row-major axis order and sliced with the kept
+  cell indices of every axis together (`numpy.ix_`), so scores, relativities, support and
+  labels stay aligned. Tables are ranked by importance, and each factored effect is listed by
+  its features and importance only. `save` sets the estimator's `metadata` to `{"haute":
+  record}` and writes `to_json()`; `load` refuses a document whose `metadata` has no `haute`
+  record, rebuilds the estimator class its `estimator` field names through `from_json`, refuses
+  an estimator whose kind is not the record's task or whose `feature_names_in_` differ from the
+  record's features, and turns a t-boost `SerializationError` (including a document from an
+  earlier t-boost envelope) into a `ConfigError` naming the installed t-boost version.
+  t-boost never reads its metadata, so `load` validates the record (`_validated_record`):
+  exactly the seven keys; a non-empty list of distinct feature names; categorical levels only
+  for those features, each a list of strings or `None`; a known task; a link that is `logit`
+  exactly for classification; an offset only as a non-empty column whose offset link equals
+  the model's link, never under the logit link; and two class labels exactly for
+  classification. `validate_native` then refuses a
+  document whose `kind` is not `single` (a multiclass classifier) or whose estimator is not the
+  task's, `feature_names_in_` that differ from the record's features, an objective whose
+  descriptor link is not the record's link, a classifier whose classes are not `[0, 1]`, and a
+  native `cat_indices` that is not the positions of the record's categorical features. Each
+  refusal is a `ConfigError` naming the file and telling the user to retrain.
+  `objective()` is the estimator's `objective`.
+- The `tboost` descriptor allows `n_trees` (required, positive), `learning_rate`, `lambda_`,
+  `max_depth`, `max_interaction_order`, `max_bin`, `min_data_in_leaf`,
+  `min_sum_hessian_in_leaf`, `min_split_gain`, `l1_leaf`, `path_smooth`, `colsample_bytree`,
+  `subsample`, `n_bags`, `bag_subsample`, `validation_fraction`, `early_stopping_rounds`,
+  `early_stopping_adaptive`, `leaf_refine_steps`, `interaction_gain_hurdle`, `prune`,
+  `prune_se_rule`, `prune_n_folds`, `prune_min_stability`, `cat_smooth`,
+  `cat_min_data_per_group` and `cat_direct_max_levels`; Haute owns `objective`, `tweedie_rho`,
+  `seed`, `n_jobs`, `monotone_constraints`, `categorical_features` and `unknown_category`. Its
+  `round_key` is
+  `n_trees`, searchable by tuning, its `refit_policy` is `validation_fit`, and `tboost_value_issue`
+  requires `n_trees` to be a positive integer. Every other value rule (depth and order ranges,
+  fractions) is t-boost's own, raised by the fit.
+- The `tboost` scoring family registers `.tboost` as self-describing with a Polars predict
+  frame, the offset riding in the frame, explanation `tboost_tables`, and the `t-boost`
+  distribution only (no pandas). `explain_native_prediction` marks each contribution of an
+  additive-term family (EBM and t-boost) with its term, term type and term features.
+  `TrainResult.tboost_tables` carries the table report into the training response (a nullable
+  field the response always carries) and the MLflow diagnostic artifact `tboost_tables`.
 - `AlgorithmDescriptor.monotone_unsupported_losses` (LightGBM: `MAE`, whose `regression_l1`
   objective refuses them) drives `monotone_constraint_issue`, raised by
   `build_training_job_kwargs` for the effective (non-excluded) constraints and by the adapter

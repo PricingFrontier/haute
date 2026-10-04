@@ -32,6 +32,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Sandbox security](sandbox-security.md) | Every containment comparison through the one check | `SBX-R01` |
 | [Server API](server-api.md) | Domain errors, generated browser contract | `API-R02` |
 | [Submodels](submodels.md) | Submodels registered by import, one reuse mechanism | `SUB-R02` |
+| [t-boost](t-boost.md) | What rating-table models make possible: cell-level holdout A/E, unfolding into rating steps, model comparison with premium attribution, measured analyst adjustments (all awaiting a decision) | `TBOOST-02` |
 
 ## Delivery plan — 24 September 2026
 
@@ -48,6 +49,15 @@ solutions, and duplication, made at `main` `9319b11d`. It records its method,
 limits and evidence, and maps every finding to the package that tracks it.
 It is a dated supporting report and owns no work; the packages in the
 component roadmaps above carry the plans.
+
+## t-boost improvements — 4 October 2026
+
+The [t-boost improvements](t-boost-improvements.md) are a handover
+specification for the t-boost project: the library changes (a validation set
+with ensemble-level early stopping, reported round counts, a metrics callback,
+a metadata slot, offsets, an unknown-category policy and smaller items) that
+would let Haute integrate t-boost exactly like its other boosted families, with
+their status at t-boost 0.8.0. It is a supporting report and owns no Haute work.
 
 ## Working protocol
 

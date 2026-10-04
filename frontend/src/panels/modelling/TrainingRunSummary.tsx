@@ -1,7 +1,7 @@
 import type { EvaluationPreview } from "../../api/types"
 import { configField } from "../../utils/configField"
 import { isStringOrCategoricalDtype } from "../../utils/polarsDtypes"
-import { algorithmCapability, trainsOnGpu } from "./algorithmCapabilities"
+import { algorithmCapability, publishesValidationFit, trainsOnGpu } from "./algorithmCapabilities"
 import {
   finalSelectedFeatureNames,
   roleColumnReasons,
@@ -88,15 +88,25 @@ export function TrainingRunSummary({
     "tuning",
     null,
   )
-  const refitOnDevelopment = config.refit_on_development !== false
-  const budget = trainingFitBudget(evaluation, tuning, refitOnDevelopment)
+  const validationFit = publishesValidationFit(String(config.algorithm ?? ""))
+  const validationMethod = (evaluation.validation as Record<string, unknown> | undefined)?.method
+  // A family that publishes its validation fit is never refit: a study adds the
+  // reproduced winning fit, and a plan with no validation has its one fit.
+  const refitOnDevelopment = validationFit
+    ? validationMethod === "none"
+    : config.refit_on_development !== false
+  const budget = trainingFitBudget(
+    evaluation,
+    tuning,
+    refitOnDevelopment || (validationFit && tuning !== null),
+  )
   const fitBudget = !budget
     ? "Complete evaluation settings"
-    : !refitOnDevelopment && budget.selection === 1
+    : budget.selection === 1 && budget.total === 1
       ? "1 validation fit (saved model)"
       : budget.selection === 0
       ? "1 final fit"
-      : `${budget.total} total fits: ${budget.selection} ${tuning ? "tuning" : "validation"} ${budget.selection === 1 ? "fit" : "fits"} + 1 final fit`
+      : `${budget.total} total fits: ${budget.selection} ${tuning ? "tuning" : "validation"} ${budget.selection === 1 ? "fit" : "fits"} + 1 ${validationFit ? "winning validation fit" : "final fit"}`
   const params = configField<Record<string, unknown>>(config, "params", {})
   const hasCategoricalFeatures =
     config.algorithm === "catboost"

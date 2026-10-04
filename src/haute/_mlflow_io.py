@@ -1259,6 +1259,15 @@ def _load_ebm_file(
     return _wrapper_scoring_model(EBMModel.load(path, contract), task, "ebm")
 
 
+def _load_tboost_file(
+    path: str, task: str, *, contract_path: str | None, source: str | None
+) -> ScoringModel:
+    """The t-boost family's file loader; the file describes itself."""
+    from haute.modelling._tboost import TBoostModel
+
+    return _wrapper_scoring_model(TBoostModel.load(path), task, "tboost")
+
+
 def _wrapper_scoring_model(model: Any, task: str, flavor: str) -> ScoringModel:
     """Wrap a loaded Haute native model, refusing the task it was not trained for."""
     from haute.errors import ConfigError

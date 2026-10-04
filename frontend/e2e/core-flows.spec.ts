@@ -49,7 +49,12 @@ async function connectHandles(page: Page, source: Locator, target: Locator): Pro
 
 // Adds a modelling node over raw_rows to the project for one scenario only;
 // resetE2eProject restores main.py and removes the sidecar before the next.
-function addModellingNode(name: string, algorithm: string, params: Record<string, unknown>): void {
+function addModellingNode(
+  name: string,
+  algorithm: string,
+  params: Record<string, unknown>,
+  validation: Record<string, unknown> = { method: "single", size: 0.2 },
+): void {
   writeFileSync(
     resolve(ratingDir, "config", "model_training", name + ".json"),
     JSON.stringify({
@@ -60,7 +65,7 @@ function addModellingNode(name: string, algorithm: string, params: Record<string
       task: "regression",
       loss_function: "RMSE",
       params,
-      evaluation: { schema_version: 1, strategy: "random", seed: 42, validation: { method: "single", size: 0.2 } },
+      evaluation: { schema_version: 1, strategy: "random", seed: 42, validation },
       metrics: ["rmse"],
       row_limit: 30,
       output_dir: ".haute_cache/browser_training",
@@ -82,9 +87,10 @@ async function trainFamilyAndSaveModel(
   algorithm: string,
   params: Record<string, unknown>,
   suffix: string,
+  validation?: Record<string, unknown>,
 ): Promise<void> {
   const name = "browser_" + algorithm
-  addModellingNode(name, algorithm, params)
+  addModellingNode(name, algorithm, params, validation)
   await page.goto("/")
   const node = page.getByRole("button", { name: new RegExp(name, "i") })
   await expect(node).toBeVisible()
@@ -267,6 +273,25 @@ test.describe("core browser flows", () => {
       { num_iterations: 20, learning_rate: 0.3, num_leaves: 7, min_data_in_leaf: 3 },
       ".lgbm",
     )
+  })
+
+  test("trains a t-boost node, saves its model file, and reads its rating tables", async ({ page }) => {
+    test.slow()
+    // The browser project trains on 30 rows: with no validation and t-boost's own
+    // holdout off, the one fit keeps every round and so holds tables to read.
+    await trainFamilyAndSaveModel(
+      page,
+      "tboost",
+      { n_trees: 60, learning_rate: 0.3, n_bags: 1, prune: false, validation_fraction: null },
+      ".tboost",
+      { method: "none" },
+    )
+    const resultTabs = page.getByRole("tablist", { name: "Model result panes" })
+    await resultTabs.getByRole("tab", { name: "Tables", exact: true }).click()
+    await expect(page.getByText(/· base /)).toBeVisible()
+    await expect(page.getByRole("img", { name: /^Table for / }).or(
+      page.getByRole("table", { name: /^Table for / }),
+    ).first()).toBeVisible()
   })
 
   test("chooses an EBM interaction, trains it, and reads the interaction surface", async ({ page }) => {

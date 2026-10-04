@@ -1175,6 +1175,7 @@ class TestDetectExtraDeps:
             ("m.ubj", sorted([_EXPECTED_XGBOOST, "pandas"])),
             ("m.lgbm", ["lightgbm", "pandas"]),
             ("m.ebm", ["interpret-core", "pandas"]),
+            ("m.tboost", ["t-boost"]),
             ("m.rsglm", ["rustystats"]),
         ],
     )

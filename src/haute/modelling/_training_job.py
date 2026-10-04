@@ -401,6 +401,8 @@ class TrainResult:
     glm_regularization: dict[str, Any] | None = None
     #: EBM shape functions and pairwise surfaces (empty for other families).
     ebm_terms: list[dict[str, Any]] = field(default_factory=list)
+    #: t-boost's rating tables (``None`` for other families).
+    tboost_tables: dict[str, Any] | None = None
     # Optional-diagnostic failures surfaced to callers so a degraded
     # run (SHAP/PDP/GLM diagnostics missing) is visible in the UI and
     # in test suites, instead of being silently swallowed.
@@ -491,6 +493,7 @@ class _MetricsResult:
     glm_smooth_terms: list[dict[str, Any]] = field(default_factory=list)
     glm_regularization: dict[str, Any] | None = None
     ebm_terms: list[dict[str, Any]] = field(default_factory=list)
+    tboost_tables: dict[str, Any] | None = None
     # Optional-diagnostic failures (SHAP, PDP, GLM diagnostics) —
     # surfaced rather than silently swallowed.
     diagnostics_errors: list[dict[str, str]] = field(default_factory=list)
@@ -568,7 +571,7 @@ class TrainingJob:
         categorical_levels: Mapping[str, Iterable[str | None]] | None = None,
         evaluation: Mapping[str, Any] | EvaluationConfig | None = None,
         tuning: Mapping[str, Any] | TuningConfig | None = None,
-        refit_on_development: bool = True,
+        refit_on_development: bool | None = None,
         evaluation_plan: EvaluationPlan | None = None,
         fit_index: int | None = None,
         plan_source_sha256: str | None = None,
@@ -656,11 +659,26 @@ class TrainingJob:
             self.evaluation = evaluation
         else:
             self.evaluation = EvaluationConfig.from_plain_data(evaluation)
+        method = None if self.evaluation is None else self.evaluation.validation["method"]
+        family = algorithm_descriptor(self.algorithm)
+        if family.publishes_validation_fit and method is not None:
+            # The early-stopped validation fit is the model; only a plan with no
+            # validation has a fit on the development rows, and it is that fit.
+            if method == "cross_validation":
+                raise HauteValidationError(
+                    f"{family.label} publishes its early-stopped validation fit, so it takes "
+                    "holdout validation or none, not cross-validation"
+                )
+            if refit_on_development is not None and refit_on_development != (method == "none"):
+                raise HauteValidationError(
+                    f"{family.label} is never refit: its early-stopped validation fit is the model"
+                )
+            refit_on_development = method == "none"
+        elif refit_on_development is None:
+            refit_on_development = True
         if not isinstance(refit_on_development, bool):
             raise HauteValidationError("refit_on_development must be a boolean")
-        if not refit_on_development and (
-            self.evaluation is None or self.evaluation.validation["method"] != "single"
-        ):
+        if not refit_on_development and method != "single":
             raise HauteValidationError("Skipping the final refit requires holdout validation")
         self.refit_on_development = refit_on_development
         if mlflow_experiment and self.evaluation is None:
@@ -682,7 +700,11 @@ class TrainingJob:
                 evaluation=self.evaluation,
                 configured_metrics=self.metrics,
             )
-        if self.tuning is not None and not self.refit_on_development:
+        if (
+            self.tuning is not None
+            and not self.refit_on_development
+            and not family.publishes_validation_fit
+        ):
             raise HauteValidationError("Parameter tuning requires a final refit")
         if evaluation_plan is not None and self.evaluation is None:
             raise HauteValidationError("evaluation_plan requires an explicit evaluation contract")
@@ -905,6 +927,7 @@ class TrainingJob:
                 glm_smooth_terms=metrics_result.glm_smooth_terms,
                 glm_regularization=metrics_result.glm_regularization,
                 ebm_terms=metrics_result.ebm_terms,
+                tboost_tables=metrics_result.tboost_tables,
                 diagnostics_errors=metrics_result.diagnostics_errors,
             )
             fit_result = train_result.fit_result
@@ -1726,6 +1749,8 @@ class TrainingJob:
             tuning_response: dict[str, Any] | None = None
             # Refit selection fits' histories; tuning trials keep none.
             selection_histories: list[list[dict[str, float]]] = []
+            # The published model when no refit runs: the holdout validation fit.
+            selected_result: TrainResult | None = None
             if self.tuning is not None:
                 with tempfile.TemporaryDirectory(prefix="haute_tuning_fits_") as tuning_fit_root:
                     fits, final_params, tuning_response = self._run_tuning_trials(
@@ -1745,10 +1770,50 @@ class TrainingJob:
                     )
                 total = self.tuning.total_fit_count
                 completed_before_final = self.tuning.trial_fit_count
+                if not self.refit_on_development:
+                    # A validation-fit family publishes the winning trial's holdout
+                    # fit, reproduced from its parameters (fits are deterministic), so
+                    # it must see exactly the source the trials saw.
+                    if evaluation_file_sha256(prepared.data_path) != plan.source_sha256:
+                        raise HauteValidationError(
+                            "evaluation source changed before the winning validation fit"
+                        )
+                    report("Evaluation: winning validation fit", completed_before_final / total)
+                    if on_tuning_progress is not None:
+                        on_tuning_progress(
+                            {
+                                "phase": "final_fit",
+                                "trial_index": None,
+                                "trial_count": self.tuning.trial_count,
+                                "fold_index": None,
+                                "fold_count": self.tuning.validation_fit_count,
+                                "completed_fits": completed_before_final,
+                                "total_fits": total,
+                                "best_objective": tuning_response["winner_objective"],
+                            }
+                        )
+                    winner = self._new_evaluation_job(
+                        name=self.name,
+                        data=prepared.data_path,
+                        output_dir=self.output_dir,
+                        plan=plan,
+                        fit_index=0,
+                        mlflow_experiment=None,
+                        params=final_params,
+                        source_sha256=source_digest,
+                    )
+                    selected_result = winner.run(
+                        progress=lambda message, fraction: report(
+                            f"Evaluation: winning validation fit: {message}",
+                            (completed_before_final + fraction) / total,
+                        ),
+                        on_iteration=on_iteration,
+                        check_cancelled=check_cancelled,
+                        execution_context=execution_context,
+                    )
             else:
                 descriptor = algorithm_descriptor(self.algorithm)
                 ordinary_fits: list[EvaluationFitResult] = []
-                selected_result: TrainResult | None = None
                 total = selection_fit_count + int(self.refit_on_development)
                 completed_before_final = selection_fit_count
                 with tempfile.TemporaryDirectory(prefix="haute_evaluation_fits_") as root:
@@ -2368,6 +2433,7 @@ class TrainingJob:
                     "class_labels": self._class_labels,
                     "seed": self.evaluation.seed if self.evaluation is not None else 0,
                     "device": self.device,
+                    "groups": self._plan_group_column(),
                 }
             with _training_stage(execution_context, "training_algorithm_fit"):
                 fit_result = algo.fit(
@@ -2521,10 +2587,23 @@ class TrainingJob:
         if self.algorithm == "glm":
             return None
         needed: list[str] = []
-        for column in [*features, self.target, self.weight, self.offset]:
+        for column in [
+            *features,
+            self.target,
+            self.weight,
+            self.offset,
+            self._plan_group_column(),
+        ]:
             if column and column not in needed:
                 needed.append(column)
         return needed
+
+    def _plan_group_column(self) -> str | None:
+        """The entity column of a group plan, for an engine that carves its own
+        internal holdouts (t-boost) and must not split an entity across them."""
+        if self.evaluation is not None and self.evaluation.strategy == "group":
+            return self.evaluation.group_column
+        return None
 
     def _scan_with_columns(self, data_path: str, features: list[str]) -> pl.LazyFrame:
         """Scan parquet with training-column projection when the algorithm supports it."""
@@ -2847,6 +2926,14 @@ class TrainingJob:
             except Exception as exc:
                 _record_diag_error(diagnostics_errors, "ebm_terms", exc)
 
+        # ── t-boost table report (OPTIONAL) ──
+        tboost_tables: dict[str, Any] | None = None
+        if hasattr(algo, "tboost_tables"):
+            try:
+                tboost_tables = algo.tboost_tables(model)
+            except Exception as exc:
+                _record_diag_error(diagnostics_errors, "tboost_tables", exc)
+
         del diag_df
         gc.collect()
 
@@ -2879,6 +2966,7 @@ class TrainingJob:
             glm_smooth_terms=glm_report.smooth_terms if glm_report else [],
             glm_regularization=glm_report.regularization if glm_report else None,
             ebm_terms=ebm_terms,
+            tboost_tables=tboost_tables,
             diagnostics_errors=diagnostics_errors,
         )
 
@@ -3216,6 +3304,7 @@ class TrainingJob:
             glm_smooth_terms=result.glm_smooth_terms,
             glm_regularization=result.glm_regularization,
             ebm_terms=result.ebm_terms,
+            tboost_tables=result.tboost_tables,
             lorenz_curve_perfect=result.lorenz_curve_perfect,
             pdp_data=result.pdp_data,
             final_test_metrics=result.final_test_metrics,

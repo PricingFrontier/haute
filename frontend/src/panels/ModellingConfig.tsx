@@ -38,6 +38,7 @@ import { useGraph } from "./useGraph"
 import {
   ALGORITHM_CAPABILITIES,
   algorithmCapability,
+  publishesValidationFit,
   isKnownAlgorithm,
   usesSharedPanes,
 } from "./modelling/algorithmCapabilities"
@@ -111,6 +112,13 @@ const EBM_DEFAULT_PARAMS: Record<string, unknown> = {
   interactions: 10,
 }
 
+// t-boost's own defaults are its recommended recipe; n_trees is the ceiling every
+// fit stops early within, and the order caps how many features a table couples.
+const TBOOST_DEFAULT_PARAMS: Record<string, unknown> = {
+  n_trees: 4000,
+  max_interaction_order: 3,
+}
+
 const STARTER_SEARCH_SPACES: Record<string, Record<string, unknown>> = {
   xgboost: {
     max_depth: [4, 6, 8],
@@ -127,6 +135,11 @@ const STARTER_SEARCH_SPACES: Record<string, Record<string, unknown>> = {
     learning_rate: [0.01, 0.02, 0.04],
     interactions: [0, 5, 10],
   },
+  tboost: {
+    learning_rate: [0.03, 0.05, 0.1],
+    max_interaction_order: [2, 3],
+    lambda_: [0.5, 1, 2],
+  },
 }
 
 const DEFAULT_PARAMS: Record<string, Record<string, unknown>> = {
@@ -134,6 +147,7 @@ const DEFAULT_PARAMS: Record<string, Record<string, unknown>> = {
   xgboost: XGBOOST_DEFAULT_PARAMS,
   lightgbm: LIGHTGBM_DEFAULT_PARAMS,
   ebm: EBM_DEFAULT_PARAMS,
+  tboost: TBOOST_DEFAULT_PARAMS,
 }
 
 const CATBOOST_RESERVED_PARAM_KEYS = ["task_type"] as const
@@ -186,6 +200,8 @@ const ALGORITHM_DESCRIPTIONS: Record<string, string> = {
     "Gradient boosting - fast leaf-wise trees with native categoricals and early stopping on CPU",
   ebm:
     "Explainable boosting - additive shape functions and pairwise interactions you can read directly",
+  tboost:
+    "Rating-table boosting - gradient boosting whose model is exactly a set of rating tables",
 }
 
 function AlgorithmGateway({ onUpdate }: { onUpdate: OnUpdateConfig }) {
@@ -499,16 +515,19 @@ export default function ModellingConfig({
   const trainedResultExpired = useNodeResultsStore(
     (state) => Object.hasOwn(state.expiredTrainJobs, nodeId),
   )
+  // A family whose early-stopped validation fit is the model (t-boost) has no
+  // refit setting at all, so its config never carries refit_on_development.
+  const validationFit = publishesValidationFit(String(config.algorithm ?? ""))
   const onEvaluationChange = useCallback(
     (nextEvaluation: Record<string, unknown>) => {
       const method = (nextEvaluation.validation as Record<string, unknown> | undefined)?.method
-      if (config.refit_on_development === false && method !== "single") {
+      if (!validationFit && config.refit_on_development === false && method !== "single") {
         onUpdate({ evaluation: nextEvaluation, refit_on_development: true })
       } else {
         onUpdate("evaluation", nextEvaluation)
       }
     },
-    [config.refit_on_development, onUpdate],
+    [config.refit_on_development, onUpdate, validationFit],
   )
   const onEstimateDispersion = useCallback(
     (param: DispersionParam, signal: AbortSignal) => runDispersionEstimate({
@@ -593,6 +612,7 @@ export default function ModellingConfig({
           glm_smooth_terms: [],
           glm_regularization: null,
           ebm_terms: [],
+          tboost_tables: null,
           diagnostics_errors: [],
           feature_selection: null,
           final_tree_count: null,
@@ -635,6 +655,7 @@ export default function ModellingConfig({
       onEvaluationChange={onEvaluationChange}
       refitOnDevelopment={config.refit_on_development !== false}
       onRefitOnDevelopmentChange={(value) => onUpdate("refit_on_development", value)}
+      publishesValidationFit={validationFit}
       tuningEnabled={Boolean(tuning)}
       preview={estimate.estimate?.evaluation_preview ?? null}
       previewError={estimate.error?.startsWith("Evaluation preview failed:") ? estimate.error : null}
@@ -707,6 +728,7 @@ export default function ModellingConfig({
           onReviewSplit={() => reviewPane("split")}
           algorithmLabel={algorithmCapability(algorithm)?.label ?? algorithm}
           starterSearchSpace={STARTER_SEARCH_SPACES[algorithm]}
+          publishesValidationFit={validationFit}
           params={params}
           reservedKeys={reservedParams.keys}
           reservedKeysHelp={reservedParams.help}

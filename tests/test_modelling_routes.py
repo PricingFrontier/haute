@@ -3479,8 +3479,13 @@ class TestValidateConfig:
                 "loss_function": loss,
                 "feature_columns": ["x"],
                 **({"variance_power": 1.5} if loss == "Tweedie" else {}),
-                # EBM trains every round it is given, so it needs an explicit count.
-                "params": {"max_rounds": 100} if algorithm == "ebm" else {},
+                # EBM trains every round it is given and t-boost's ceiling is the
+                # refit's fixed budget, so both need an explicit count.
+                "params": {"max_rounds": 100}
+                if algorithm == "ebm"
+                else {"n_trees": 100}
+                if algorithm == "tboost"
+                else {},
                 "evaluation": _random_evaluation_config(),
             }
         )

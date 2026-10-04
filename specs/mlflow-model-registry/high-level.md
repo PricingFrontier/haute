@@ -44,7 +44,7 @@ In scope:
 - Auto-discovering the model artifact within a run when no artifact path
   is given (each registered family's suffixes in registration order —
   CatBoost `.cbm`, RustyStats `.rsglm`, XGBoost `.ubj`, LightGBM `.lgbm`,
-  EBM `.ebm` — then a pyfunc model directory).
+  EBM `.ebm`, t-boost `.tboost` — then a pyfunc model directory).
 - Resolving a project model file (`source_type="file"`) through the
   runtime sandbox, and the contract it scores under (explicit, or saved
   beside it), and inspecting such a file for the node editor

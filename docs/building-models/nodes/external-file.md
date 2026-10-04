@@ -5,7 +5,7 @@ You have an object on disk  - a pickled or joblib model from a colleague, or a J
 !!! info "When to use"
     - Your model is a standalone file not tracked in MLflow (e.g. a `.pkl` from a colleague), and its class is one Haute can load (see the warning below).
     - You need to load a JSON lookup file and apply it with custom logic.
-    - To score a model Haute trains (CatBoost, GLM, XGBoost, LightGBM or EBM), from MLflow or from a file in the project, use [Model Scoring](model-score.md) instead: it checks the model's features and offset for you.
+    - To score a model Haute trains (CatBoost, GLM, XGBoost, LightGBM, t-boost or EBM), from MLflow or from a file in the project, use [Model Scoring](model-score.md) instead: it checks the model's features and offset for you.
 
 A Load File node takes the data to score as its first input and outputs that data with whatever your steps or code add. Your steps and code see the first input as `df`; any further inputs are available by their names, and **Join another input** and **Append inputs** steps can use them. With no steps and no code, the node passes its first input through unchanged. The panel has three tabs: **CONFIG**, **TRANSFORM** and **COLUMNS**.
 

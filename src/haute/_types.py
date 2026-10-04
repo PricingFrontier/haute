@@ -612,7 +612,8 @@ class ModellingConfig(TypedDict, total=False):
     target: str
     weight: str
     feature_columns: list[str]
-    algorithm: str  # a registered model family: "catboost" | "glm" | "xgboost" | "lightgbm" | "ebm"
+    # A registered model family: "catboost" | "glm" | "xgboost" | "lightgbm" | "ebm" | "tboost".
+    algorithm: str
     task: str  # "regression" | "classification"
     params: dict[str, Any]
     evaluation: dict[str, Any]

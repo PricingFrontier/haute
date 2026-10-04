@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 from pathlib import Path
 from typing import Any
 
@@ -347,9 +346,10 @@ class TestRefitOnDevelopment:
 
     def test_default_refit_is_left_to_the_training_job_default(self):
         script = generate_training_script(MINIMAL_CONFIG, "d.parquet")
-        assert "refit_on_development" not in self._constructed_kwargs(script)
-        default = inspect.signature(TrainingJob).parameters["refit_on_development"].default
-        assert default is True
+        kwargs = self._constructed_kwargs(script)
+        assert "refit_on_development" not in kwargs
+        # The job's default lets the family decide: a refitting family refits.
+        assert TrainingJob(**kwargs).refit_on_development is True
 
     def test_skipped_refit_reaches_the_exported_training_job(self):
         config = {**MINIMAL_CONFIG, "refit_on_development": False}

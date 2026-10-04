@@ -225,6 +225,7 @@ function makeTrainResponse(overrides: Record<string, unknown> = {}) {
     glm_smooth_terms: [],
     glm_regularization: null,
     ebm_terms: [],
+    tboost_tables: null,
     diagnostics_errors: [],
     feature_selection: null,
     final_tree_count: null,

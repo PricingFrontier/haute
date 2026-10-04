@@ -2073,6 +2073,52 @@ describe("API response guards", () => {
     ).toThrow(/scores must match its axes/)
   })
 
+  it("parses t-boost tables of any order and rejects tensors that miss their axes", () => {
+    const tables = {
+      link: "log",
+      base_value: -2,
+      tables: [
+        {
+          term: "region × age",
+          features: ["region", "age"],
+          order: 2,
+          importance: 0.2,
+          axes: [
+            { feature: "region", type: "nominal", labels: ["east", "Missing"] },
+            { feature: "age", type: "continuous", labels: ["Missing", "<= 30", "> 30"], cuts: [30] },
+          ],
+          scores: [[0, 0.1, 0.2], [0.3, 0.4, 0.5]],
+          relativities: [[1, 1.1, 1.2], [1.3, 1.4, 1.6]],
+          support: [[1, 2, 3], [4, 5, 6]],
+        },
+      ],
+      factored: [{ term: "a × b × c", features: ["a", "b", "c"], importance: 0.01 }],
+    }
+    const parsed = parseTrainResponse({ ...tunedTrainResponseFixture(), tboost_tables: tables })
+    expect(parsed.tboost_tables?.tables[0].support).toEqual([[1, 2, 3], [4, 5, 6]])
+    expect(parsed.tboost_tables?.factored[0].features).toEqual(["a", "b", "c"])
+    expect(parseTrainResponse(tunedTrainResponseFixture()).tboost_tables).toBeNull()
+    const table = tables.tables[0]
+    for (const broken of [
+      { ...table, scores: [[0, 0.1], [0.3, 0.4]] },
+      { ...table, support: [[1, 2, 3]] },
+      { ...table, order: 3 },
+    ]) {
+      expect(() =>
+        parseTrainResponse({
+          ...tunedTrainResponseFixture(),
+          tboost_tables: { ...tables, tables: [broken] },
+        }),
+      ).toThrow(/tboost_tables/)
+    }
+    expect(() =>
+      parseTrainResponse({
+        ...tunedTrainResponseFixture(),
+        tboost_tables: { ...tables, link: "identity" },
+      }),
+    ).toThrow(/relativities exactly under a log link/)
+  })
+
   it("preserves per-feature PDP diagnostic errors", () => {
     const fixture = loadUiContractFixture<Record<string, unknown>>("train_response")
 

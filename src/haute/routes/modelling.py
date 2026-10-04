@@ -442,6 +442,7 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
                 glm_smooth_terms=result.glm_smooth_terms,
                 glm_regularization=result.glm_regularization,
                 ebm_terms=result.ebm_terms,
+                tboost_tables=result.tboost_tables,
             )
             if result.tuning is not None:
                 final_params = result.tuning.final_params

@@ -69,17 +69,18 @@ A run logged by Haute's Model Training node records its task. When you pick such
 ### Model files
 
 Model Scoring loads the native model a Model Training run logged or **Save model to
-file** wrote: CatBoost (`.cbm`), XGBoost (`.ubj`), LightGBM (`.lgbm`), EBM (`.ebm`) or
-GLM (`.rsglm`). From MLflow it also loads an MLflow pyfunc model.
+file** wrote: CatBoost (`.cbm`), XGBoost (`.ubj`), LightGBM (`.lgbm`), t-boost
+(`.tboost`), EBM (`.ebm`) or GLM (`.rsglm`). From MLflow it also loads an MLflow pyfunc model.
 
 A model file scores with the feature contract saved beside it: `<model name>.feature_contract.json`,
 or else `feature_contract.json` in the same folder. **Save model to file** writes the
 first. The contract names the model's features, categories and offset, so keep it next to
-the model when you copy the model elsewhere in the project. XGBoost and LightGBM files describe their own inputs and offset. An EBM file is
+the model when you copy the model elsewhere in the project. XGBoost, LightGBM and t-boost files describe their own inputs and offset. An EBM file is
 the bare estimator, so it loads only with the feature contract Model Training logged
 beside it, and only under the `interpret-core` version that contract records; a
 contract for a different loss or version is refused rather than scored. Categorical
-values a tree or EBM model never saw fail instead of scoring as missing.
+values an XGBoost, LightGBM or EBM model never saw fail instead of scoring as missing; a
+t-boost model scores them in its pooled rare level, like the levels too thin to model alone (the default level on a feature where nothing was pooled).
 
 A CatBoost model file does not record its own offset. Models trained by Haute record it
 in the model; for any other CatBoost model the feature contract must say whether the

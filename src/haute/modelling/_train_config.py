@@ -721,13 +721,28 @@ def build_training_job_kwargs(
         evaluation=evaluation,
         configured_metrics=metrics,
     )
-    refit_on_development = config.get("refit_on_development", True)
-    if not isinstance(refit_on_development, bool):
-        raise TrainingConfigError("refit_on_development must be a boolean")
-    if not refit_on_development and evaluation["validation"]["method"] != "single":
-        raise TrainingConfigError("Skipping the final refit requires holdout validation")
-    if not refit_on_development and tuning is not None:
-        raise TrainingConfigError("Parameter tuning requires a final refit")
+    method = evaluation["validation"]["method"]
+    if descriptor.publishes_validation_fit:
+        # The early-stopped validation fit is the model: no refit setting exists.
+        if method == "cross_validation":
+            raise TrainingConfigError(
+                f"{descriptor.label} publishes its early-stopped validation fit, so it takes "
+                "holdout validation or none, not cross-validation."
+            )
+        if "refit_on_development" in config:
+            raise TrainingConfigError(
+                f"{descriptor.label} is never refit: its early-stopped validation fit is the "
+                "model. Remove refit_on_development from the configuration."
+            )
+        refit_on_development = method == "none"
+    else:
+        refit_on_development = config.get("refit_on_development", True)
+        if not isinstance(refit_on_development, bool):
+            raise TrainingConfigError("refit_on_development must be a boolean")
+        if not refit_on_development and method != "single":
+            raise TrainingConfigError("Skipping the final refit requires holdout validation")
+        if not refit_on_development and tuning is not None:
+            raise TrainingConfigError("Parameter tuning requires a final refit")
 
     positive_class = config.get("positive_class")
     if positive_class is not None and (
