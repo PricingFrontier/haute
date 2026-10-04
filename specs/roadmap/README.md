@@ -31,7 +31,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |
 | [Sandbox security](sandbox-security.md) | Every containment comparison through the one check | `SBX-R01` |
 | [Server API](server-api.md) | Domain errors, generated browser contract | `API-R02` |
-| [Submodels](submodels.md) | One reuse mechanism | `SUB-R01` |
+| [Submodels](submodels.md) | Submodels registered by import, one reuse mechanism | `SUB-R02` |
 
 ## Delivery plan — 24 September 2026
 
