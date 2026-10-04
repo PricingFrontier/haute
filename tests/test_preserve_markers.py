@@ -374,7 +374,9 @@ class TestUnkeptModuleStatements:
 
         assert unkept_module_statements(source) == [(1, 1)]
 
-    def test_a_from_haute_import_bounds_the_preamble_like_import_haute(self):
+    def test_a_haute_import_codegen_cannot_recreate_is_reported_with_what_it_leaves_out(self):
+        # Codegen writes ``import haute``, which binds neither name, and with no
+        # standard import line there is no preamble to keep RATE in.
         source = (
             "from haute import Pipeline, Submodel\n\n"
             "RATE = 2\n\n"
@@ -382,8 +384,13 @@ class TestUnkeptModuleStatements:
             "LATE = 3\n"
         )
 
-        assert parse_pipeline_source(source).preamble == "RATE = 2"
-        assert unkept_module_statements(source) == [(6, 6)]
+        assert unkept_module_statements(source) == [(1, 1), (3, 3), (6, 6)]
+
+    def test_a_haute_import_after_import_haute_stays_in_the_preamble(self):
+        source = 'import haute\nfrom haute import HauteError\n\npipeline = haute.Pipeline("p")\n'
+
+        assert parse_pipeline_source(source).preamble == "from haute import HauteError"
+        assert unkept_module_statements(source) == []
 
     def test_preamble_preserved_blocks_and_generated_statements_are_kept(self):
         source = _make_pipeline(

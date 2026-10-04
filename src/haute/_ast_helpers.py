@@ -724,15 +724,14 @@ def _module_boundaries(
                     statement.end_lineno or statement.lineno,
                 )
         elif isinstance(statement, ast.ImportFrom) and statement.module == "haute":
-            # Every haute import is regenerated as ``import haute``, so it
-            # bounds the preamble whatever names it brings in.
             for alias in statement.names:
                 if alias.name == constructor_name:
                     constructor_aliases.add(alias.asname or alias.name)
-            last_standard_line = max(
-                last_standard_line,
-                statement.end_lineno or statement.lineno,
-            )
+            if _is_standard_import(statement, constructor_name):
+                last_standard_line = max(
+                    last_standard_line,
+                    statement.end_lineno or statement.lineno,
+                )
 
     def is_constructor(expr: ast.expr) -> bool:
         if not isinstance(expr, ast.Call):
@@ -844,11 +843,19 @@ def _is_docstring(statement: ast.stmt) -> bool:
     )
 
 
-def _is_standard_import(statement: ast.stmt) -> bool:
-    """An import codegen regenerates: of ``haute``/``polars`` only, or from ``haute``."""
+def _is_standard_import(statement: ast.stmt, constructor_name: str) -> bool:
+    """An import codegen's ``import haute`` / ``import polars as pl`` stands in for.
+
+    ``from haute import <constructor>`` qualifies, because codegen spells the
+    constructor ``haute.<constructor>``; any other ``from haute import`` binds a
+    name the regenerated imports do not, so it is kept only as preamble.
+    """
     if isinstance(statement, ast.Import):
         return all(alias.name in {"haute", "polars"} for alias in statement.names)
-    return isinstance(statement, ast.ImportFrom) and statement.module == "haute"
+    if isinstance(statement, ast.ImportFrom) and statement.module == "haute":
+        imported_names = {alias.name for alias in statement.names}
+        return bool(imported_names) and imported_names <= {constructor_name}
+    return False
 
 
 def _is_global_constants_binding(statement: ast.stmt, receiver: str) -> bool:
@@ -902,8 +909,9 @@ def unkept_module_statements(
         if statement.lineno < boundaries.generated_start_line:
             if not (
                 (index == 0 and _is_docstring(statement))
-                or _is_standard_import(statement)
-                or start > boundaries.last_standard_line
+                or _is_standard_import(statement, constructor_name)
+                # Preamble: after the standard imports; there is none without them.
+                or 0 < boundaries.last_standard_line < start
             ):
                 spans.append((start, end))
             continue

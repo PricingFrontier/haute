@@ -307,12 +307,13 @@ Out of scope (owned by neighbouring components):
   blank lines inside a completed module block are stripped, and unmatched
   module-level starts are ignored.
 
-  Regeneration keeps only the docstring, the `haute`/`polars` imports (any `from haute import
-  ...` counts, and bounds the preamble as `import haute` does), the preamble, preserved blocks,
+  Regeneration keeps only the docstring, the `haute`/`polars` imports (and `from haute import
+  <constructor>`, which `haute.<constructor>` replaces), the preamble, preserved blocks,
   and from the constructor on the constructor, the `global_constants` binding, node functions,
   `pipeline.submodel(...)` registrations and `connect` chains. Any other module statement (an
   import above `import haute`, a constant, helper or trailing code after the constructor) would
-  be dropped. `_ast_helpers.unkept_module_statements` finds each one, and the editor document
+  be dropped, and so would any other `from haute import ...` outside the preamble, since
+  the regenerated `import haute` does not bind its names. `_ast_helpers.unkept_module_statements` finds each one, and the editor document
   reports it as an `unkept_module_statement` diagnostic naming its lines and the two fixes (move
   it between the imports and the constructor, or wrap it in preserve markers), which degrades
   the document, so the file is never regenerated without it.
