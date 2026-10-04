@@ -52,7 +52,13 @@ from haute._polars_selectors import preamble_selector_aliases
 from haute._registry import NODE_REGISTRY, ensure_registry_ready
 from haute._topo import CycleError, ancestors, canonical_topological_order, topo_sort_ids
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
-from haute.errors import ConfigError, ContractMismatchError
+from haute.errors import (
+    ConfigError,
+    ContractMismatchError,
+    HauteError,
+    NodeConfigError,
+    is_public_contract_error,
+)
 
 __all__ = [
     "AllExcept",
@@ -3284,6 +3290,47 @@ def _empty_declared_contract_should_defer_to_builder(
     return _has_projection_user_code(node) and (builder.inputs is None or builder.outputs is None)
 
 
+def _authored_refusal(exc: BaseException) -> bool:
+    """Whether *exc* and every failure it wraps are Haute's own errors.
+
+    A Haute error that wraps a dependency failure (an MLflow download, a
+    filesystem call) may quote that failure's text, which can carry internal
+    details such as storage URIs, so only a wholly authored refusal is shown.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if not isinstance(current, HauteError):
+            return False
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return True
+
+
+def _node_column_contract(node: GraphNode, node_type: NodeType, config: dict[str, Any]) -> Contract:
+    """Return *node*'s builder column contract, failing visibly.
+
+    A Model Score node's contract comes from loading its model. When Haute
+    refuses that model of its own accord (a stale feature contract, a missing
+    file), the refusal becomes the node's public setting error, naming the
+    node, so the preview states the cause instead of failing as an internal
+    error. A refusal that wraps a dependency failure stays internal.
+    """
+    try:
+        return Contract.from_tuple(get_column_contract(node_type, config))
+    except HauteError as exc:
+        if (
+            node_type is not NodeType.MODEL_SCORE
+            or is_public_contract_error(exc)
+            or not _authored_refusal(exc)
+        ):
+            raise
+        raise NodeConfigError(
+            f"Model Score '{node.data.label}' cannot load its model: {exc.message}",
+            setting="model",
+        ) from exc
+
+
 def projection_contract(node: GraphNode) -> Contract:
     """Return the column contract used by projection analysis.
 
@@ -3291,7 +3338,7 @@ def projection_contract(node: GraphNode) -> Contract:
     contract failures. A malformed concrete contract should be visible rather
     than quietly widening the graph.
     """
-    registered = Contract.from_tuple(get_column_contract(node.data.nodeType, node.data.config))
+    registered = _node_column_contract(node, node.data.nodeType, node.data.config)
     return _projection_contract_from_registered(node, registered)
 
 
@@ -3344,7 +3391,7 @@ def _pre_post_code_contract(
         scorer_config = {
             key: value for key, value in node.data.config.items() if key not in {"code", "steps"}
         }
-        scorer = Contract.from_tuple(get_column_contract(NodeType.MODEL_SCORE, scorer_config))
+        scorer = _node_column_contract(node, NodeType.MODEL_SCORE, scorer_config)
         contract = effective
         if scorer.inputs:
             # The executor still checks the declared inputs at the node's boundary.
@@ -3365,7 +3412,7 @@ def _pre_post_code_contract(
             return Contract(inputs=None, outputs=contract.outputs)
         return contract
     config = {key: value for key, value in node.data.config.items() if key != "code"}
-    return Contract.from_tuple(get_column_contract(node.data.nodeType, config))
+    return _node_column_contract(node, node.data.nodeType, config)
 
 
 def ratebook_factor_required_columns(config: Mapping[str, Any]) -> frozenset[str]:
@@ -4729,9 +4776,7 @@ def compute_prepared_plan(
     def registered_contract_for(node: GraphNode) -> Contract:
         contract = registered_contracts.get(node.id)
         if contract is None:
-            contract = Contract.from_tuple(
-                get_column_contract(node.data.nodeType, node.data.config)
-            )
+            contract = _node_column_contract(node, node.data.nodeType, node.data.config)
             registered_contracts[node.id] = contract
         return contract
 
