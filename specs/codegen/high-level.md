@@ -29,11 +29,10 @@ valid-Python mutation and classification boundary is fixed by the accepted
 
 The generated file tree is the artifact saved to disk and later parsed for preview,
 execution, tracing, and deployment; it is not an intermediate serialization hidden from the
-user. A single-file/flat generated pipeline is also directly executable through
-`haute.Pipeline.run()`. A hierarchical main file is different: its live
-`pipeline.submodel(path)` calls only record paths, so the live `Pipeline` API does not import the
-child registrations and the main file is not a standalone execution surface for that hierarchy.
-The static parser resolves and flattens the child files before the full executor runs them.
+user. A generated pipeline is also directly executable through `haute.Pipeline.run()`; for a
+hierarchical main file, `run()` imports each `pipeline.submodel(path)` file and runs its
+definition in place of the occurrence. The static parser resolves and flattens the child files
+before the full executor runs them.
 
 ## Scope
 
@@ -308,11 +307,16 @@ Out of scope (owned by neighbouring components):
   blank lines inside a completed module block are stripped, and unmatched
   module-level starts are ignored.
 
-  > NOTE: Any other module-level statement after the constructor (a constant, a helper
-  > function, trailing code) is neither preamble nor a preserved block, so regeneration drops
-  > it without a diagnostic while keeping the node code that uses it.
-  > [BUG-12](../roadmap/bugs.md#bug-12--a-save-keeps-the-statements-written-after-the-pipeline-constructor)
-  > makes the parser report it and save wait for it to move.
+  Regeneration keeps only the docstring, the `haute`/`polars` imports (and `from haute import
+  <constructor>`, which `haute.<constructor>` replaces), the preamble, preserved blocks,
+  and from the constructor on the constructor, the `global_constants` binding, node functions,
+  `pipeline.submodel(...)` registrations and `connect` chains. Any other module statement (an
+  import above `import haute`, a constant, helper or trailing code after the constructor) would
+  be dropped, and so would any other `from haute import ...` outside the preamble, since
+  the regenerated `import haute` does not bind its names. `_ast_helpers.unkept_module_statements` finds each one, and the editor document
+  reports it as an `unkept_module_statement` diagnostic naming its lines and the two fixes (move
+  it between the imports and the constructor, or wrap it in preserve markers), which degrades
+  the document, so the file is never regenerated without it.
 - **Global constants.** When the graph has global constants, or its declared constants file
   failed to load, the pipeline constructor gets `global_constants="config/global_constants.json"`
   after `description`, and every generated file, pipeline and submodel alike, binds

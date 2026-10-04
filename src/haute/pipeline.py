@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import inspect
-from collections.abc import Callable, Mapping
+import sys
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Self, cast
 
 import polars as pl
@@ -25,7 +29,7 @@ from haute._global_constants import (
     GlobalConstantsNamespace,
     bind_function_view,
 )
-from haute._graph_utils import _edge_id, _sanitize_func_name
+from haute._graph_utils import _edge_id, _sanitize_func_name, executable_input_name
 from haute._logging import get_logger
 from haute._standalone_nodes import (
     SOURCE_NODE_TYPES,
@@ -39,6 +43,7 @@ from haute._types import (
     GLOBAL_CONSTANTS_FILE,
     GraphEdge,
     NodeType,
+    SubmodelEndpoint,
     SubmodelInputPort,
     SubmodelOutputPort,
 )
@@ -267,6 +272,8 @@ class RegisteredSubmodel:
     file: str
     name: str
     instance_of: str | None = None
+    #: The module file whose code made the registration, which ``file`` is relative to.
+    registered_in: str | None = None
 
 
 def _validate_port(value: str | None, name: str) -> None:
@@ -566,7 +573,7 @@ class Pipeline(NodeRegistry):
         def result(transform): ...
 
         pipeline.connect("read_data", "transform").connect("transform", "result")
-        result = pipeline.run()
+        result = pipeline.run(source="live")
     """
 
     def __init__(
@@ -658,6 +665,122 @@ class Pipeline(NodeRegistry):
             terminals=[n.name for n in leaves],
         )
 
+    @contextmanager
+    def _submodels_expanded(self) -> Iterator[Pipeline]:
+        """This pipeline with its submodels expanded, their modules registered meanwhile.
+
+        Each definition's module stays in ``sys.modules`` while the run uses it,
+        as an imported module would, so ``dataclasses`` and ``get_type_hints``
+        resolve its string annotations; the entries go when the run ends.
+        """
+        module_names: list[str] = []
+        try:
+            yield self._with_submodels_expanded(module_names)
+        finally:
+            for name in module_names:
+                sys.modules.pop(name, None)
+
+    def _with_submodels_expanded(self, module_names: list[str]) -> Pipeline:
+        """A copy of this pipeline with each submodel occurrence replaced by its nodes.
+
+        Each occurrence's definition is imported from its file, and its nodes run
+        as ``<occurrence>.<node>``. An edge into an occurrence's input port feeds
+        every node the port targets, and an edge out of an output port leaves the
+        node the port names, as flattening wires them for ``haute run``. A
+        submodel's node that takes several inputs receives them in its
+        parameters' order; the pipeline's own nodes keep their connection order.
+        """
+        definitions: dict[str, Submodel] = {}
+        occurrences: dict[str, Submodel] = {}
+        for registration in self._submodel_registrations:
+            if registration.file not in definitions:
+                definitions[registration.file] = _load_submodel_definition(
+                    registration, module_names
+                )
+            occurrences[registration.name] = definitions[registration.file]
+
+        nodes = list(self._nodes)
+        # Each edge carries the name its target's parameter has for it.
+        labelled: list[tuple[str, RegisteredEdge]] = []
+        for occurrence, definition in occurrences.items():
+            nodes.extend(
+                dataclasses.replace(node, name=f"{occurrence}.{node.name}")
+                for node in definition._nodes
+            )
+            labelled.extend(
+                (
+                    # The name the target's parameter has for this frame, as the
+                    # graph executor names it: a Quote Input by its frame handle.
+                    executable_input_name(
+                        node_type=definition._node_map[edge.source].node_type,
+                        label=edge.source,
+                        source_handle=edge.source_port,
+                    ),
+                    RegisteredEdge(
+                        f"{occurrence}.{edge.source}",
+                        f"{occurrence}.{edge.target}",
+                        edge.source_port,
+                        edge.target_port,
+                    ),
+                )
+                for edge in definition._edges
+            )
+        for edge in self._edges:
+            label = edge.source
+            sources: list[tuple[str, str | None]] = [(edge.source, edge.source_port)]
+            if edge.source in occurrences:
+                endpoint = _submodel_output(occurrences[edge.source], edge.source, edge.source_port)
+                sources = [(f"{edge.source}.{endpoint.node_id}", endpoint.handle_id)]
+            targets: list[tuple[str, str | None]] = [(edge.target, edge.target_port)]
+            if edge.target in occurrences:
+                label = edge.target_port or ""
+                port_targets = _submodel_input(
+                    occurrences[edge.target], edge.target, edge.target_port
+                )
+                targets = [
+                    (f"{edge.target}.{endpoint.node_id}", endpoint.handle_id)
+                    for endpoint in port_targets
+                ]
+            labelled.extend(
+                (label, RegisteredEdge(source, target, source_port, target_port))
+                for source, source_port in sources
+                for target, target_port in targets
+            )
+
+        expanded = Pipeline(self.name, self.description)
+        expanded._global_constants_file = self._global_constants_file
+        expanded._nodes = nodes
+        expanded._node_map = {node.name: node for node in nodes}
+        inner = {node.name for node in nodes[len(self._nodes) :]}
+        expanded._edges = _in_parameter_order(labelled, expanded._node_map, inner)
+        return expanded
+
+    def _pipeline_file(self) -> str | None:
+        """The file that defines this pipeline: its first node's, or its registrations'."""
+        files = [
+            getattr(node.fn, "__globals__", {}).get("__file__") for node in self._nodes[:1]
+        ] + [registration.registered_in for registration in self._submodel_registrations]
+        return next((file for file in files if isinstance(file, str) and file), None)
+
+    def _missing_source_message(self) -> str:
+        """Why ``run()`` needs a source, naming the sources the pipeline's sidecar lists."""
+        message = (
+            'pipeline.run() needs the source to run under, such as pipeline.run(source="live")'
+        )
+        file = self._pipeline_file()
+        if file is None:
+            return f"{message}; the pipeline's sources are listed in its .haute.json sidecar."
+        from haute._sidecar import SidecarModel, read_sidecar_state
+
+        sidecar = read_sidecar_state(Path(file))
+        if sidecar.state == "absent":
+            sources = SidecarModel().sources
+        elif sidecar.data is not None:
+            sources = sidecar.data.sources
+        else:
+            return f"{message}; its sidecar {sidecar.path.name} could not be read for its sources."
+        return f"{message}. This pipeline's sources are {', '.join(sources)}."
+
     def _run_constants(self, source: str) -> GlobalConstantsNamespace:
         """The run's global constants for *source*, from the file the constructor names.
 
@@ -723,16 +846,23 @@ class Pipeline(NodeRegistry):
         ]
         outputs[n.name] = n._invoke(tuple(input_dfs), constants)
 
-    def run(self, *, source: str = "batch") -> pl.DataFrame:
+    def run(self, *, source: str | None = None) -> pl.DataFrame:
         """Execute the full pipeline under *source*, following edges for data flow.
 
-        *source* is what Source Switches route on and which value each global
-        constant takes.
+        *source* is required: it is what Source Switches route on, which value
+        each global constant takes, and (anything but ``"live"``) selects
+        batched model scoring. A run without it is refused, naming the
+        pipeline's sources, rather than guessing one.
         """
         from haute._model_scorer import _scenario_ctx
 
-        if not self._nodes:
+        if not self._nodes and not self._submodel_registrations:
             raise ValueError("Pipeline has no nodes")
+        if source is None:
+            raise TypeError(self._missing_source_message())
+        if self._submodel_registrations:
+            with self._submodels_expanded() as expanded:
+                return expanded.run(source=source)
 
         _token = _scenario_ctx.set(source)
         try:
@@ -766,6 +896,9 @@ class Pipeline(NodeRegistry):
         """
         from haute._model_scorer import _scenario_ctx
 
+        if self._submodel_registrations:
+            with self._submodels_expanded() as expanded:
+                return expanded.score(df)
         _token = _scenario_ctx.set("live")
         try:
             order = self._topo_order()
@@ -928,6 +1061,8 @@ class Pipeline(NodeRegistry):
                 file=file,
                 name=name,
                 instance_of=instance_of,
+                # ``file`` is relative to the pipeline file making this call.
+                registered_in=sys._getframe(1).f_globals.get("__file__"),
             )
         )
         return self
@@ -1008,3 +1143,119 @@ class Submodel(NodeRegistry):
     def output_ports(self) -> list[SubmodelOutputPort]:
         """Typed public outputs, returned as a defensive copy."""
         return list(self._output_ports)
+
+
+def _load_submodel_definition(
+    registration: RegisteredSubmodel, module_names: list[str]
+) -> Submodel:
+    """Import the definition a ``pipeline.submodel(file, ...)`` registration names.
+
+    The module is entered in ``sys.modules`` under a fresh name, appended to
+    *module_names* for the caller to remove when the run ends.
+    """
+    import importlib.util
+    import uuid
+
+    from haute._submodel_paths import SubmodelPathError, resolve_submodel_reference
+
+    file = registration.file
+    if registration.registered_in is None:
+        raise ExecutionError(
+            f"Submodel {registration.name!r} was registered outside a pipeline file, so its "
+            f"file {file!r} has no directory to resolve against. Run the pipeline from its .py "
+            "file.",
+            submodel=registration.name,
+        )
+    base_dir = Path(registration.registered_in).resolve().parent
+    try:
+        path, _ = resolve_submodel_reference(file, pipeline_dir=base_dir, project_root=base_dir)
+    except SubmodelPathError as exc:
+        raise ExecutionError(str(exc), submodel_file=file) from exc
+    if not path.is_file():
+        raise ExecutionError(
+            f"Submodel file {file!r} does not exist beside the pipeline.", submodel_file=file
+        )
+    spec = importlib.util.spec_from_file_location(f"_haute_submodel_{uuid.uuid4().hex}", path)
+    if spec is None or spec.loader is None:
+        raise ExecutionError(f"Submodel file {file!r} cannot be imported.", submodel_file=file)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    module_names.append(spec.name)
+    spec.loader.exec_module(module)
+    found = [value for value in vars(module).values() if isinstance(value, Submodel)]
+    if len(found) != 1:
+        count = "no haute.Submodel" if not found else f"{len(found)} haute.Submodel objects"
+        raise ExecutionError(
+            f"Submodel file {file!r} defines {count}; it must define exactly one.",
+            submodel_file=file,
+        )
+    return found[0]
+
+
+def _submodel_input(
+    definition: Submodel, occurrence: str, port: str | None
+) -> list[SubmodelEndpoint]:
+    for candidate in definition.input_ports:
+        if candidate.name == port:
+            return list(candidate.targets)
+    raise ExecutionError(
+        f"Submodel {occurrence!r} has no input port {port!r}; its input ports are "
+        f"{[candidate.name for candidate in definition.input_ports]}.",
+        submodel=occurrence,
+    )
+
+
+def _submodel_output(definition: Submodel, occurrence: str, port: str | None) -> SubmodelEndpoint:
+    for candidate in definition.output_ports:
+        if candidate.name == port:
+            return candidate.source
+    raise ExecutionError(
+        f"Submodel {occurrence!r} has no output port {port!r}; its output ports are "
+        f"{[candidate.name for candidate in definition.output_ports]}.",
+        submodel=occurrence,
+    )
+
+
+def _in_parameter_order(
+    labelled: list[tuple[str, RegisteredEdge]], nodes: Mapping[str, Node], inner: set[str]
+) -> list[RegisteredEdge]:
+    """The edges, each *inner* (submodel) node's inputs in its parameters' order.
+
+    A submodel's file declares a port input on the node rather than connecting
+    it, so registration order cannot place it among the node's other inputs.
+    *labelled* pairs each edge with the name it would fill: its source's name,
+    or the input port's for an edge into an occurrence. An input whose name is a
+    positional parameter takes that parameter's place; the others fill the
+    remaining parameters in order, as a configured hook's first parameter,
+    ``df``, names no input. An inner node with more inputs than parameters, and
+    every node of the pipeline itself, keeps registration order, as a pipeline
+    without submodels does.
+    """
+    from haute._standalone_nodes import _parameters
+
+    by_target: dict[str, list[tuple[str, RegisteredEdge]]] = {}
+    for label, edge in labelled:
+        by_target.setdefault(edge.target, []).append((label, edge))
+    ordered: list[RegisteredEdge] = []
+    for target, incoming in by_target.items():
+        node = nodes.get(target)
+        if node is None or target not in inner or len(incoming) < 2:
+            ordered.extend(edge for _, edge in incoming)
+            continue
+        positional = _parameters(node.fn)[0]
+        slots: list[RegisteredEdge | None] = [None] * len(positional)
+        unnamed: list[RegisteredEdge] = []
+        for label, edge in incoming:
+            index = positional.index(label) if label in positional else None
+            if index is not None and slots[index] is None:
+                slots[index] = edge
+            else:
+                unnamed.append(edge)
+        open_slots = [index for index, edge in enumerate(slots) if edge is None]
+        if len(unnamed) > len(open_slots):
+            ordered.extend(edge for _, edge in incoming)
+            continue
+        for index, edge in zip(open_slots, unnamed, strict=False):
+            slots[index] = edge
+        ordered.extend(edge for edge in slots if edge is not None)
+    return ordered

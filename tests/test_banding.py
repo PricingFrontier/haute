@@ -755,7 +755,7 @@ def _run_saved_file(tmp_path: Path, code: str) -> pl.DataFrame:
     path = tmp_path / "pipeline.py"
     namespace: dict = {"__file__": str(path)}
     exec(compile(code, str(path), "exec"), namespace)
-    result = namespace["pipeline"].run()
+    result = namespace["pipeline"].run(source="batch")
     if isinstance(result, pl.LazyFrame):
         result = result.collect()
     return result

@@ -20,9 +20,11 @@ export default function LiveSwitchEditor({
   const activeSource = useSettingsStore((s) => s.activeSource)
   const inputScenarioMap = configField<Record<string, string>>(config, "input_scenario_map", {})
 
-  /** Update the mapping for a single input. */
+  /** Map a single input to *source*; `-` (empty) removes the input from the map,
+   *  so a switch whose inputs are all on `-` passes its first input through. */
   const setMapping = (inputName: string, source: string) => {
-    onUpdate("input_scenario_map", { ...inputScenarioMap, [inputName]: source })
+    const { [inputName]: _previous, ...others } = inputScenarioMap
+    onUpdate("input_scenario_map", source ? { ...others, [inputName]: source } : others)
   }
 
   return (

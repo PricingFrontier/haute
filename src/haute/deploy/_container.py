@@ -1020,10 +1020,8 @@ def _pinned_price_contour_dependency() -> str:
 _PICKLE_RUNTIME_DEPENDENCIES: tuple[str, ...] = (
     "catboost",
     "interpret-core",
-    "lightgbm",
     "pandas",
     "scikit-learn",
-    XGBOOST_DISTRIBUTION,
 )
 
 # Load File artifact extension -> distribution names of the runtime that

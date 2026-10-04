@@ -117,7 +117,9 @@ export default function DataOutputEditor({
   const ready =
     group !== undefined && outputConfigReady(group, format, config)
   const graph = useMemo(() => {
-    const built = buildGraph(allNodes, edges, submodels, preamble)
+    // buildGraph reads the preamble from the store; listing it renews this callback.
+    void preamble
+    const built = buildGraph(allNodes, edges, submodels)
     return {
       ...built,
       nodes: built.nodes.map((node) =>

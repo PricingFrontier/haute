@@ -31,7 +31,7 @@ from haute.errors import DeployError
 from tests._deploy_helpers import FIXTURE_DIR
 from tests._deploy_helpers import make_resolved_deploy as _make_resolved
 from tests.conftest import make_graph as _g
-from tests.conftest import make_output_config
+from tests.conftest import make_output_config, make_ready_file_input_config
 
 if TYPE_CHECKING:
     from haute.deploy._model_code import HauteModel
@@ -2248,6 +2248,81 @@ class TestScoreGraphExternalFileRemap:
 
         assert "ext_val" in result.columns
         assert result["ext_val"].to_list() == [99]
+
+    def test_external_file_code_sees_the_preamble_as_in_the_editor(
+        self, tmp_path, _widen_sandbox_root
+    ):
+        """Deployed External File code calls a preamble helper and matches the preview."""
+        from haute.deploy._scorer import score_graph
+        from haute.executor import execute_graph
+
+        lookup = tmp_path / "lookup.json"
+        lookup.write_text(json.dumps({"base": 10.0}))
+        rows = tmp_path / "x.parquet"
+        pl.DataFrame({"x": [1.0]}).write_parquet(rows)
+        code = "df = df.with_columns(scaled=pl.lit(scale(obj['base'])))"
+        nodes = [
+            {
+                "id": "src",
+                "data": {
+                    "label": "src",
+                    "nodeType": "apiInput",
+                    "config": _single_frame_api_input_config("x", "float", label="src"),
+                },
+            },
+            {
+                "id": "ext",
+                "data": {
+                    "label": "ext",
+                    "nodeType": "externalFile",
+                    "config": {"path": str(lookup), "fileType": "json", "code": code},
+                },
+            },
+            {
+                "id": "out",
+                "data": {
+                    "label": "out",
+                    "nodeType": "output",
+                    "config": make_output_config(["x", "scaled"]),
+                },
+            },
+        ]
+        edges = [
+            {"id": "e1", "source": "src", "target": "ext", "sourceHandle": "src"},
+            {"id": "e2", "source": "ext", "target": "out"},
+        ]
+        graph = _g({"nodes": nodes, "edges": edges})
+        graph.preamble = "def scale(value):\n    return value * 3\n"
+        preview_graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "src",
+                        "data": {
+                            "label": "src",
+                            "nodeType": "dataInput",
+                            "config": make_ready_file_input_config(str(rows)),
+                        },
+                    },
+                    nodes[1],
+                ],
+                "edges": [{"id": "e1", "source": "src", "target": "ext"}],
+            }
+        )
+        preview_graph.preamble = graph.preamble
+
+        preview = execute_graph(preview_graph, "ext", source="live")["ext"]
+        result = score_graph(
+            graph=graph,
+            input_df=pl.DataFrame({"x": [1.0]}),
+            input_node_ids=["src"],
+            output_node_id="out",
+            artifact_paths={"ext__lookup.json": str(lookup)},
+        )
+
+        assert preview.status == "ok", preview.error
+        assert [row["scaled"] for row in preview.preview] == [30.0]
+        assert result["scaled"].to_list() == [30.0]
 
     def test_external_file_remap_without_code(self, tmp_path):
         """externalFile without code passes through first input."""

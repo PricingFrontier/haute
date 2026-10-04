@@ -96,11 +96,14 @@ export type SimpleEdge = {
 export function FileBrowser({
   currentPath,
   onSelect,
+  onSelectFolder,
   extensions,
   showSelectionSummary = true,
 }: {
   currentPath?: string
   onSelect: (path: string) => void
+  /** Offer the open folder itself as the selection (a table stored as a folder). */
+  onSelectFolder?: (path: string) => void
   extensions?: string
   showSelectionSummary?: boolean
 }) {
@@ -177,6 +180,19 @@ export function FileBrowser({
             <ChevronLeft size={14} />
           </button>
           <span className="text-xs font-mono truncate" style={{ color: 'var(--text-muted)' }}>{dir === "." ? "/" : dir}</span>
+          {onSelectFolder && dir !== "." && (
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedPath(dir)
+                onSelectFolder(dir)
+              }}
+              className="ml-auto shrink-0 text-[11px] font-semibold px-2 py-0.5 rounded transition-colors"
+              style={{ color: 'var(--accent)' }}
+            >
+              Use this folder
+            </button>
+          )}
         </div>
 
         <div className="max-h-40 overflow-y-auto" style={{ background: 'var(--bg-input)' }}>

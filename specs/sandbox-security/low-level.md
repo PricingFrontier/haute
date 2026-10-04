@@ -47,8 +47,8 @@
 - **`_ALLOWED_PICKLE_CLASSES: frozenset[tuple[str, str]]`** — exact
   `(module, qualname)` pairs for model/data *classes* (numpy `dtype`/`ndarray`,
   pandas `DataFrame`/`Series`/`Index`/`RangeIndex`/`BlockManager`/
-  `SingleBlockManager`, polars `DataFrame`/`Series`, sklearn/catboost/lightgbm/
-  xgboost estimator classes, `joblib.numpy_pickle.NumpyArrayWrapper`). Resolved
+  `SingleBlockManager`, polars `DataFrame`/`Series`, sklearn/catboost/InterpretML
+  estimator classes, `joblib.numpy_pickle.NumpyArrayWrapper`). Resolved
   and then checked with `isinstance(obj, type)` before being trusted.
 - **`_RestrictedUnpickler(pickle.Unpickler)`** — overrides `find_class` to call
   `_resolve_allowed_global`.

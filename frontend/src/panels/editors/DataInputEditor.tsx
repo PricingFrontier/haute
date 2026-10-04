@@ -118,6 +118,13 @@ export default function DataInputEditor({
   const schemaRequired =
     group?.name === "file" && format?.input?.needs_schema_when_bounded === true
   const configuredPath = typeof config.path === "string" ? config.path.trim() : ""
+  const configuredArguments =
+    typeof config.arguments === "object" && config.arguments !== null && !Array.isArray(config.arguments)
+      ? config.arguments as Record<string, unknown>
+      : {}
+  // The columns are detected with the node's own reader settings; the schema
+  // argument is what detection fills in, so it takes no part.
+  const { schema: _declaredSchema, ...readerArguments } = configuredArguments
   const {
     schema,
     loading: schemaLoading,
@@ -127,11 +134,8 @@ export default function DataInputEditor({
     schemaRequired && configuredPath
       ? configuredPath
       : undefined,
+    schemaRequired && format ? { format: format.name, arguments: readerArguments } : undefined,
   )
-  const configuredArguments =
-    typeof config.arguments === "object" && config.arguments !== null && !Array.isArray(config.arguments)
-      ? config.arguments as Record<string, unknown>
-      : {}
   const hasSchemaMapping =
     typeof configuredArguments.schema === "object" &&
     configuredArguments.schema !== null &&
@@ -198,7 +202,7 @@ export default function DataInputEditor({
               style={INPUT_STYLE}
             />
             <p className="mt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
-              Optional projection/filter clause. Haute supplies the validated table.
+              Optional. A SELECT list without FROM, such as SELECT policy_id, premium. Haute adds FROM and the chosen table.
             </p>
           </div>
           <IoArgumentsEditor

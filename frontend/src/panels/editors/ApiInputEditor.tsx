@@ -298,9 +298,22 @@ export default function ApiInputEditor({
     }
     writeBack(next)
   }
+  // A hand-added table is labelled as inference labels one: `quote_info` for
+  // the root, the array's key below it, suffixed until no other label clashes.
+  const uniqueTableLabel = (base: string) => {
+    const labels = v2.tables.map((t) => t.label)
+    const clashes = (label: string) => {
+      const issue = apiInputLabelIssue(label, labels, reservedFrameLabels)
+      return issue?.kind === "duplicate" || issue?.kind === "sanitised-collision"
+    }
+    let label = base
+    for (let n = 2; clashes(label); n++) label = `${base}_${n}`
+    return label
+  }
   const addTable = () => {
-    const newPath = v2.tables.length === 0 ? "$[:]" : `$[:].table_${v2.tables.length}[:]`
-    const newLabel = newPath
+    const key = v2.tables.length === 0 ? null : `table_${v2.tables.length}`
+    const newPath = key === null ? "$[:]" : `$[:].${key}[:]`
+    const newLabel = uniqueTableLabel(key ?? "quote_info")
     const next = {
       ...v2,
       tables: [

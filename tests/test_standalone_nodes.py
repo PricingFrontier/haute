@@ -86,7 +86,7 @@ def test_a_sidecar_type_without_config_is_called_as_a_plain_function() -> None:
     pipeline.connect("rows", "band")
 
     assert pipeline.nodes[1].kind == "transform"
-    assert _collect(pipeline.run())["band"].to_list() == [10, 20]
+    assert _collect(pipeline.run(source="batch"))["band"].to_list() == [10, 20]
 
 
 def test_a_data_input_declaration_loads_its_sidecar_source(project: Path) -> None:
@@ -105,7 +105,10 @@ def test_a_data_input_declaration_loads_its_sidecar_source(project: Path) -> Non
         "def quotes(): ...\n",
     )
 
-    assert _collect(namespace["pipeline"].run()).to_dicts() == [{"quote_id": 1}, {"quote_id": 2}]
+    assert _collect(namespace["pipeline"].run(source="batch")).to_dicts() == [
+        {"quote_id": 1},
+        {"quote_id": 2},
+    ]
 
 
 def test_a_constant_declaration_reads_its_sidecar_on_every_run(tmp_path: Path) -> None:
@@ -118,11 +121,11 @@ def test_a_constant_declaration_reads_its_sidecar_on_every_run(tmp_path: Path) -
         f'@pipeline.constant(config="{config}")\n'
         "def rates(): ...\n",
     )
-    assert _collect(namespace["pipeline"].run()).to_dicts() == [{"base": 100.0}]
+    assert _collect(namespace["pipeline"].run(source="batch")).to_dicts() == [{"base": 100.0}]
 
     _constant(tmp_path, "rates", base="120")
 
-    assert _collect(namespace["pipeline"].run()).to_dicts() == [{"base": 120.0}]
+    assert _collect(namespace["pipeline"].run(source="batch")).to_dicts() == [{"base": 120.0}]
 
 
 def test_a_constant_with_two_entries_of_one_name_is_refused_as_the_executor_refuses_it(
@@ -146,7 +149,7 @@ def test_a_constant_with_two_entries_of_one_name_is_refused_as_the_executor_refu
     message = "Constant name 'rate' is used by more than one value"
 
     with pytest.raises(NodeConfigError, match=message):
-        namespace["pipeline"].run()
+        namespace["pipeline"].run(source="batch")
     with pytest.raises(NodeConfigError, match=message):
         executor_fn()
 
@@ -178,7 +181,7 @@ def test_a_banding_declaration_refuses_two_active_factors_writing_one_column(
     namespace["pipeline"].connect("rows", "band")
 
     with pytest.raises(ConfigSettingError, match="Banding output 'band' is written by factor 1"):
-        namespace["pipeline"].run()
+        namespace["pipeline"].run(source="batch")
 
 
 def test_a_live_switch_declaration_selects_the_active_scenarios_input(tmp_path: Path) -> None:
@@ -205,7 +208,7 @@ def test_a_live_switch_declaration_selects_the_active_scenarios_input(tmp_path: 
     )
 
     # run() executes the batch scenario.
-    assert _collect(namespace["pipeline"].run()).to_dicts() == [{"source": "batch"}]
+    assert _collect(namespace["pipeline"].run(source="batch")).to_dicts() == [{"source": "batch"}]
 
 
 def test_an_edge_join_declaration_joins_its_base_and_join_inputs(tmp_path: Path) -> None:
@@ -226,7 +229,7 @@ def test_an_edge_join_declaration_joins_its_base_and_join_inputs(tmp_path: Path)
         'pipeline.connect("factors", "priced", target_port="join")\n',
     )
 
-    assert _collect(namespace["pipeline"].run()).to_dicts() == [
+    assert _collect(namespace["pipeline"].run(source="batch")).to_dicts() == [
         {"region": "N", "factor": 1.5},
         {"region": "S", "factor": None},
     ]
@@ -260,7 +263,7 @@ def test_an_output_declaration_assembles_its_document(tmp_path: Path) -> None:
         'pipeline.connect("rows", "response")\n',
     )
 
-    document = _collect(namespace["pipeline"].run())
+    document = _collect(namespace["pipeline"].run(source="batch"))
 
     assert "premium" not in document.columns, "an Output assembles, it does not pass through"
     assert document.to_dicts() == [{"quote": {"premium": 120.0}}]
@@ -303,7 +306,7 @@ def test_a_model_score_declaration_appends_its_predictions(tmp_path: Path) -> No
     )
 
     with patch("haute._mlflow_io.load_mlflow_model", return_value=_stub_scoring_model()):
-        scored = _collect(namespace["pipeline"].run())
+        scored = _collect(namespace["pipeline"].run(source="batch"))
 
     assert scored.to_dicts() == [{"a": 1.0, "prediction": 0.5}]
 
@@ -369,7 +372,7 @@ def test_a_data_input_hook_runs_on_the_loaded_rows(project: Path) -> None:
         "    return df\n",
     )
 
-    assert _collect(namespace["pipeline"].run())["quote_id"].to_list() == [2, 3]
+    assert _collect(namespace["pipeline"].run(source="batch"))["quote_id"].to_list() == [2, 3]
 
 
 def test_an_external_file_hook_receives_its_inputs_and_the_loaded_object(project: Path) -> None:
@@ -393,7 +396,7 @@ def test_an_external_file_hook_receives_its_inputs_and_the_loaded_object(project
         'pipeline.connect("rows", "lookup")\n',
     )
 
-    assert _collect(namespace["pipeline"].run())["scaled"].to_list() == [6]
+    assert _collect(namespace["pipeline"].run(source="batch"))["scaled"].to_list() == [6]
 
 
 def test_a_hook_that_returns_nothing_fails_loudly(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -505,7 +508,7 @@ def test_a_configured_node_defined_outside_a_file_fails_when_it_needs_its_sideca
     exec(compile(source, "<string>", "exec"), namespace)
 
     with pytest.raises(ConfigError, match="not defined in a file"):
-        namespace["pipeline"].run()
+        namespace["pipeline"].run(source="batch")
 
 
 # ---------------------------------------------------------------------------

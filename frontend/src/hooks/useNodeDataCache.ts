@@ -215,13 +215,14 @@ export default function useNodeDataCache({
   }, [nodeId, ownedRunning, setWorkRunning, workKey])
   useEffect(() => () => setWorkRunning(workKey, null), [setWorkRunning, workKey])
 
-  // buildGraph reads the constants from the store; listing them renews the
-  // callback, so a constant edited after mount reaches the next request.
+  // buildGraph reads the preamble and constants from the store; listing them
+  // renews the callback, so an edit made after mount reaches the next request.
   const globalConstants = useGraphStore((s) => s.globalConstants)
   const graphPayload = useCallback(
     () => {
       void globalConstants
-      return buildGraph(allNodes, edges, submodels, preamble)
+      void preamble
+      return buildGraph(allNodes, edges, submodels)
     },
     [allNodes, edges, preamble, submodels, globalConstants],
   )

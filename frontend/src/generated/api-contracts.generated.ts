@@ -1204,6 +1204,7 @@ export interface IoInputCapability {
   modes: ('scan' | 'read')[];
   needs_schema_when_bounded: boolean;
   snapshot_build: 'bounded' | 'admitted_eager' | 'unsupported';
+  source_is_folder: boolean;
 }
 export interface IoOutputCapability {
   arguments: {

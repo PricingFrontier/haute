@@ -134,14 +134,8 @@ other static absolute import, in the preamble or in a bundled `utility` file, th
 resolves from the pipeline directory or the working directory is project code the bundle
 does not carry. `validate_deploy` refuses it, naming the module and the file that imports
 it. Imports that resolve from installed packages are for the serving environment to
-provide.
-
-> NOTE: The served preamble's names do not reach a bundled External File's code, which runs
-> with `obj` alone, or a Model Score's code, which runs with `model` alone, although the editor
-> gives External File code those names.
-> [BUG-13](../roadmap/bugs.md#bug-13--deployed-external-file-code-sees-the-preamble-as-in-the-editor)
-> and [BUG-14](../roadmap/bugs.md#bug-14--model-score-code-sees-the-preamble-on-the-canvas-and-when-deployed)
-> pass them through.
+provide. The served preamble's names reach every code box, as in the editor: a bundled
+External File's code sees them beside `obj`, and a Model Score's code beside `model`.
 
 **Packaging and shipping.** Two backends are implemented:
 - **Databricks**: logs the pipeline as an `mlflow.pyfunc.PythonModel` (models-from-code),
@@ -409,7 +403,7 @@ from its suffix instead: `.cbm` → `catboost`, `.ubj` → the installed XGBoost
 plus `pandas`, `.lgbm` → `lightgbm` plus `pandas`, `.ebm` → `interpret-core` plus `pandas`,
 and `.rsglm` → `rustystats`. A pickled or joblib artefact (`.pkl`, `.pickle`, `.joblib`) may
 hold an object of any third-party package haute's restricted unpickler allows, so it adds all
-of them: `catboost`, `interpret-core`, `lightgbm`, `pandas`, `scikit-learn` and XGBoost. Both
+of them: `catboost`, `interpret-core`, `pandas` and `scikit-learn`. Both
 score XGBoost, LightGBM and EBM on CPU with no extra requirement. Bundling discovers `.ubj`, `.lgbm` and `.ebm`
 artifacts with the other native suffixes and carries each model's feature contract; for an
 `.ebm` it fetches the contract the run logged beside the model, and the deployed scorer loads

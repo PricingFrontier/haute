@@ -11,7 +11,7 @@
   "edgeJoin": {"how": "left", "suffix": "_right"},
   "banding": {"factors": [{"banding": "breakpoints", "column": "", "outputColumn": "", "rules": [], "default": null}]},
   "scenarioExpander": {"stepCount": 21, "steps": []},
-  "ratingStep": {"tables": [{"factors": [], "outputColumn": "", "defaultValue": "1.0", "entries": []}], "combinedOutputs": [], "steps": []},
+  "ratingStep": {"tables": [{"factors": [], "outputColumn": "", "entries": []}], "combinedOutputs": [], "steps": []},
   "modelling": {},
   "modelScore": {"sourceType": "registered", "registered_model": "", "version": "latest", "task": "regression", "output_column": "prediction", "steps": []},
   "optimiser": {"mode": "online", "objective": "", "constraints": {}, "quote_id": "quote_id", "scenario_index": "scenario_index", "scenario_value": "scenario_value", "max_iter": 50, "tolerance": 1e-6},

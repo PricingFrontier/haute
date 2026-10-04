@@ -4579,7 +4579,7 @@ def test_data_input_generated_module_runs_standalone(tmp_path: Path) -> None:
         PipelineGraph(nodes=[_stepped_input(quotes, [step("l", "limit", n=2)])], edges=[]),
         tmp_path,
     )
-    frame = _collect(module.pipeline.run())
+    frame = _collect(module.pipeline.run(source="batch"))
     assert frame.height == 2
     assert frame["premium"].to_list() == [50.0, 200.0]
 
@@ -4591,7 +4591,7 @@ def test_data_input_generated_module_runs_standalone(tmp_path: Path) -> None:
         tmp_path,
     )
     with pytest.raises(NotImplementedError, match=INCOMPLETE_STEPS_MESSAGE.split(".")[0]):
-        _collect(broken.pipeline.run())
+        _collect(broken.pipeline.run(source="batch"))
 
 
 # ---------------------------------------------------------------------------
@@ -5055,13 +5055,13 @@ def test_frame_surface_generated_module_runs_standalone(tmp_path: Path, surface:
 
     graph, _node_id = _surface_graph(tmp_path, surface, [step("l", "limit", n=2)])
     module = _write_and_import(graph, tmp_path)
-    frame = _collect(module.pipeline.run())
+    frame = _collect(module.pipeline.run(source="batch"))
     assert frame.height == 2, surface
 
     broken, _ = _surface_graph(tmp_path, surface, [step("f", "filter", match="all", conditions=[])])
     broken_module = _write_and_import(broken, tmp_path)
     with pytest.raises(NotImplementedError, match=INCOMPLETE_STEPS_MESSAGE.split(".")[0]):
-        _collect(broken_module.pipeline.run())
+        _collect(broken_module.pipeline.run(source="batch"))
 
 
 @pytest.mark.parametrize("surface", (*_RUNNABLE_FRAME_SURFACES, "modelScore"))

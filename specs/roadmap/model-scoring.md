@@ -26,8 +26,8 @@ model source and one family registry, so that a further family is a single
 registration. Registry and run pyfunc models already work. The file-source
 delivery adds native files under a declared contract, then local pyfunc
 packages with an explicit executable-import trust policy, then ONNX if there
-is demand. Pickled estimators stay with Load File's restricted unpickler
-(`BUG-04` owns its allowlist). A pyfunc signature describes inputs; it does
+is demand. Pickled estimators stay with Load File's restricted unpickler, whose
+allowlist names no XGBoost or LightGBM class. A pyfunc signature describes inputs; it does
 not make the package's pickles or Python code safe to execute.
 
 Every package keeps three rules. The same file, contract and checks apply in

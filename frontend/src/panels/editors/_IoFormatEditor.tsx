@@ -579,6 +579,7 @@ export default function IoFormatEditor({
               onSelect={(path) => updateField(field.name, path)}
               extensions={format && format.extensions.length > 0 ? format.extensions.join(",") : undefined}
               manualEntry={direction === "output"}
+              selectFolder={format?.input?.source_is_folder === true}
             />
           )
         }
