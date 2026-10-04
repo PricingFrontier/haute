@@ -1,13 +1,16 @@
 /**
- * Charts for additive model terms: a value per level, a step line over value
- * bins, and a surface over two axes. The EBM Terms tab and the t-boost Tables
- * tab draw their shape functions and tables with these. Values are compared
- * with a reference: 0 for link-scale scores, 1 for relativities.
+ * Tables and charts for additive model terms: a table or bars of a value per
+ * level, a step line over value bins, and a table or lines over two axes.
+ * TermTableView draws the EBM Terms tab's and the t-boost Tables tab's terms
+ * with these. Values are compared with a reference: 0 for link-scale scores,
+ * 1 for relativities.
  */
 import { useState } from "react"
 import { CHART_COLORS } from "../../theme/colors"
 import {
+  ChartLegend,
   ChartSvg,
+  ChartValueGrid,
   ResponsiveChart,
   MODELLING_CHART_AXIS_FONT_SIZE as FONT,
   MODELLING_CHART_AXIS_TEXT_COLOR as TEXT,
@@ -16,7 +19,6 @@ import {
 import {
   chartAxisLabel,
   chartDomain,
-  chartLabelIndices,
   chartTicks,
   formatChartNumber,
   formatChartTicks,
@@ -41,6 +43,17 @@ interface ShapeProps {
   massLabel?: string
 }
 
+/** The room an x-axis label takes: its axis's longest label, capped so one long label cannot crowd out the rest. */
+function axisLabelWidth(labels: string[]): number {
+  return Math.min(168, Math.max(0, ...labels.map((label) => label.length)) * 7 + 16)
+}
+
+/** The cells to label along an axis: every k-th, k the fewest slots a label spans, so labels never overlap. */
+function labelledCells(count: number, step: number, labelWidth: number): number[] {
+  const every = Math.max(1, Math.ceil(labelWidth / Math.max(1, step)))
+  return Array.from({ length: Math.ceil(count / every) }, (_, i) => i * every)
+}
+
 function detail(props: ShapeProps, index: number): string {
   const value = `${props.valueLabel}: ${props.values[index]}`
   if (!props.mass) return value
@@ -53,7 +66,7 @@ export function LevelBars(props: ShapeProps) {
   return (
     <ResponsiveChart>
       {(width) => {
-        const [low, high] = chartDomain([...values, reference], true)
+        const [low, high] = chartDomain([...values, reference])
         const barWidth = Math.max(1, width * 0.6 - 76)
         const x = (value: number) => 4 + ((value - low) / (high - low)) * (barWidth - 8)
         return (
@@ -129,14 +142,14 @@ export function StepShape(props: ShapeProps) {
             bottom = 240,
             height = 280
           const plotWidth = Math.max(1, width - left - right)
-          const [low, high] = chartDomain([...values, reference], true)
+          const [low, high] = chartDomain([...values, reference])
           const step = plotWidth / Math.max(1, values.length)
           const x = (index: number) => left + index * step
           const y = (value: number) => bottom - ((value - low) / (high - low)) * (bottom - top)
           const path = values
             .map((value, i) => `${i ? "L" : "M"}${x(i)},${y(value)} L${x(i + 1)},${y(value)}`)
             .join(" ")
-          const indices = chartLabelIndices(values.length, plotWidth, 120)
+          const labelWidth = axisLabelWidth(labels)
           return (
             <ChartSvg width={width} height={height} ariaLabel={title}>
               {chartTicks(low, high).map((value, index, all) => (
@@ -169,9 +182,9 @@ export function StepShape(props: ShapeProps) {
                   <title>{`${labels[i]}: ${detail(shown, i)}`}</title>
                 </rect>
               ))}
-              {[...indices].map((i) => (
+              {labelledCells(values.length, step, labelWidth).map((i) => (
                 <text key={i} x={x(i) + step / 2} y={bottom + 20} textAnchor="middle" fontSize={FONT} fill={TEXT}>
-                  {chartAxisLabel(labels[i], 120)}
+                  {chartAxisLabel(labels[i], labelWidth)}
                 </text>
               ))}
             </ChartSvg>
@@ -198,42 +211,173 @@ function surfaceColour(value: number, reference: number, extent: number): string
 }
 
 /**
- * A value table over two axes, coloured by distance from the reference. By
- * default the longer axis runs down the table so a fine binning scrolls
- * vertically; ``fixedOrientation`` keeps ``first`` on the rows when the caller
- * lets the user choose them.
+ * One row per cell of a single axis: its value, coloured by distance from the
+ * reference as a surface is, and its training mass when given.
  */
+export function LevelTable(props: ShapeProps & { feature: string }) {
+  const { title, feature, labels, values, reference, valueLabel, mass, massLabel } = props
+  const extent = Math.max(0, ...values.map((value) => Math.abs(value - reference)))
+  return (
+    <div className="overflow-x-auto">
+      <table className="validation-value-table term-table" aria-label={title}>
+        <thead>
+          <tr>
+            <th scope="col">{feature}</th>
+            <th scope="col">{valueLabel}</th>
+            {mass && <th scope="col">{massLabel ?? "Mass"}</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {labels.map((label, i) => (
+            <tr key={label} title={`${label}: ${detail(props, i)}`}>
+              <th scope="row">{label}</th>
+              <td style={{ background: surfaceColour(values[i], reference, extent) }}>
+                {formatChartNumber(values[i])}
+              </td>
+              {mass && <td style={{ color: TEXT }}>{formatChartNumber(mass[i])}</td>}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+/**
+ * A two-axis table as lines: the cells of ``across`` along the x axis and one
+ * line per cell of ``lines``. Each cell's value is flat over its slot; a
+ * continuous axis joins its ranges into a step line, and its first cell, the
+ * missing cell, stands apart as a nominal level does.
+ */
+export function InteractionLines({
+  title,
+  across,
+  lines,
+  grid,
+  reference,
+  valueLabel,
+}: {
+  title: string
+  across: TermChartAxis & { continuous: boolean }
+  lines: TermChartAxis
+  /** ``grid[i][j]`` is the value at ``across.labels[i]`` and ``lines.labels[j]``. */
+  grid: number[][]
+  reference: number
+  valueLabel: string
+}) {
+  const [active, setActive] = useState<number | null>(null)
+  const colour = (line: number) => CHART_COLORS.optimiserSeries[line % CHART_COLORS.optimiserSeries.length]
+  return (
+    <>
+      <ResponsiveChart>
+        {(width) => {
+          const left = 68,
+            right = 24,
+            top = 16,
+            bottom = 240,
+            height = 272
+          const plotWidth = Math.max(1, width - left - right)
+          const [low, high] = chartDomain([...grid.flat(), reference])
+          const step = plotWidth / Math.max(1, across.labels.length)
+          const gap = Math.min(step * 0.15, 12)
+          const x = (index: number) => left + index * step
+          const y = (value: number) => bottom - ((value - low) / (high - low)) * (bottom - top)
+          // A continuous range after the first joins the one before it.
+          const joined = (cell: number) => across.continuous && cell > 1
+          const startGap = (cell: number) => (joined(cell) ? 0 : gap)
+          const endGap = (cell: number) => (across.continuous && cell > 0 ? 0 : gap)
+          const path = (line: number) =>
+            grid
+              .map((row, cell) => {
+                const start = `${joined(cell) ? "L" : "M"}${x(cell) + startGap(cell)},${y(row[line])}`
+                return `${start} L${x(cell + 1) - endGap(cell)},${y(row[line])}`
+              })
+              .join(" ")
+          const labelWidth = axisLabelWidth(across.labels)
+          return (
+            <ChartSvg width={width} height={height} ariaLabel={title}>
+              <ChartValueGrid ticks={chartTicks(low, high)} left={left} right={width - right} y={y} labelGap={8} />
+              {active !== null && (
+                <rect x={x(active)} y={top} width={step} height={bottom - top} fill={GRID} opacity={0.5} />
+              )}
+              <line
+                x1={left}
+                x2={width - right}
+                y1={y(reference)}
+                y2={y(reference)}
+                stroke={TEXT}
+                strokeDasharray="3 3"
+              />
+              {lines.labels.map((label, line) => (
+                <path key={label} d={path(line)} fill="none" stroke={colour(line)} strokeWidth={2} />
+              ))}
+              {across.labels.map((label, cell) => (
+                <rect
+                  key={label}
+                  x={x(cell)}
+                  y={top}
+                  width={Math.max(1, step)}
+                  height={bottom - top}
+                  fill="transparent"
+                  onMouseEnter={() => setActive(cell)}
+                >
+                  <title>{label}</title>
+                </rect>
+              ))}
+              {labelledCells(across.labels.length, step, labelWidth).map((cell) => (
+                <text key={cell} x={x(cell) + step / 2} y={bottom + 20} textAnchor="middle" fontSize={FONT} fill={TEXT}>
+                  {chartAxisLabel(across.labels[cell], labelWidth)}
+                </text>
+              ))}
+            </ChartSvg>
+          )
+        }}
+      </ResponsiveChart>
+      <ChartLegend
+        items={lines.labels.map((label, line) => ({ label: `${lines.feature} ${label}`, color: colour(line) }))}
+        compact
+      />
+      <div className="validation-bin-detail" role="status" aria-live="polite">
+        {active !== null && (
+          <>
+            <strong>
+              {across.feature} {across.labels[active]}
+            </strong>
+            {lines.labels.map((label, line) => (
+              <span key={label}>
+                {`${lines.feature} ${label}: ${valueLabel} ${formatChartNumber(grid[active][line])}`}
+              </span>
+            ))}
+          </>
+        )}
+      </div>
+    </>
+  )
+}
+
+/** A value table over two axes, ``rows`` down and ``columns`` across, coloured by distance from the reference. */
 export function SurfaceTable({
   title,
-  first,
-  second,
+  rows: rowsAxis,
+  columns: columnsAxis,
   grid,
   reference,
   mass,
   massLabel,
-  fixedOrientation = false,
 }: {
   title: string
-  first: TermChartAxis
-  second: TermChartAxis
-  /** ``grid[i][j]`` is the value at ``first.labels[i]`` and ``second.labels[j]``. */
+  rows: TermChartAxis
+  columns: TermChartAxis
+  /** ``grid[i][j]`` is the value at ``rows.labels[i]`` and ``columns.labels[j]``. */
   grid: number[][]
   reference: number
   mass?: number[][]
   massLabel?: string
-  fixedOrientation?: boolean
 }) {
-  const transpose = !fixedOrientation && second.labels.length > first.labels.length
-  const rowsAxis = transpose ? second : first
-  const columnsAxis = transpose ? first : second
-  const flip = (table: number[][]) =>
-    transpose ? second.labels.map((_, j) => table.map((row) => row[j])) : table
-  const shown = flip(grid)
-  const shownMass = mass ? flip(mass) : undefined
-  const extent = Math.max(0, ...shown.flat().map((value) => Math.abs(value - reference)))
+  const extent = Math.max(0, ...grid.flat().map((value) => Math.abs(value - reference)))
   return (
     <div className="overflow-x-auto">
-      <table className="validation-value-table" aria-label={title} style={{ fontSize: 11 }}>
+      <table className="validation-value-table term-table" aria-label={title}>
         <thead>
           <tr>
             <th scope="col">
@@ -241,25 +385,24 @@ export function SurfaceTable({
             </th>
             {columnsAxis.labels.map((label) => (
               <th key={label} scope="col" title={label}>
-                {chartAxisLabel(label, 70)}
+                {chartAxisLabel(label, 168)}
               </th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {shown.map((row, i) => (
+          {grid.map((row, i) => (
             <tr key={rowsAxis.labels[i]}>
-              <th scope="row">{rowsAxis.labels[i]}</th>
+              <th scope="row" title={rowsAxis.labels[i]}>{rowsAxis.labels[i]}</th>
               {row.map((value, j) => (
                 <td
                   key={j}
                   title={
                     `${rowsAxis.feature} ${rowsAxis.labels[i]}, ${columnsAxis.feature} `
                     + `${columnsAxis.labels[j]}: ${value}`
-                    + (shownMass ? `; ${massLabel ?? "Mass"}: ${shownMass[i][j]}` : "")
+                    + (mass ? `; ${massLabel ?? "Mass"}: ${mass[i][j]}` : "")
                   }
-                  style={{ background: surfaceColour(value, reference, extent), textAlign: "right" }}
-                  className="tabular-nums"
+                  style={{ background: surfaceColour(value, reference, extent) }}
                 >
                   {formatChartNumber(value)}
                 </td>

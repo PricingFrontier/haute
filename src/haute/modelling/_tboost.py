@@ -25,6 +25,7 @@ families.
 from __future__ import annotations
 
 import json
+import math
 import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -83,13 +84,19 @@ def _float32_features_accepted() -> Iterator[None]:
         yield
 
 
+def _cut_label(cut: float) -> str:
+    """A border as the shortest float32 t-boost splits at, written out: 1000000, never 1e+06."""
+    return str(np.format_float_positional(np.float32(cut), trim="-"))
+
+
 def _cell_labels(cuts: list[float]) -> list[str]:
     """Labels of a numeric axis: the missing cell, then t-boost's right-closed intervals."""
     if not cuts:
         return [_MISSING_LABEL, "All values"]
-    labels = [_MISSING_LABEL, f"<= {cuts[0]:.6g}"]
-    labels.extend(f"> {low:.6g} to <= {high:.6g}" for low, high in zip(cuts, cuts[1:]))
-    labels.append(f"> {cuts[-1]:.6g}")
+    shown = [_cut_label(cut) for cut in cuts]
+    labels = [_MISSING_LABEL, f"≤ {shown[0]}"]
+    labels.extend(f"({low}, {high}]" for low, high in zip(shown, shown[1:]))
+    labels.append(f"> {shown[-1]}")
     return labels
 
 
@@ -556,25 +563,52 @@ class _RoundProgress:
     bag must reach that check on each of its rounds. Haute's progress gate
     always passes a fit's final round, and once one bag reaches ``n_trees`` the
     others keep reporting, so during the fit progress stops one round short of
-    the ceiling and :meth:`finish` reports the final round once. The loss curve
-    is built after the fit from the complete per-bag history.
+    the ceiling and :meth:`finish` reports the final round once.
+
+    Each report carries a live loss row for the round shown: the mean of every
+    bag's latest train and validation deviance, so a report that repeats the
+    round updates its row as slower bags catch up. The fit's loss curve is
+    built afterwards from the complete per-bag history.
     """
 
     def __init__(self, on_iteration: IterationCallback | None, total: int) -> None:
         self._on_iteration = on_iteration
         self._total = total
         self._reached = 0
+        self._latest: dict[int, dict[str, float]] = {}
 
     def __call__(self, info: dict[str, Any]) -> None:
         if self._on_iteration is None:
             return
         self._reached = max(self._reached, int(info["round"]))
-        self._on_iteration(min(self._reached, self._total - 1), self._total, {}, None)
+        self._latest[int(info["bag"])] = {
+            key: float(info[key])
+            for key in ("train_deviance", "eval_deviance")
+            if info.get(key) is not None and math.isfinite(info[key])
+        }
+        self._report(min(self._reached, self._total - 1))
 
     def finish(self) -> None:
         """Report the final round once, when a bag boosted to the ceiling."""
         if self._on_iteration is not None and self._reached >= self._total:
-            self._on_iteration(self._total, self._total, {}, None)
+            self._report(self._total)
+
+    def _report(self, iteration: int) -> None:
+        assert self._on_iteration is not None
+        row = {"iteration": float(iteration)}
+        for key in ("train_deviance", "eval_deviance"):
+            values = [bag[key] for bag in self._latest.values() if key in bag]
+            if values:
+                row[key] = float(np.mean(values))
+        metrics = {
+            label: row[key]
+            for key, label in (
+                ("train_deviance", "deviance"),
+                ("eval_deviance", "validation_deviance"),
+            )
+            if key in row
+        }
+        self._on_iteration(iteration, self._total, metrics, row)
 
 
 def _loss_history(evals: dict[str, Any] | None) -> list[dict[str, float]]:

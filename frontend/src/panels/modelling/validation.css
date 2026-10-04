@@ -88,6 +88,21 @@
   color: inherit;
   font-weight: inherit;
 }
+/* Rating and term tables: each label on one line, the table scrolling
+   sideways when the pane is narrow, and only as wide as its columns. */
+.term-table {
+  width: auto;
+  min-width: min(100%, 360px);
+}
+.term-table th,
+.term-table td {
+  white-space: nowrap;
+}
+.term-table tbody th {
+  max-width: 28ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .validation-bin-detail {
   min-height: 38px;
   font-size: 12px;

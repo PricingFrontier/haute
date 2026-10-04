@@ -101,7 +101,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // restores about 0.5 KiB.
 // Main's bug-fix round (PR #293) and t-boost's validation-fit split pane bring
 // it to 1,594.4 KiB; 1,595 KiB, approved, restores about 0.6 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1595
+// Showing EBM terms and t-boost tables as tables first, with a chart on request
+// (the shared term view, level table and interaction lines), brings it to
+// 1,595.2 KiB; 1,597 KiB, approved, restores about 1.8 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1597
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

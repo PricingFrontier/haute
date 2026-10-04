@@ -293,14 +293,30 @@ class EBMModel:
             labels = [_MISSING_LABEL, *(str(category) for category, _ in ordered)]
             return {"feature": feature, "type": "nominal", "labels": labels}
         cuts = [float(cut) for cut in np.asarray(binning, dtype=np.float64)]
-        labels = [_MISSING_LABEL]
-        if not cuts:
-            labels.append("all values")
-        else:
-            labels.append(f"< {cuts[0]:.6g}")
-            labels.extend(f"{low:.6g} to < {high:.6g}" for low, high in zip(cuts, cuts[1:]))
-            labels.append(f">= {cuts[-1]:.6g}")
-        return {"feature": feature, "type": "continuous", "labels": labels, "cuts": cuts}
+        return {
+            "feature": feature,
+            "type": "continuous",
+            "labels": _cell_labels(cuts),
+            "cuts": cuts,
+        }
+
+
+def _cut_label(cut: float) -> str:
+    """A bin border to six significant figures, written out: 1000000, never 1e+06."""
+    return str(
+        np.format_float_positional(cut, precision=6, unique=True, fractional=False, trim="-")
+    )
+
+
+def _cell_labels(cuts: list[float]) -> list[str]:
+    """Labels of a numeric axis: the missing bin, then EBM's left-closed intervals."""
+    if not cuts:
+        return [_MISSING_LABEL, "All values"]
+    shown = [_cut_label(cut) for cut in cuts]
+    labels = [_MISSING_LABEL, f"< {shown[0]}"]
+    labels.extend(f"[{low}, {high})" for low, high in zip(shown, shown[1:]))
+    labels.append(f"≥ {shown[-1]}")
+    return labels
 
 
 class EBMAlgorithm(BaseAlgorithm):
