@@ -307,14 +307,15 @@ Out of scope (owned by neighbouring components):
   blank lines inside a completed module block are stripped, and unmatched
   module-level starts are ignored.
 
-  Any other module-level statement from the constructor on (a constant, a helper function,
-  trailing code) is neither preamble nor a preserved block, so regeneration would drop it.
-  `_ast_helpers.unkept_module_statements` finds each one: everything except the constructor,
-  the `global_constants` binding, preserved blocks, node functions, `pipeline.submodel(...)`
-  registrations and `connect` chains. The editor document reports each as an
-  `unkept_module_statement` diagnostic naming its lines and the two fixes (move it above the
-  constructor, or wrap it in preserve markers), which degrades the document, so the file is
-  never regenerated without it.
+  Regeneration keeps only the docstring, the `haute`/`polars` imports (any `from haute import
+  ...` counts, and bounds the preamble as `import haute` does), the preamble, preserved blocks,
+  and from the constructor on the constructor, the `global_constants` binding, node functions,
+  `pipeline.submodel(...)` registrations and `connect` chains. Any other module statement (an
+  import above `import haute`, a constant, helper or trailing code after the constructor) would
+  be dropped. `_ast_helpers.unkept_module_statements` finds each one, and the editor document
+  reports it as an `unkept_module_statement` diagnostic naming its lines and the two fixes (move
+  it between the imports and the constructor, or wrap it in preserve markers), which degrades
+  the document, so the file is never regenerated without it.
 - **Global constants.** When the graph has global constants, or its declared constants file
   failed to load, the pipeline constructor gets `global_constants="config/global_constants.json"`
   after `description`, and every generated file, pipeline and submodel alike, binds

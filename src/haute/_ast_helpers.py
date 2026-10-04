@@ -724,15 +724,15 @@ def _module_boundaries(
                     statement.end_lineno or statement.lineno,
                 )
         elif isinstance(statement, ast.ImportFrom) and statement.module == "haute":
-            imported_names = {alias.name for alias in statement.names}
+            # Every haute import is regenerated as ``import haute``, so it
+            # bounds the preamble whatever names it brings in.
             for alias in statement.names:
                 if alias.name == constructor_name:
                     constructor_aliases.add(alias.asname or alias.name)
-            if imported_names and imported_names <= {constructor_name}:
-                last_standard_line = max(
-                    last_standard_line,
-                    statement.end_lineno or statement.lineno,
-                )
+            last_standard_line = max(
+                last_standard_line,
+                statement.end_lineno or statement.lineno,
+            )
 
     def is_constructor(expr: ast.expr) -> bool:
         if not isinstance(expr, ast.Call):
@@ -836,6 +836,21 @@ def _is_generated_call(statement: ast.stmt, receiver: str) -> bool:
     return all(method == "connect" for method in methods)
 
 
+def _is_docstring(statement: ast.stmt) -> bool:
+    return (
+        isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Constant)
+        and isinstance(statement.value.value, str)
+    )
+
+
+def _is_standard_import(statement: ast.stmt) -> bool:
+    """An import codegen regenerates: of ``haute``/``polars`` only, or from ``haute``."""
+    if isinstance(statement, ast.Import):
+        return all(alias.name in {"haute", "polars"} for alias in statement.names)
+    return isinstance(statement, ast.ImportFrom) and statement.module == "haute"
+
+
 def _is_global_constants_binding(statement: ast.stmt, receiver: str) -> bool:
     """``global_constants = <receiver>.global_constants``, which codegen writes."""
     return (
@@ -859,13 +874,14 @@ def unkept_module_statements(
 ) -> list[tuple[int, int]]:
     """One-based, inclusive line spans of module statements a save would drop.
 
-    Codegen regenerates a module from the constructor (or its first node
-    function) on, re-emitting only the constructor, the ``global_constants``
-    binding, preserved blocks, node functions, submodel registrations and
-    ``connect`` chains. Any other statement there (a constant, a helper
-    function, trailing code) is reported; above the constructor it is
-    preamble, and inside preserve markers it is a preserved block, so both
-    are kept.
+    Codegen rewrites the whole module from the parsed graph. Above the
+    constructor it keeps the docstring, the ``haute``/``polars`` imports and
+    the preamble (what lies between those imports and the constructor); from
+    the constructor on it re-emits only the constructor, the
+    ``global_constants`` binding, node functions, submodel registrations and
+    ``connect`` chains; and it keeps preserved blocks wherever they sit. Any
+    other statement (an import above ``import haute``, a constant or helper
+    after the constructor, trailing code) is reported.
     """
     if tree is None:
         tree = ast.parse(source)
@@ -873,17 +889,23 @@ def unkept_module_statements(
     boundaries = _module_boundaries(
         tree, line_count=len(lines), receiver=receiver, constructor_name=constructor_name
     )
-    if boundaries.last_standard_line == 0:
-        return []
+    if boundaries.generated_start_line > len(lines):
+        return []  # no constructor or node function: not a module codegen writes
     preserved = _module_preserve_spans(lines)
     spans: list[tuple[int, int]] = []
-    for statement in tree.body:
-        if statement.lineno < boundaries.generated_start_line:
-            continue
+    for index, statement in enumerate(tree.body):
         decorators = getattr(statement, "decorator_list", [])
         start = min([statement.lineno, *(decorator.lineno for decorator in decorators)])
         end = statement.end_lineno or statement.lineno
         if any(first <= start - 1 and end - 1 <= last for first, last in preserved):
+            continue
+        if statement.lineno < boundaries.generated_start_line:
+            if not (
+                (index == 0 and _is_docstring(statement))
+                or _is_standard_import(statement)
+                or start > boundaries.last_standard_line
+            ):
+                spans.append((start, end))
             continue
         if (
             _is_receiver_construction(statement, receiver, boundaries.is_constructor)

@@ -369,6 +369,22 @@ class TestUnkeptModuleStatements:
 
         assert unkept_module_statements(source) == [(4, 4), (10, 10), (12, 13), (19, 19)]
 
+    def test_statements_a_save_drops_before_the_constructor_are_reported(self):
+        source = 'import numpy as np\nimport haute\n\nRATE = 2\n\npipeline = haute.Pipeline("p")\n'
+
+        assert unkept_module_statements(source) == [(1, 1)]
+
+    def test_a_from_haute_import_bounds_the_preamble_like_import_haute(self):
+        source = (
+            "from haute import Pipeline, Submodel\n\n"
+            "RATE = 2\n\n"
+            'pipeline = Pipeline("p")\n'
+            "LATE = 3\n"
+        )
+
+        assert parse_pipeline_source(source).preamble == "RATE = 2"
+        assert unkept_module_statements(source) == [(6, 6)]
+
     def test_preamble_preserved_blocks_and_generated_statements_are_kept(self):
         source = _make_pipeline(
             preamble="RATE = 1.05",

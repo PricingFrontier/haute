@@ -104,10 +104,9 @@ Only a valid sidecar supplies source selection. Corrupt or unreadable content le
 bytes untouched, uses presentation-only default positions, degrades the document, and blocks
 preview because active-source state is untrusted. Recovery revisions hash raw dependency
 bytes and explicit missing sentinels rather than requiring a valid `PipelineGraph`.
-A module-level statement after the pipeline constructor that a save would drop (see
-[codegen](../codegen/high-level.md)) is an `unkept_module_statement` diagnostic on its lines,
-so the document is degraded until the statement moves above the constructor or into preserve
-markers. Save refuses a document that is not ready on disk with `409`, naming each diagnostic's
+A module-level statement that a save would drop (see [codegen](../codegen/high-level.md))
+is an `unkept_module_statement` diagnostic on its lines, so the document is degraded until the
+statement moves between the imports and the constructor or into preserve markers. Save refuses a document that is not ready on disk with `409`, naming each diagnostic's
 location, message and fix, and leaves the file untouched.
 Every mutation of a persisted document, including Save, names the `source_revision` it was
 based on and fails closed when the on-disk document has moved; initial creation names no

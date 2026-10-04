@@ -1716,7 +1716,7 @@ def name_violations_payload(violations: Sequence[NameViolation]) -> list[Pipelin
 def _unkept_statement_diagnostics(
     source: str, *, source_file: str
 ) -> list[PipelineRecoveryDiagnostic]:
-    """One diagnostic per statement after the constructor that a save would drop.
+    """One diagnostic per module statement that a save would drop.
 
     Each degrades the document, so nothing regenerates the file without the
     statement until it moves into the preamble or a preserved block.
@@ -1731,7 +1731,7 @@ def _unkept_statement_diagnostics(
                 code="unkept_module_statement",
                 scope="pipeline",
                 message=(
-                    f"`{excerpt}` is written after the pipeline constructor, where a save "
+                    f"`{excerpt}` is outside the preamble and preserved blocks, where a save "
                     "would drop it."
                 ),
                 source_file=source_file,
@@ -1742,9 +1742,9 @@ def _unkept_statement_diagnostics(
                     end_column=len(lines[end_line - 1]),
                 ),
                 remediation=(
-                    "Move it above `pipeline = haute.Pipeline(...)`, where it becomes part of "
-                    "the preamble, or wrap it in `# haute:preserve-start` and "
-                    "`# haute:preserve-end` lines."
+                    "Move it between the `import haute` line and `pipeline = haute.Pipeline(...)`, "
+                    "where it becomes part of the preamble, or wrap it in "
+                    "`# haute:preserve-start` and `# haute:preserve-end` lines."
                 ),
             )
         )
