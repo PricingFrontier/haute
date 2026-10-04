@@ -1771,6 +1771,127 @@ class TestStandaloneSubmodels:
 
         assert namespace["pipeline"].run(source="live").columns == ["year", "rate"]
 
+    def test_a_submodel_module_imports_as_a_module_and_is_released_after_the_run(
+        self, tmp_path
+    ) -> None:
+        import sys
+
+        _path, pipeline = _submodel_pipeline(
+            tmp_path,
+            'pipeline.submodel("modules/factors.py", "factors")\n'
+            'pipeline.connect("quotes", "factors", target_port="rows")\n',
+        )
+        module = tmp_path / "modules" / "factors.py"
+        module.write_text(
+            _FACTORS_MODULE.replace(
+                "import polars as pl\n",
+                "import polars as pl\n"
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass\n"
+                "class Rate:\n"
+                '    value: "float"\n',
+            ),
+            encoding="utf-8",
+        )
+        modules_before = set(sys.modules)
+
+        assert pipeline.run(source="live")["factor"].to_list() == [1.2]
+        assert set(sys.modules) == modules_before
+
+    def test_a_pipeline_whose_nodes_all_live_in_a_submodel_runs_and_scores(self, tmp_path) -> None:
+        (tmp_path / "modules").mkdir()
+        (tmp_path / "modules" / "whole.py").write_text(
+            "import haute\n"
+            "import polars as pl\n\n"
+            "submodel = haute.Submodel(\n"
+            '    "whole",\n'
+            '    definition_id="definition_whole",\n'
+            "    input_ports=[],\n"
+            '    output_ports=[{"name": "out", "source": {"nodeId": "doubled"}}],\n'
+            '    pipeline_dir="..",\n'
+            ")\n\n\n"
+            "@submodel.polars\n"
+            "def rows() -> pl.LazyFrame:\n"
+            '    return pl.LazyFrame({"x": [1]})\n\n\n'
+            "@submodel.polars\n"
+            "def doubled(rows: pl.LazyFrame) -> pl.LazyFrame:\n"
+            '    return rows.with_columns(y=pl.col("x") * 2)\n\n\n'
+            'submodel.connect("rows", "doubled")\n',
+            encoding="utf-8",
+        )
+        source = (
+            "import haute\n\n"
+            'pipeline = haute.Pipeline("p")\n'
+            'pipeline.submodel("modules/whole.py", "whole")\n'
+        )
+        path = tmp_path / "main.py"
+        path.write_text(source, encoding="utf-8")
+        namespace: dict = {"__file__": str(path), "__name__": "pipeline_under_test"}
+        exec(compile(source, str(path), "exec"), namespace)
+        pipeline = namespace["pipeline"]
+
+        assert pipeline.run(source="live")["y"].to_list() == [2]
+        assert pipeline.score(pl.DataFrame({"x": [5]}))["y"].to_list() == [10]
+        with pytest.raises(TypeError, match=r"sources are live\."):
+            pipeline.run()
+
+    def test_a_hooks_df_input_from_a_port_comes_first(self, tmp_path) -> None:
+        from tests.conftest import write_node_config
+
+        rated_config = write_node_config(
+            tmp_path,
+            NodeType.RATING_STEP,
+            "rated",
+            {
+                "tables": [
+                    {
+                        "factors": ["year"],
+                        "outputColumn": "rel",
+                        "entries": [{"year": 2010, "value": 1.5}],
+                    }
+                ],
+                "combinedOutputs": [],
+            },
+        )
+        (tmp_path / "modules").mkdir()
+        (tmp_path / "modules" / "rating.py").write_text(
+            "import haute\n"
+            "import polars as pl\n\n"
+            "submodel = haute.Submodel(\n"
+            '    "rating",\n'
+            '    definition_id="definition_rating",\n'
+            '    input_ports=[{"name": "rows", "targets": [{"nodeId": "rated"}]}],\n'
+            '    output_ports=[{"name": "out", "source": {"nodeId": "rated"}}],\n'
+            '    pipeline_dir="..",\n'
+            ")\n\n\n"
+            "@submodel.polars\n"
+            "def lookup() -> pl.LazyFrame:\n"
+            '    return pl.LazyFrame({"note": ["n"]})\n\n\n'
+            f'@submodel.rating_step(config="{rated_config}")\n'
+            "def rated(df: pl.LazyFrame, lookup: pl.LazyFrame) -> pl.LazyFrame:\n"
+            '    return df.join(lookup, how="cross")\n\n\n'
+            'submodel.connect("lookup", "rated")\n',
+            encoding="utf-8",
+        )
+        source = (
+            "import haute\n"
+            "import polars as pl\n\n"
+            'pipeline = haute.Pipeline("p")\n\n\n'
+            "@pipeline.polars\n"
+            "def quotes() -> pl.LazyFrame:\n"
+            '    return pl.LazyFrame({"year": [2010]})\n\n\n'
+            'pipeline.submodel("modules/rating.py", "rating")\n'
+            'pipeline.connect("quotes", "rating", target_port="rows")\n'
+        )
+        path = tmp_path / "main.py"
+        path.write_text(source, encoding="utf-8")
+        namespace: dict = {"__file__": str(path), "__name__": "pipeline_under_test"}
+        exec(compile(source, str(path), "exec"), namespace)
+
+        assert namespace["pipeline"].run(source="live").to_dicts() == [
+            {"year": 2010, "rel": 1.5, "note": "n"}
+        ]
+
     def test_a_file_without_a_submodel_is_refused_naming_it(self, tmp_path) -> None:
         _path, pipeline = _submodel_pipeline(
             tmp_path,

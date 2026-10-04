@@ -163,7 +163,11 @@ execute a copy of the pipeline in which every occurrence is replaced by its defi
 named `<occurrence>.<node>`. An edge into an occurrence's input port feeds every node the port
 targets, an edge out of an output port leaves the node the port names, as flattening wires them
 for `haute run`, and a submodel's node with several inputs receives them in its parameters'
-order (the pipeline's own nodes keep their connection order, as without submodels). Two
+order: an input named by a parameter (its source's name, or the port's) takes that place, and
+the others fill the remaining parameters in order, as a hook's `df` names no input (the
+pipeline's own nodes keep their connection order, as without submodels). Each definition's
+module is in `sys.modules` while the run uses it, and a pipeline whose nodes all live in
+submodels runs too. Two
 occurrences of one definition each run its nodes under their own names.
 `@pipeline.instance` registrations are not executable on this live-object surface: the
 decorator records an internal instance marker, and `run()`/`score()` raise `ExecutionError`
