@@ -330,8 +330,10 @@ For CatBoost, GPU training is set in the **TRAIN** pane rather than here.
 
     Under Poisson, Gamma or Tweedie the offset is an exposure: the model learns a rate and
     scores the rate times the offset. Under RMSE the offset is added to the prediction as it
-    is. Logloss takes no offset, and MAE and CrossEntropy are not available. t-boost scores
-    numeric features as 32-bit floats. The `.tboost` file is t-boost's own JSON model with
+    is. Logloss takes no offset, and MAE and CrossEntropy are not available. A categorical
+    value the model never saw, such as a make that only appears in the validation rows or
+    arrives after training, never fails: t-boost scores it in its default cell (the
+    encoder's base level). t-boost scores numeric features as 32-bit floats. The `.tboost` file is t-boost's own JSON model with
     Haute's record in its metadata, so it describes its own inputs and offset, and plain
     t-boost (0.7 or later) can read it too.
 

@@ -279,14 +279,78 @@ def test_a_feature_named_like_the_contribution_frames_columns_still_explains() -
     np.testing.assert_allclose(shapley.sum(axis=1), contributions.values.sum(axis=1), atol=1e-9)
 
 
-def test_unseen_levels_fail_and_nulls_score_in_the_missing_level() -> None:
-    data = frame()
-    model = fit_adapter(data).model
+def test_unseen_levels_score_in_t_boosts_default_cell_and_nulls_in_the_missing_level() -> None:
+    data = frame(3000, seed=4)
+    model = fit_adapter(data, params={**FAST, "learning_rate": 0.3}).model
     assert None in model.categorical_levels["region"]
-    with pytest.raises(HauteValidationError, match="not trained on: 'mars'"):
-        model.predict(data.with_columns(pl.lit("mars").alias("region")))
+    unseen = data.head(5).with_columns(pl.lit("mars").alias("region"))
+    assert model.unseen_levels(unseen) == {"region": ["mars"]}
+    table = next(
+        t for t in TBoostAlgorithm().tboost_tables(model)["tables"] if t["features"] == ["region"]
+    )
+    default_cell = json.loads(model.estimator.tables(model.prepared(data)))
+    default = next(
+        t["axes"][0]["default_cell"]
+        for t in default_cell["tables"]
+        if t["feature_names"] == ["region"]
+    )
+    levels = {
+        level["cell"]: level["members"]
+        for t in default_cell["tables"]
+        if t["feature_names"] == ["region"]
+        for level in t["axes"][0]["levels"]
+    }
+    contributions = model.contributions(unseen)
+    column = contributions.terms.index(("region",))
+    label = ", ".join(
+        "Missing" if member == "__t_boost_missing__" else member for member in levels[default]
+    )
+    shown = table["axes"][0]["labels"].index(label)
+    assert contributions.values[:, column] == pytest.approx([table["scores"][shown]] * 5, abs=1e-9)
     nulls = data.with_columns(pl.lit(None, dtype=pl.String).alias("region"))
     assert np.isfinite(model.predict(nulls)).all()
+
+
+def test_validation_rows_with_values_the_training_rows_lack_train_and_are_logged(
+    tmp_path: Path,
+) -> None:
+    from structlog.testing import capture_logs
+
+    rng = np.random.default_rng(5)
+    # A many-levelled feature: a random split leaves some levels in validation only.
+    data = frame(900).with_columns(
+        make=pl.Series([f"M{i}" for i in rng.integers(0, 400, 900)]),
+    )
+    with capture_logs() as logs:
+        _job, result = train(
+            tmp_path,
+            target="claims",
+            loss="Poisson",
+            offset="exposure",
+            data=data,
+            feature_columns=["region", "age", "make"],
+        )
+    assert result.diagnostics_errors == []
+    unseen = [
+        entry for entry in logs if entry["event"] == "tboost_validation_values_not_in_training"
+    ]
+    assert unseen and all(entry["feature"] == "make" for entry in unseen)
+    assert all(entry["scored_as"] == "default_cell" for entry in unseen)
+
+
+def test_a_declared_domain_does_not_hide_validation_values_the_training_rows_lack() -> None:
+    from structlog.testing import capture_logs
+
+    data = frame()
+    declared = {"region": [*LEVELS, "west", None]}
+    validation = frame(200, seed=3).with_columns(
+        region=pl.when(pl.col("age") < 40).then(pl.lit("west")).otherwise(pl.col("region"))
+    )
+    with capture_logs() as logs:
+        model = fit_adapter(data, categorical_levels=declared, eval_df=validation).model
+    entries = [e for e in logs if e["event"] == "tboost_validation_values_not_in_training"]
+    assert [(e["feature"], e["examples"]) for e in entries] == [("region", ["west"])]
+    assert model.unseen_levels(validation) == {"region": ["west"]}
 
 
 def test_reordered_categories_score_identically() -> None:

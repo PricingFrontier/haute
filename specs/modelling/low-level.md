@@ -1702,8 +1702,10 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
   and the refit passes none; with the refit off, the published model is the early-stopped
   fit; fit evidence records the trees kept and `validation` or `none` as the stopping reason;
   the loss history is the per-round bag mean of `evals_result_`; contributions plus bias rebuild the margin for every row and per-feature
-  Shapley values sum to the same total; a categorical value outside the fitted levels fails
-  while a null scores; a fit is identical across thread allotments for a seed; a group plan's column, which is not a
+  Shapley values sum to the same total; a categorical value outside the fitted levels scores
+  in t-boost's default cell and a null in the missing level; a training run whose validation
+  rows hold levels the training rows lack completes and logs
+  `tboost_validation_values_not_in_training`, including a level a declared domain lists; a fit is identical across thread allotments for a seed; a group plan's column, which is not a
   feature, reaches the selection and final fits as `groups`; a model with no tables (t-boost's
   `intercept` placeholder) has no terms, an empty table report and still explains; the table report's scores, read at the cell each row's feature
   values select (right-closed numeric intervals, categorical member levels, row-major axes,
@@ -2188,10 +2190,16 @@ used for staged input.
   weight and offset, and the adapter kwargs carry it as `groups`. Every selection, tuning and
   final fit is a `_new_evaluation_job` child with the same evaluation, so each passes it. The
   fitted levels come from `fit_categorical_levels`; `TBoostModel.prepared(frame)` selects the
-  features in contract order, checks contract categoricals against those levels with the
-  shared `require_known_levels` check (nulls pass) and casts them to `String`, and casts every
-  other feature to `Float64`, so a Date or
-  Boolean feature is numeric exactly as `encode_frame` makes it. `_rows_kwargs` builds one
+  features in contract order, casts contract categoricals to `String` without checking them
+  against the levels (t-boost scores a value it never saw under `unknown_category`, which
+  Haute owns and sets to `UNKNOWN_CATEGORY` = `default_cell`), and casts every other feature
+  to `Float64`, so a Date or
+  Boolean feature is numeric exactly as `encode_frame` makes it. `unseen_levels(frame)` lists
+  each categorical feature's values outside t-boost's fitted levels (`categories_`, not the
+  contract's levels, which may be a wider declared domain); a fit with validation rows logs
+  `tboost_validation_values_not_in_training` per feature whose validation values the training
+  rows never held (compared with the training rows' own distinct values), with the count, up
+  to five examples and the policy. `_rows_kwargs` builds one
   frame's arguments, the same for the training and the evaluation rows: the offset column is
   t-boost's `exposure` (the exponent of the log baseline) under a log link and its link-scale
   `offset` under the identity link. t-boost's `PrecisionWarning` about its float32 features is
@@ -2257,7 +2265,8 @@ used for staged input.
   `early_stopping_adaptive`, `leaf_refine_steps`, `interaction_gain_hurdle`, `prune`,
   `prune_se_rule`, `prune_n_folds`, `prune_min_stability`, `cat_smooth`,
   `cat_min_data_per_group` and `cat_direct_max_levels`; Haute owns `objective`, `tweedie_rho`,
-  `seed`, `n_jobs`, `monotone_constraints` and `categorical_features`. Its `round_key` is
+  `seed`, `n_jobs`, `monotone_constraints`, `categorical_features` and `unknown_category`. Its
+  `round_key` is
   `n_trees`, searchable by tuning, its `refit_policy` is `fixed_budget`, and `tboost_value_issue`
   requires `n_trees` to be a positive integer. Every other value rule (depth and order ranges,
   fractions) is t-boost's own, raised by the fit.

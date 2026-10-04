@@ -79,7 +79,8 @@ the model when you copy the model elsewhere in the project. XGBoost, LightGBM an
 the bare estimator, so it loads only with the feature contract Model Training logged
 beside it, and only under the `interpret-core` version that contract records; a
 contract for a different loss or version is refused rather than scored. Categorical
-values a tree or EBM model never saw fail instead of scoring as missing.
+values an XGBoost, LightGBM or EBM model never saw fail instead of scoring as missing; a
+t-boost model scores them in its default cell (the encoder's base level).
 
 A CatBoost model file does not record its own offset. Models trained by Haute record it
 in the model; for any other CatBoost model the feature contract must say whether the

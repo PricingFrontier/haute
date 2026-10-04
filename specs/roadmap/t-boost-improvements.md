@@ -24,15 +24,15 @@ t-boost 0.7.0 (4 October 2026) answers most of this specification. Haute require
 | R4 | Not in 0.7.0. | Not used; t-boost's own pruning CV runs inside each fit. |
 | R5 | A `metadata` slot kept by both formats. | The Haute record lives in it. |
 | R6 | `offset=` on fit and scoring (an omitted offset scores as zero rather than raising). | `RMSE` offsets; Haute always adds the offset itself when scoring. |
-| R7 | `unknown_category` and `categories_`. | Not yet used: Haute's own check stays, because a declared categorical domain may hold levels the training rows lack. |
+| R7 | `unknown_category` and `categories_`. | Haute no longer pre-checks levels: it sets `unknown_category="default_cell"`, so an unseen value never fails a training run or a score, and logs validation rows holding one. R13 asks for a better cell. |
 | R8 | `exposure` under `squared_error` raises. | Haute never passes it. |
 | R9 | `predict_contributions(return_format="matrix")` returning `ContributionMatrix` with tuple terms; no placeholder term for an intercept-only model. | Used for explanations and SHAP; feature names may contain `:`. |
 | R10 | A public `cell_indices`. | Not yet used; `TBOOST-02` and `TBOOST-03` in the [t-boost roadmap](t-boost.md) will. |
 | R11 | Typed top-level imports; `PrecisionWarning` once per estimator. | Imports from `t_boost`; the warning is still silenced inside the adapter. |
 | R12 | Envelope `schema_version` 5, refusing newer headers. | A model saved before 0.7.0 loads with a retrain message. |
 
-The requirements below are kept as written, as the record of what was asked. R4 is the
-one open request.
+The requirements below are kept as written, as the record of what was asked. R4 is
+open, and R13 was added on 4 October 2026 after 0.7.0.
 
 ## How Haute uses t-boost
 
@@ -81,6 +81,7 @@ Haute's adapter also works around several smaller behaviours, listed as R4 to R1
 | R10 | Public cell indices and documented border semantics | P2 | Cell-level validation and unfolding into rating tables |
 | R11 | Typed top-level imports and a quieter precision warning | P3 | Cleaner adapter |
 | R12 | A documented saved-model compatibility rule | P3 | An exact retrain rule in Haute |
+| R13 | Unseen categories score as the rare level, and unseen values are countable | P1 | New levels priced like rare ones, and reported |
 
 ## Requirements
 
@@ -400,6 +401,46 @@ unreadable one raises `SerializationError` naming both versions.
 
 **Unlocks in Haute.** Haute states its own rule exactly ("a `.tboost` file loads under
 any t-boost that reads its schema") and tests it.
+
+### R13. Unseen categories score as the rare level
+
+**Observed in 0.7.0.** `unknown_category="default_cell"` scores a categorical value the
+fit never saw in the axis's `default_cell`, documented as "the encoder's base level";
+`"error"` refuses it. Haute must not refuse: a high-cardinality feature (a vehicle make)
+routinely has levels that only the validation rows hold under a random split, and new
+levels arrive in production. But the base level is the wrong price for them. A make the
+book has never seen most resembles the makes it has barely seen, and t-boost already
+pools those into the `<rare>` level, whose relativity is learned from data.
+
+**Proposal.** `unknown_category="rare"`: an unseen value scores in the axis's rare cell,
+the cell of the pooled `<rare>` level. Recommended as the default.
+
+**Semantics.**
+
+- Every categorical axis of every table has a rare cell, in main effects and in
+  interactions alike, so an unseen value is placed consistently in every table that uses
+  the feature.
+- When the fit pooled no level (every level had enough data), the rare cell still exists.
+  Its value must be defined and documented; scoring it as `default_cell` is acceptable,
+  and `tables()` should mark that cell (`synthetic: true`) so a reader knows no level was
+  pooled.
+- `predict*`, `predict_contributions`, `tables`, `cell_indices` and
+  `actual_vs_expected` all place an unseen value in that same cell; `tables()` lists the
+  rare cell's members as the pooled training levels.
+- A null is never unknown: it stays in the missing level.
+- `unseen_values(X)` returns, per categorical feature, each value outside the fitted
+  levels with its row count (and, given `sample_weight`/`exposure`, its mass), so callers
+  report coverage without re-deriving the levels.
+
+**Tests t-boost should ship.** An unseen value scores exactly as a level pooled into
+`<rare>` does, in a main effect and in an interaction; with no pooled level it scores as
+the documented fallback; every scoring entry point agrees; a null scores in the missing
+level; `unseen_values` counts match a direct count.
+
+**Unlocks in Haute.** Haute sets `unknown_category="rare"`, so a new make is priced as a
+rare make in validation, final test and production, and reports the unseen counts from
+`unseen_values` in the training result and in Model Scoring (`TBOOST-09` in the
+[t-boost roadmap](t-boost.md)).
 
 ## Behaviour Haute relies on today
 

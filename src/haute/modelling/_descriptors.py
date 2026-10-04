@@ -681,6 +681,7 @@ TBOOST = AlgorithmDescriptor(
             "n_jobs",
             "monotone_constraints",
             "categorical_features",
+            "unknown_category",
         }
     ),
     # A study may search the round ceiling like any other parameter.

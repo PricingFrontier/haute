@@ -260,7 +260,8 @@
       "n_jobs",
       "objective",
       "seed",
-      "tweedie_rho"
+      "tweedie_rho",
+      "unknown_category"
     ],
     "round_key": "n_trees",
     "round_key_aliases": [

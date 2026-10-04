@@ -915,9 +915,11 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   enters as t-boost's exposure under the log-link losses (the model scores the rate times the
   offset) and is added verbatim to the raw score under `RMSE`; a classification offset fails,
   as for the other new families.
-  Contract categoricals reach t-boost as strings, which it encodes itself; a value outside the
-  fitted levels fails before scoring (t-boost would score it in a default cell), nulls score
-  in the missing level, and every other feature is cast to `Float64`. Monotone constraints are
+  Contract categoricals reach t-boost as strings, which it encodes itself. A value outside the
+  fitted levels never fails, in training or scoring: t-boost scores it in the cell its
+  `unknown_category` policy names, which Haute sets (`default_cell`, the encoder's base level),
+  and a fit logs each feature whose validation rows hold such values. Nulls score in the
+  missing level, and every other feature is cast to `Float64`. Monotone constraints are
   supported; feature weights and an interaction list are not (the order cap is a parameter).
   The model is its tables: results show every table with its cells' link-scale values,
   relativities under a log link, and training mass (weight times the exposure a log-link
