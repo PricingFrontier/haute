@@ -917,8 +917,9 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   as for the other new families.
   Contract categoricals reach t-boost as strings, which it encodes itself. A value outside the
   fitted levels never fails, in training or scoring: t-boost scores it in the cell its
-  `unknown_category` policy names, which Haute sets (`default_cell`, the encoder's base level),
-  and a fit logs each feature whose validation rows hold such values. Nulls score in the
+  `unknown_category` policy names, which Haute sets to `rare`: the pooled `<rare>` cell, priced
+  like the levels too thin to model alone, or t-boost's default cell on an axis that pooled
+  nothing. A fit logs each feature whose validation rows hold such values. Nulls score in the
   missing level, and every other feature is cast to `Float64`. Monotone constraints are
   supported; feature weights and an interaction list are not (the order cap is a parameter).
   The model is its tables: results show every table with its cells' link-scale values,
@@ -930,7 +931,7 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   staying one term. The `.tboost` file is t-boost's own JSON model document with Haute's
   record (features, categorical levels, task, link, offset and its link, class labels) in
   t-boost's `metadata` slot, so plain t-boost still loads it and no pickle is involved. It
-  needs t-boost 0.7 or later. Loading checks that
+  needs t-boost 0.8 or later. Loading checks that
   record against the native model (estimator kind, binary 0/1 classes, link, offset, feature
   order and categorical set) and refuses any file where they disagree.
 - **GPU training.** CatBoost keeps its own `task_type: "GPU"` parameter. A family whose

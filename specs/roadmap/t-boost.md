@@ -125,7 +125,7 @@ the table named and nothing written.
 **Evidence:** `src/haute/_rating.py` (one- to three-factor lookups and
 `_combine_rating_columns`); `src/haute/_banding_config.py`;
 `specs/rating/high-level.md`; t-boost 0.6.2 `tables()` axes (`borders`,
-`levels`, `default_cell`) and `factored`.
+`levels`, `default_cell`, `rare_pooled`, `unseen_cell`) and `factored`.
 
 ### TBOOST-04 — Model-to-model table comparison and premium attribution
 **Why:** A rate review compares a proposed model with the one in force. When
@@ -282,8 +282,9 @@ the share of scored rows (and exposure, when the offset is present) whose cell
 had zero training support, and a population stability index of the scored
 rows over each table's cells against training. Report too, per categorical
 feature, the rows and exposure holding values the fit never saw (scored in
-t-boost's unknown-category cell), in the training result for the validation
-and final-test rows and in Model Scoring; today these are only logged. Show it
+the rare cell; t-boost's `unseen_values` counts them), in the training result
+for the validation and final-test rows and in Model Scoring; today these are
+only logged. Show it
 in the preview and the trace of an individual quote.
 
 **Acceptance:** Scoring a book shifted towards young drivers reports a higher

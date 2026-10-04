@@ -1301,7 +1301,7 @@ requires-dist = [
     { name = "rustystats", specifier = ">=0.9.0,<0.10" },
     { name = "scipy", specifier = ">=1.16.0,<2" },
     { name = "structlog", specifier = ">=25.5.0,<26" },
-    { name = "t-boost", specifier = ">=0.7.0,<0.8" },
+    { name = "t-boost", specifier = ">=0.8.0,<0.9" },
     { name = "tomlkit", specifier = ">=0.15.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.40.0,<0.41" },
     { name = "watchfiles", specifier = ">=1.1.1,<2" },
@@ -3880,20 +3880,20 @@ wheels = [
 
 [[package]]
 name = "t-boost"
-version = "0.7.0"
+version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
     { name = "polars" },
     { name = "threadpoolctl" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7a/37/70d4166cdbc5ccc8aa93bac83170f3001918f5acea6eca544349f9a56c12/t_boost-0.7.0.tar.gz", hash = "sha256:df4c6127f6b555c300fa2513f0d8efe3e243a8b2353ef40d4cdadd055541ec4c", size = 1025399, upload-time = "2026-10-04T11:03:13.131Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b9/92/03458929783ef38c484bdb4025a1908f3fa02ae37c9624ec17051013a80f/t_boost-0.8.0.tar.gz", hash = "sha256:8accd06f78554a89c70b2180f2397387645ef06e1762d5f6c31a5632b169d8ae", size = 1028985, upload-time = "2026-10-04T16:10:14.627Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0f/bd/bf0b583eaa47b814800a7ac34f767fd0d01be0a7b69b4071f330c7e7bd85/t_boost-0.7.0-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:f43515a2ec1a3e526100a570b47e6a42a3fbf17529f6a65725a4f9ebe94a5079", size = 3012253, upload-time = "2026-10-04T11:03:02.574Z" },
-    { url = "https://files.pythonhosted.org/packages/e1/f7/38d258c57fedd922610eb3cb9231d2c31564b6f5cb8b255f46e0b940be7c/t_boost-0.7.0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:fb3c7e2d97fd2a2be67e56710a496a3b8cdaefafa18fda52feae79a8b4da492e", size = 2618987, upload-time = "2026-10-04T11:03:04.727Z" },
-    { url = "https://files.pythonhosted.org/packages/37/56/d657f20d15d6385039975062114632c051e2f24cac79a6aa0c0a69cc9ba6/t_boost-0.7.0-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:d722294baa69c35675d5803926b3418c79457b6a4f6ca21a30f5d115b634648b", size = 2683313, upload-time = "2026-10-04T11:03:07.396Z" },
-    { url = "https://files.pythonhosted.org/packages/59/98/f294552b396887fcec2ba1c48b8cfe234cff19b2216b10d86e175696ae6a/t_boost-0.7.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:13b1d44863c71cb41547a009a32e2aaff4efc676bc99b19cc4bc33ed6c0691f4", size = 3094875, upload-time = "2026-10-04T11:03:09.268Z" },
-    { url = "https://files.pythonhosted.org/packages/a8/b2/9c63f36de2cd067a4ea836b30a4e4c4794516ac9f205d77b06b5743f44c7/t_boost-0.7.0-cp310-abi3-win_amd64.whl", hash = "sha256:4c41d0d53882ddd7add394928550965afbf4027653c6cbd3e234cf2a32a0e542", size = 3005800, upload-time = "2026-10-04T11:03:11.164Z" },
+    { url = "https://files.pythonhosted.org/packages/2c/36/733283075410bbba691fcd21a87bbd10e0fe184d3fddf253d2445aa1ee17/t_boost-0.8.0-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:c749bf90bb1747f7dcbe17476993813cc1bcec58ccce39219b1a1309bc6ec389", size = 3022227, upload-time = "2026-10-04T16:10:05.193Z" },
+    { url = "https://files.pythonhosted.org/packages/d7/37/46241c13e69ef5ac7f440c9aebad44e9ab4d219c7ea4081380583a2fa650/t_boost-0.8.0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:6e4ad03c2946a2b353c0faef01954e0c07c16ebe6cb5fd82fd9f3f8ce7e6ffed", size = 2626997, upload-time = "2026-10-04T16:10:07.082Z" },
+    { url = "https://files.pythonhosted.org/packages/34/6f/4e8fa996fe998695c556ac03fb39e0977f44cae24a10ce065608f60bc77f/t_boost-0.8.0-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:ecf5c219709bfd34c6b09a1b63f489f3e7f15382e4be307729757a96a798663d", size = 2695457, upload-time = "2026-10-04T16:10:08.879Z" },
+    { url = "https://files.pythonhosted.org/packages/c3/b6/4def521ee103349a519f6a4595f0dc90dabb11a62020b036fd749393a9e6/t_boost-0.8.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:97983e783e1ca7556d9f815bd94e7fa3c2b2f3f138589c8b314004551102deb9", size = 3106850, upload-time = "2026-10-04T16:10:10.999Z" },
+    { url = "https://files.pythonhosted.org/packages/07/ea/d9e91f96f4c3316265f4da1945589ba9b14db2035471e147adfb39c28fe4/t_boost-0.8.0-cp310-abi3-win_amd64.whl", hash = "sha256:33da6113a3f03cf6bfe11422e367180a0a54a4bcc3de963aac48b1541e95a99d", size = 3017200, upload-time = "2026-10-04T16:10:12.623Z" },
 ]
 
 [[package]]

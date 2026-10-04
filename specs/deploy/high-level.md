@@ -398,7 +398,7 @@ unimportable, and the weekly container-smoke lane builds and serves the real ima
 A Databricks Model Serving deployment installs `haute` at the deploying version, whose core
 dependencies bring each model family's engine with the platform marker: `xgboost-cpu`
 (capped below 3.3) on Linux and Windows and `xgboost` on macOS, plus `lightgbm` (below 5),
-`interpret-core` (0.7.x) and `t-boost` (0.7.x). A container image adds the engine each bundled model needs
+`interpret-core` (0.7.x) and `t-boost` (0.8.x). A container image adds the engine each bundled model needs
 from its suffix instead: `.cbm` → `catboost`, `.ubj` → the installed XGBoost distribution
 plus `pandas`, `.lgbm` → `lightgbm` plus `pandas`, `.ebm` → `interpret-core` plus `pandas`,
 `.tboost` → `t-boost` (it scores Polars frames, so no `pandas`), and `.rsglm` → `rustystats`. A pickled or joblib artefact (`.pkl`, `.pickle`, `.joblib`) may

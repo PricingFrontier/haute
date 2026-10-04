@@ -279,33 +279,58 @@ def test_a_feature_named_like_the_contribution_frames_columns_still_explains() -
     np.testing.assert_allclose(shapley.sum(axis=1), contributions.values.sum(axis=1), atol=1e-9)
 
 
-def test_unseen_levels_score_in_t_boosts_default_cell_and_nulls_in_the_missing_level() -> None:
+def _export_axis(model: TBoostModel, data: pl.DataFrame, feature: str) -> dict[str, Any]:
+    export = json.loads(model.estimator.tables(model.prepared(data)))
+    return next(t for t in export["tables"] if t["feature_names"] == [feature])["axes"][0]
+
+
+def test_an_unseen_level_scores_like_the_pooled_rare_levels() -> None:
+    rng = np.random.default_rng(6)
+    n = 6000
+    # Ten common makes and 300 thin ones (about 4 rows each), which t-boost pools
+    # into <rare> (below cat_min_data_per_group).
+    common, thin = [f"C{i}" for i in range(10)], [f"T{i}" for i in range(300)]
+    make = rng.choice(common + thin, n, p=[0.08] * 10 + [0.2 / 300] * 300)
+    rate = np.exp(-2 + np.where(np.isin(make, thin), 0.5, 0.0))
+    data = frame(n).with_columns(
+        make=pl.Series(make.tolist()), claims=pl.Series(rng.poisson(rate).astype(float))
+    )
+    params = {**FAST, "learning_rate": 0.3, "validation_fraction": None}
+    model = fit_adapter(data, features=["make", "age"], cat_features=["make"], params=params).model
+    axis = _export_axis(model, data, "make")
+    assert axis["rare_pooled"]
+    # The <rare> level is found by its label, not through the policy's unseen_cell.
+    pooled = next(level for level in axis["levels"] if level["label"] == "<rare>")
+    assert axis["unseen_cell"] == pooled["cell"] != axis["default_cell"]
+    member = next(name for name in pooled["members"] if name.startswith("T"))
+    rows = data.head(2).with_columns(make=pl.Series(["never-seen", member]))
+    contributions = model.contributions(rows)
+    column = contributions.terms.index(("make",))
+    assert contributions.values[0, column] == pytest.approx(contributions.values[1, column])
+    unseen = model.unseen_values(rows)
+    assert unseen.select("feature", "value", "rows").to_dicts() == [
+        {"feature": "make", "value": "never-seen", "rows": 1}
+    ]
+
+
+def test_with_nothing_pooled_an_unseen_level_scores_in_the_default_cell() -> None:
     data = frame(3000, seed=4)
     model = fit_adapter(data, params={**FAST, "learning_rate": 0.3}).model
-    assert None in model.categorical_levels["region"]
-    unseen = data.head(5).with_columns(pl.lit("mars").alias("region"))
-    assert model.unseen_levels(unseen) == {"region": ["mars"]}
+    axis = _export_axis(model, data, "region")
+    assert not axis["rare_pooled"] and axis["unseen_cell"] == axis["default_cell"]
+    members = next(
+        level["members"] for level in axis["levels"] if level["cell"] == axis["unseen_cell"]
+    )
+    label = ", ".join(
+        "Missing" if member == "__t_boost_missing__" else member for member in members
+    )
     table = next(
         t for t in TBoostAlgorithm().tboost_tables(model)["tables"] if t["features"] == ["region"]
     )
-    default_cell = json.loads(model.estimator.tables(model.prepared(data)))
-    default = next(
-        t["axes"][0]["default_cell"]
-        for t in default_cell["tables"]
-        if t["feature_names"] == ["region"]
-    )
-    levels = {
-        level["cell"]: level["members"]
-        for t in default_cell["tables"]
-        if t["feature_names"] == ["region"]
-        for level in t["axes"][0]["levels"]
-    }
+    shown = table["axes"][0]["labels"].index(label)
+    unseen = data.head(5).with_columns(pl.lit("mars").alias("region"))
     contributions = model.contributions(unseen)
     column = contributions.terms.index(("region",))
-    label = ", ".join(
-        "Missing" if member == "__t_boost_missing__" else member for member in levels[default]
-    )
-    shown = table["axes"][0]["labels"].index(label)
     assert contributions.values[:, column] == pytest.approx([table["scores"][shown]] * 5, abs=1e-9)
     nulls = data.with_columns(pl.lit(None, dtype=pl.String).alias("region"))
     assert np.isfinite(model.predict(nulls)).all()
@@ -335,7 +360,7 @@ def test_validation_rows_with_values_the_training_rows_lack_train_and_are_logged
         entry for entry in logs if entry["event"] == "tboost_validation_values_not_in_training"
     ]
     assert unseen and all(entry["feature"] == "make" for entry in unseen)
-    assert all(entry["scored_as"] == "default_cell" for entry in unseen)
+    assert all(entry["scored_as"] == "rare" and entry["rows"] >= 1 for entry in unseen)
 
 
 def test_a_declared_domain_does_not_hide_validation_values_the_training_rows_lack() -> None:
@@ -350,7 +375,7 @@ def test_a_declared_domain_does_not_hide_validation_values_the_training_rows_lac
         model = fit_adapter(data, categorical_levels=declared, eval_df=validation).model
     entries = [e for e in logs if e["event"] == "tboost_validation_values_not_in_training"]
     assert [(e["feature"], e["examples"]) for e in entries] == [("region", ["west"])]
-    assert model.unseen_levels(validation) == {"region": ["west"]}
+    assert model.unseen_values(validation).get_column("value").to_list() == ["west"]
 
 
 def test_reordered_categories_score_identically() -> None:

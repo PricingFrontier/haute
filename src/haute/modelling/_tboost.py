@@ -43,15 +43,16 @@ from haute.modelling._algorithm_base import (
     FitResult,
     IterationCallback,
 )
-from haute.modelling._native_encoding import fit_categorical_levels, unseen_categorical_values
+from haute.modelling._native_encoding import fit_categorical_levels
 from haute.modelling._shap import require_feature_order
 
 logger = get_logger(component="tboost")
 
 RECORD_KEY = "haute"
-#: Where t-boost scores a categorical value the fit never saw: the axis's
-#: default cell (the encoder's base level).
-UNKNOWN_CATEGORY = "default_cell"
+#: Where t-boost scores a categorical value the fit never saw: the axis's pooled
+#: rare cell, like the levels too thin to model alone (t-boost falls back to the
+#: default cell on an axis that pooled nothing; ``tables()`` names the cell used).
+UNKNOWN_CATEGORY = "rare"
 _ESTIMATOR_TASKS = {"TBoostRegressor": "regression", "TBoostClassifier": "classification"}
 # t-boost's stopping reasons in Haute's fit-evidence vocabulary. A callback stop is
 # not listed: Haute's callback only ever stops a fit by raising (cancellation).
@@ -204,13 +205,15 @@ class TBoostModel:
             )
         return pl.DataFrame(columns)
 
-    def unseen_levels(self, frame: pl.DataFrame) -> dict[str, list[str]]:
-        """Each categorical feature's values in *frame* that the fit never saw.
+    def unseen_values(self, frame: pl.DataFrame) -> pl.DataFrame:
+        """t-boost's count of *frame*'s categorical values the fit never saw.
 
-        Compared with t-boost's fitted levels (``categories_``), not the contract's
-        levels, which may be a declared domain wider than the training rows.
+        One row per ``feature`` and ``value`` with its ``rows``, compared with
+        t-boost's fitted levels, not the contract's levels, which may be a
+        declared domain wider than the training rows.
         """
-        return _unseen_levels(frame, dict(self.estimator.categories_))
+        with _float32_features_accepted():
+            return pl.DataFrame(self.estimator.unseen_values(self.prepared(frame)))
 
     def baseline(self, frame: pl.DataFrame) -> np.ndarray | None:
         """The transformed offset each row's margin starts from.
@@ -507,15 +510,18 @@ def _validated_record(record: dict[str, Any], name: str) -> dict[str, Any]:
     }
 
 
-def _unseen_levels(
-    frame: pl.DataFrame, levels: dict[str, list[str | None]]
-) -> dict[str, list[str]]:
-    """Each feature's values in *frame* outside *levels*, for features that have any."""
-    unseen = {
-        name: unseen_categorical_values(frame.get_column(name).cast(pl.String), known)
-        for name, known in levels.items()
-    }
-    return {name: values for name, values in unseen.items() if values}
+def _log_unseen_validation_values(model: TBoostModel, eval_df: pl.DataFrame) -> None:
+    """Log each feature whose validation values the training rows never held."""
+    unseen = model.unseen_values(eval_df)
+    for (feature,), rows in unseen.group_by("feature", maintain_order=True):
+        logger.warning(
+            "tboost_validation_values_not_in_training",
+            feature=feature,
+            values=rows.height,
+            rows=int(rows.get_column("rows").sum()),
+            examples=rows.get_column("value").head(5).to_list(),
+            scored_as=UNKNOWN_CATEGORY,
+        )
 
 
 def _rows_kwargs(
@@ -669,17 +675,6 @@ class TBoostAlgorithm(BaseAlgorithm):
             # Haute's validation rows are the early-stopping set: each bag stops at
             # its own best round on them, and the early-stopped fit is the model.
             eval_kwargs = _rows_kwargs(model, eval_df, target, weight, task)
-            # The training rows' own values, not a declared domain, decide what the
-            # fit never saw.
-            observed = fit_categorical_levels(train_df, list(model.categorical_levels), None)
-            for feature, values in _unseen_levels(eval_df, observed).items():
-                logger.warning(
-                    "tboost_validation_values_not_in_training",
-                    feature=feature,
-                    values=len(values),
-                    examples=values[:5],
-                    scored_as=UNKNOWN_CATEGORY,
-                )
             fit_kwargs["eval_set"] = (eval_kwargs.pop("X"), eval_kwargs.pop("y"))
             fit_kwargs.update({f"eval_{key}": value for key, value in eval_kwargs.items()})
         groups = kwargs.get("groups")
@@ -691,6 +686,8 @@ class TBoostAlgorithm(BaseAlgorithm):
             estimator.fit(features_frame, label, **fit_kwargs, callbacks=progress)
         progress.finish()
         model.estimator = estimator
+        if eval_df is not None:
+            _log_unseen_validation_values(model, eval_df)
         model.fit_tables = model.table_report(train_df)
         reason = str(estimator.stopping_reason_)
         if reason not in _STOPPING_REASONS:

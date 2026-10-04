@@ -58,7 +58,7 @@ dependencies = [
     # contract records, so a minor bump is a deliberate retrain boundary.
     "interpret-core>=0.7.8,<0.8",
     # A .tboost model is t-boost's own JSON document, read by its schema_version.
-    "t-boost>=0.7.0,<0.8",
+    "t-boost>=0.8.0,<0.9",
     # Tuning owns a reproducibility-sensitive seeded TPE contract. Keep the
     # supported Optuna sampler implementation within one pinned 4.x minor.
     "optuna>=4.9.0,<4.10",

@@ -1703,7 +1703,8 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
   fit; fit evidence records the trees kept and `validation` or `none` as the stopping reason;
   the loss history is the per-round bag mean of `evals_result_`; contributions plus bias rebuild the margin for every row and per-feature
   Shapley values sum to the same total; a categorical value outside the fitted levels scores
-  in t-boost's default cell and a null in the missing level; a training run whose validation
+  exactly as a level t-boost pooled into `<rare>` does, in the default cell when the axis
+  pooled nothing (`unseen_cell`), and a null in the missing level; `unseen_values` counts it; a training run whose validation
   rows hold levels the training rows lack completes and logs
   `tboost_validation_values_not_in_training`, including a level a declared domain lists; a fit is identical across thread allotments for a seed; a group plan's column, which is not a
   feature, reaches the selection and final fits as `groups`; a model with no tables (t-boost's
@@ -2192,14 +2193,13 @@ used for staged input.
   fitted levels come from `fit_categorical_levels`; `TBoostModel.prepared(frame)` selects the
   features in contract order, casts contract categoricals to `String` without checking them
   against the levels (t-boost scores a value it never saw under `unknown_category`, which
-  Haute owns and sets to `UNKNOWN_CATEGORY` = `default_cell`), and casts every other feature
+  Haute owns and sets to `UNKNOWN_CATEGORY` = `rare`), and casts every other feature
   to `Float64`, so a Date or
-  Boolean feature is numeric exactly as `encode_frame` makes it. `unseen_levels(frame)` lists
-  each categorical feature's values outside t-boost's fitted levels (`categories_`, not the
-  contract's levels, which may be a wider declared domain); a fit with validation rows logs
-  `tboost_validation_values_not_in_training` per feature whose validation values the training
-  rows never held (compared with the training rows' own distinct values), with the count, up
-  to five examples and the policy. `_rows_kwargs` builds one
+  Boolean feature is numeric exactly as `encode_frame` makes it. `unseen_values(frame)` is
+  t-boost's `unseen_values` frame (`feature`, `value`, `rows`), which compares with t-boost's
+  fitted levels, not the contract's levels (a declared domain may be wider); after a fit with
+  validation rows, `_log_unseen_validation_values` logs `tboost_validation_values_not_in_training`
+  per feature with the value count, the rows, up to five examples and the policy. `_rows_kwargs` builds one
   frame's arguments, the same for the training and the evaluation rows: the offset column is
   t-boost's `exposure` (the exponent of the log baseline) under a log link and its link-scale
   `offset` under the identity link. t-boost's `PrecisionWarning` about its float32 features is

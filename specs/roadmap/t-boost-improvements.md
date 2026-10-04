@@ -11,28 +11,30 @@ Each requirement states the behaviour observed in 0.6.2, the proposed API, its e
 semantics, the tests t-boost should ship with it, and what it unlocks in Haute.
 Names are proposals; the semantics are what matter.
 
-## Status at t-boost 0.7.0
+## Status at t-boost 0.8.0
 
-t-boost 0.7.0 (4 October 2026) answers most of this specification. Haute requires it
-(`t-boost>=0.7.0,<0.8`) and uses it as follows.
+t-boost 0.7.0 (4 October 2026) shipped R1–R3 and R5–R12, and 0.8.0 shipped R13, with the
+differences below. Most follow from one decision: early stopping fits the model, so nothing
+carries a round count or a table set into a refit. Haute requires `t-boost>=0.8.0,<0.9`.
 
-| ID | In 0.7.0 | Haute |
+| ID | In t-boost | Haute |
 |---|---|---|
-| R1 | `eval_set` with `eval_sample_weight`, `eval_exposure` and `eval_offset`. Ensemble-level stopping was declined: every bag stops at its own best round on the evaluation rows. | Uses it. Early stopping fits the model: a fit with validation rows passes them as `eval_set` and the early-stopped fit is the model (the published one when the refit is off). Haute carries no round count into the refit, which stops on t-boost's own holdout, and keeps the `fixed_budget` refit policy. |
-| R2 | `n_trees_per_bag_`, `stopping_reason_per_bag_`, `n_trees_` (the largest bag) and `stopping_reason_` (one summary); no `best_iteration_`. | Fit evidence records `n_trees_` and the mapped stopping reason. |
-| R3 | `callbacks`, called per bag and round with a dict (bags interleave), and per-bag `evals_result_`. | Progress from the callback; the loss curve is each round's bag-mean deviance from `evals_result_`. |
-| R4 | Not in 0.7.0. | Not used; t-boost's own pruning CV runs inside each fit. |
-| R5 | A `metadata` slot kept by both formats. | The Haute record lives in it. |
-| R6 | `offset=` on fit and scoring (an omitted offset scores as zero rather than raising). | `RMSE` offsets; Haute always adds the offset itself when scoring. |
-| R7 | `unknown_category` and `categories_`. | Haute no longer pre-checks levels: it sets `unknown_category="default_cell"`, so an unseen value never fails a training run or a score, and logs validation rows holding one. R13 asks for a better cell. |
-| R8 | `exposure` under `squared_error` raises. | Haute never passes it. |
-| R9 | `predict_contributions(return_format="matrix")` returning `ContributionMatrix` with tuple terms; no placeholder term for an intercept-only model. | Used for explanations and SHAP; feature names may contain `:`. |
-| R10 | A public `cell_indices`. | Not yet used; `TBOOST-02` and `TBOOST-03` in the [t-boost roadmap](t-boost.md) will. |
-| R11 | Typed top-level imports; `PrecisionWarning` once per estimator. | Imports from `t_boost`; the warning is still silenced inside the adapter. |
-| R12 | Envelope `schema_version` 5, refusing newer headers. | A model saved before 0.7.0 loads with a retrain message. |
+| R1 | `eval_set` with `eval_sample_weight`, `eval_exposure` and `eval_offset`. Each bag stops at its own best round on the evaluation rows; ensemble-level stopping was declined (bags fit independently, and truncating after the fit is not exact). `eval_set` overrides `validation_fraction` (`binding_report_` records it as inert) rather than raising, and the evaluation rows always drive early stopping. The holdout slope recalibration does not run with `eval_set`; multiclass rejects it. | A fit with validation rows passes them as `eval_set`, and the early-stopped fit is the model. |
+| R2 | `n_trees_per_bag_`, `stopping_reason_per_bag_`, `n_trees_` (the largest bag) and `stopping_reason_` (one summary); no `best_iteration_`, which only served a refit. | Fit evidence records `n_trees_` and the mapped stopping reason. |
+| R3 | `callbacks` called with a dict per bag and round on the calling thread (bags interleave); per-bag `evals_result_`, the train curve only when callbacks are given. Pruning folds do not call back. | Progress and cancellation from the callback; the loss curve is the per-round bag mean, a progress curve rather than the deployed ensemble's deviance. |
+| R4 | Withdrawn: single-split drop-gains have no standard error and were measured to drop tables on noise, and `keep_tables` only served a refit. | t-boost's own pruning CV runs inside each fit. |
+| R5 | A `metadata` property set after fitting, kept by both formats; no `fit(..., metadata=...)`. | The Haute record lives in it. |
+| R6 | `offset=` on fit and scoring, optional at scoring (zero when omitted); exact under `squared_error`; under the log and logit links it joins the exposure and scales `support`; multiclass rejects it. | `RMSE` offsets; Haute always adds the offset itself when scoring. |
+| R7 | `unknown_category` and `categories_`. | Haute sets `unknown_category="rare"` (R13) and never refuses an unseen value. |
+| R8 | Only `squared_error` refuses `exposure`; logistic keeps it as a rare-event logit offset. | Haute refuses classification offsets itself. |
+| R9 | `return_format="matrix"` (`ContributionMatrix`) with tuple terms; the records and dataframe formats keep rustystats' shape. | Uses the matrix; feature names may contain `:`. |
+| R10 | `cell_indices(X)`, a dict keyed by each table's feature-name tuple (regression and binary; factored effects have no cells). | Not yet used; `TBOOST-02` and `TBOOST-03` in the [t-boost roadmap](t-boost.md) will. |
+| R11 | Typed top-level imports; `PrecisionWarning` once per estimator, with no flag to silence it. | Imports from `t_boost`; the warning is silenced inside the adapter. |
+| R12 | Envelope `schema_version` 5, refusing newer headers. | A model saved before 0.7.0 is refused with a retrain message. |
+| R13 | `unknown_category="rare"`, now the default: an unseen value scores in the pooled `<rare>` cell, or in `default_cell` on an axis that pooled nothing (no synthetic rare level); every categorical axis in `tables()` carries `rare_pooled` and `unseen_cell`. `unseen_values()` returns a frame of `feature`, `value`, `rows` (and `mass` given a weight or exposure). Models saved by 0.7.0 keep their policy. | Haute sets `"rare"`, logs `unseen_values` for the validation rows, and will report them in results (`TBOOST-09`). |
 
-The requirements below are kept as written, as the record of what was asked. R4 is
-open, and R13 was added on 4 October 2026 after 0.7.0.
+No request is open. The requirements below are kept as written, as the record of what was
+asked.
 
 ## How Haute uses t-boost
 

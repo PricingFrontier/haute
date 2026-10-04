@@ -57,7 +57,7 @@ specification for the t-boost project: the library changes (a validation set
 with ensemble-level early stopping, reported round counts, a metrics callback,
 a metadata slot, offsets, an unknown-category policy and smaller items) that
 would let Haute integrate t-boost exactly like its other boosted families, with
-their status at t-boost 0.7.0. It is a supporting report and owns no Haute work.
+their status at t-boost 0.8.0. It is a supporting report and owns no Haute work.
 
 ## Working protocol
 
