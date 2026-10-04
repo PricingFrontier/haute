@@ -29,7 +29,7 @@ from haute._global_constants import (
     GlobalConstantsNamespace,
     bind_function_view,
 )
-from haute._graph_utils import _edge_id, _sanitize_func_name
+from haute._graph_utils import _edge_id, _sanitize_func_name, executable_input_name
 from haute._logging import get_logger
 from haute._standalone_nodes import (
     SOURCE_NODE_TYPES,
@@ -709,7 +709,13 @@ class Pipeline(NodeRegistry):
             )
             labelled.extend(
                 (
-                    edge.source,
+                    # The name the target's parameter has for this frame, as the
+                    # graph executor names it: a Quote Input by its frame handle.
+                    executable_input_name(
+                        node_type=definition._node_map[edge.source].node_type,
+                        label=edge.source,
+                        source_handle=edge.source_port,
+                    ),
                     RegisteredEdge(
                         f"{occurrence}.{edge.source}",
                         f"{occurrence}.{edge.target}",

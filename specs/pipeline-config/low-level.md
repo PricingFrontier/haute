@@ -527,8 +527,9 @@ it on the reading node instead of aborting the walk, and every other run propaga
   each definition node becomes a `dataclasses.replace` copy named `<occurrence>.<node>`;
   boundary edges come from `_submodel_input` / `_submodel_output` (an unknown port is an
   `ExecutionError` listing the ports); and `_in_parameter_order` orders each submodel node's
-  inputs: an input whose name (the source's, or the input port's for an edge into an
-  occurrence) is a positional parameter takes its place, the rest fill the open parameters in
+  inputs: an input whose name (the input port's for an edge into an occurrence, otherwise
+  `_graph_utils.executable_input_name`'s, so a Quote Input frame by its frame handle) is a
+  positional parameter takes its place, the rest fill the open parameters in
   order, and a node with more inputs than parameters, like the pipeline's own nodes, keeps
   registration order. A registration records the file that made it
   (`RegisteredSubmodel.registered_in`), which its path resolves against, and

@@ -1892,6 +1892,62 @@ class TestStandaloneSubmodels:
             {"year": 2010, "rel": 1.5, "note": "n"}
         ]
 
+    def test_a_quote_input_frame_is_named_by_its_frame_handle(self, tmp_path) -> None:
+        from tests.conftest import write_node_config
+
+        rated_config = write_node_config(
+            tmp_path,
+            NodeType.RATING_STEP,
+            "rated",
+            {
+                "tables": [
+                    {
+                        "factors": ["year"],
+                        "outputColumn": "rel",
+                        "entries": [{"year": 2010, "value": 1.5}],
+                    }
+                ],
+                "combinedOutputs": [],
+            },
+        )
+        (tmp_path / "modules").mkdir()
+        (tmp_path / "modules" / "rating.py").write_text(
+            "import haute\n"
+            "import polars as pl\n\n"
+            "submodel = haute.Submodel(\n"
+            '    "rating",\n'
+            '    definition_id="definition_rating",\n'
+            '    input_ports=[{"name": "rows", "targets": [{"nodeId": "rated"}]}],\n'
+            '    output_ports=[{"name": "out", "source": {"nodeId": "rated"}}],\n'
+            '    pipeline_dir="..",\n'
+            ")\n\n\n"
+            '@submodel.api_input(config="config/api_input/payload.json")\n'
+            "def payload(): ...\n\n\n"
+            f'@submodel.rating_step(config="{rated_config}")\n'
+            "def rated(df: pl.LazyFrame, lookup: pl.LazyFrame) -> pl.LazyFrame:\n"
+            '    return df.join(lookup.lazy(), how="cross")\n\n\n'
+            'submodel.connect("payload", "rated", source_port="lookup")\n',
+            encoding="utf-8",
+        )
+        source = (
+            "import haute\n"
+            "import polars as pl\n\n"
+            'pipeline = haute.Pipeline("p")\n\n\n'
+            "@pipeline.polars\n"
+            "def quotes() -> pl.LazyFrame:\n"
+            '    return pl.LazyFrame({"year": [2010]})\n\n\n'
+            'pipeline.submodel("modules/rating.py", "rating")\n'
+            'pipeline.connect("quotes", "rating", target_port="rows")\n'
+        )
+        path = tmp_path / "main.py"
+        path.write_text(source, encoding="utf-8")
+        namespace: dict = {"__file__": str(path), "__name__": "pipeline_under_test"}
+        exec(compile(source, str(path), "exec"), namespace)
+
+        scored = namespace["pipeline"].score({"lookup": pl.DataFrame({"note": ["n"]})})
+
+        assert scored.to_dicts() == [{"year": 2010, "rel": 1.5, "note": "n"}]
+
     def test_a_file_without_a_submodel_is_refused_naming_it(self, tmp_path) -> None:
         _path, pipeline = _submodel_pipeline(
             tmp_path,
