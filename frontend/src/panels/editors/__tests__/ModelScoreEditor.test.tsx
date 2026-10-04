@@ -243,7 +243,7 @@ describe("ModelScoreEditor", () => {
     fireEvent.click(await screen.findByText("freq.cbm"))
 
     expect(onUpdate).toHaveBeenCalledWith({ sourceType: "file", model_path: "models/freq.cbm" })
-    expect(discovery.listFiles).toHaveBeenCalledWith(".", ".cbm,.ebm,.lgbm,.rsglm,.ubj")
+    expect(discovery.listFiles).toHaveBeenCalledWith(".", ".cbm,.ebm,.lgbm,.rsglm,.tboost,.ubj")
   })
 
   it("shows what the chosen file scores as and the task it records", async () => {
