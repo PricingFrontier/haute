@@ -68,12 +68,12 @@ _EXPECTED_DEBT_IDS = {
     # installed package whether an assumption still holds, and therefore skip,
     # saying so, where that package is absent. test_sandbox.py
     # `_allowlist_entry` skips an unpickler-allowlist entry whose distribution
-    # (LightGBM, XGBoost) is not installed, reporting it as unverified rather
-    # than passed; `test_real_unpickler_reports_absent_xgboost` is the
-    # converse and skips where xgboost IS installed. test_databricks_io.py
+    # is not installed, reporting it as unverified rather than passed;
+    # `test_real_unpickler_reports_absent_catboost` is the converse and skips
+    # where catboost IS installed. test_databricks_io.py
     # `test_real_databricks_cursor_exposes_rownumber` skips without the
     # databricks-sql-connector extra.
-    "02527322f3266e6a",
+    "bad18e83b4ed758b",
     "3bf4ea089c17f407",
     "963014c76507d368",
     # Data In/Out first pass — engine-gated legs. The dataInput/dataOutput

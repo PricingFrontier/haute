@@ -201,7 +201,7 @@ class TestSafeUnpickle:
         self, tmp_path: Path, module: str, name: str
     ):
         """Gradient-boosted models load through Model Scoring, not Load File."""
-        estimator_cls = getattr(pytest.importorskip(module), name)
+        estimator_cls = getattr(import_module(module), name)
         model = estimator_cls(n_estimators=2).fit([[0.0], [1.0], [2.0]], [1.0, 3.0, 5.0])
         set_project_root(tmp_path)
         f = tmp_path / "model.pkl"
