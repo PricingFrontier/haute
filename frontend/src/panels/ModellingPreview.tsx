@@ -17,6 +17,7 @@ import { FeaturesTab } from "./modelling/FeaturesTab"
 import { GLMCoefficientsTab } from "./modelling/GLMCoefficientsTab"
 import { GLMRelativitiesTab } from "./modelling/GLMRelativitiesTab"
 import { EBMTermsTab } from "./modelling/EBMTermsTab"
+import { TBoostTablesTab } from "./modelling/TBoostTablesTab"
 import { LiftTab } from "./modelling/LiftTab"
 import { LossTab } from "./modelling/LossTab"
 import { PdpTab } from "./modelling/PdpTab"
@@ -45,6 +46,7 @@ const TAB_KEYS = [
   "coefficients",
   "relativities",
   "terms",
+  "tables",
   "loss",
   "lift",
   "residuals",
@@ -60,6 +62,7 @@ const TAB_LABELS: Record<TabKey, string> = {
   coefficients: "Coefficients",
   relativities: "Relativities",
   terms: "Terms",
+  tables: "Tables",
   loss: "Loss",
   lift: "Lift",
   residuals: "Residuals",
@@ -73,6 +76,7 @@ const VIEW_TITLES: Record<Exclude<TabKey, "summary">, string> = {
   coefficients: "GLM coefficients",
   relativities: "GLM relativities",
   terms: "EBM terms",
+  tables: "t-boost tables",
   loss: "Training loss",
   lift: "Lift and discrimination",
   residuals: "Residual diagnostics",
@@ -133,6 +137,8 @@ export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewPr
         return result.glm_relativities && result.glm_relativities.length > 0
       case "terms":
         return (result.ebm_terms ?? []).length > 0
+      case "tables":
+        return result.tboost_tables != null
       case "loss":
         // The fit the tab draws: after a holdout refit, the validation fit.
         return shownFit(result).history.length > 1
@@ -234,6 +240,7 @@ export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewPr
       {activeTab === "coefficients" && <GLMCoefficientsTab result={result} />}
       {activeTab === "relativities" && <GLMRelativitiesTab result={result} />}
       {activeTab === "terms" && <EBMTermsTab result={result} />}
+      {activeTab === "tables" && <TBoostTablesTab result={result} />}
       {activeTab === "loss" && <LossTab result={result} />}
       {activeTab === "lift" && <LiftTab result={result} />}
       {activeTab === "residuals" && <ResidualsTab result={result} />}

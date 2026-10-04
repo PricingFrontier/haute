@@ -608,8 +608,96 @@ EBM = AlgorithmDescriptor(
     value_check=ebm_value_issue,
 )
 
+
+def tboost_value_issue(
+    params: Mapping[str, Any], monotone_constraints: Mapping[str, int] | None
+) -> str | None:
+    """t-boost rules the key allowlist cannot express.
+
+    ``n_trees`` is the round ceiling every fit stops early within, and the
+    fixed-budget refit reuses it unchanged, so it must be explicit. Every other
+    value rule (depth and order ranges, fractions) is t-boost's own.
+    """
+    del monotone_constraints
+    if "n_trees" not in params:
+        return (
+            "t-boost needs an explicit n_trees: it is the round ceiling every fit stops early "
+            "within. Set n_trees in Parameters."
+        )
+    if not _positive_int(params["n_trees"]):
+        return f"t-boost n_trees must be a positive integer, got {params['n_trees']!r}."
+    return None
+
+
+TBOOST = AlgorithmDescriptor(
+    key="tboost",
+    label="t-boost",
+    tasks=frozenset({"regression", "classification"}),
+    losses=_losses(
+        regression={
+            "RMSE": NativeLoss("squared_error", "identity"),
+            "Poisson": NativeLoss("poisson", "log"),
+            "Gamma": NativeLoss("gamma", "log"),
+            "Tweedie": NativeLoss("tweedie", "log"),
+        },
+        classification={"Logloss": NativeLoss("logistic", "logit")},
+    ),
+    allowed_params=frozenset(
+        {
+            "n_trees",
+            "learning_rate",
+            "lambda_",
+            "max_depth",
+            "max_interaction_order",
+            "max_bin",
+            "min_data_in_leaf",
+            "min_sum_hessian_in_leaf",
+            "min_split_gain",
+            "l1_leaf",
+            "path_smooth",
+            "colsample_bytree",
+            "subsample",
+            "n_bags",
+            "bag_subsample",
+            "validation_fraction",
+            "early_stopping_rounds",
+            "early_stopping_adaptive",
+            "leaf_refine_steps",
+            "interaction_gain_hurdle",
+            "prune",
+            "prune_se_rule",
+            "prune_n_folds",
+            "prune_min_stability",
+            "cat_smooth",
+            "cat_min_data_per_group",
+            "cat_direct_max_levels",
+        }
+    ),
+    reserved_params=frozenset(
+        {
+            "objective",
+            "tweedie_rho",
+            "seed",
+            "n_jobs",
+            "monotone_constraints",
+            "categorical_features",
+        }
+    ),
+    # A study may search the round ceiling like any other parameter.
+    tuning_reserved_params=frozenset(),
+    param_aliases=MappingProxyType({}),
+    round_key="n_trees",
+    round_key_aliases=("n_trees",),
+    validation_only_params=(),
+    refit_policy="fixed_budget",
+    feature_controls=frozenset({"monotone_constraints"}),
+    suffix=".tboost",
+    engine_module="t_boost",
+    value_check=tboost_value_issue,
+)
+
 DESCRIPTORS: Mapping[str, AlgorithmDescriptor] = MappingProxyType(
-    {descriptor.key: descriptor for descriptor in (CATBOOST, GLM, XGBOOST, LIGHTGBM, EBM)}
+    {descriptor.key: descriptor for descriptor in (CATBOOST, GLM, XGBOOST, LIGHTGBM, EBM, TBOOST)}
 )
 
 
@@ -665,7 +753,7 @@ def tuning_family(final_params: Mapping[str, Any]) -> AlgorithmDescriptor:
     """The tunable family a study's final parameters belong to.
 
     A round-refitting family's projection carries exactly its round key; a
-    fixed-budget family (EBM) keeps its own explicit budget key.
+    fixed-budget family (EBM, t-boost) keeps its own explicit budget key.
     """
     matches = [
         descriptor

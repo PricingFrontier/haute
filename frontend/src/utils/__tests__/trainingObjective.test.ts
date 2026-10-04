@@ -97,6 +97,16 @@ describe("trainingConfigurationIssues", () => {
     })])
   })
 
+  it("mirrors the backend's t-boost round ceiling rule", () => {
+    const base = { algorithm: "tboost", target: "y", feature_columns: ["age"], loss_function: "Poisson", evaluation }
+    const codes = (config: Record<string, unknown>) =>
+      trainingConfigurationIssues({ ...base, ...config }).map((issue) => [issue.code, trainingIssuePane(issue)])
+    expect(codes({ params: { n_trees: 4000, max_interaction_order: 3 } })).toEqual([])
+    expect(codes({ params: { learning_rate: 0.05 } })).toEqual([["tboost-n-trees", "params"]])
+    expect(codes({ params: { n_trees: 0 } })).toEqual([["tboost-n-trees", "params"]])
+    expect(codes({ params: { n_trees: 2.5 } })).toEqual([["tboost-n-trees", "params"]])
+  })
+
   it("reports conditional CatBoost Tweedie configuration", () => {
     expect(
       trainingConfigurationIssues({

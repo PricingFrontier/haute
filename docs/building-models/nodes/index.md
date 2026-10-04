@@ -103,7 +103,7 @@ Nodes that bring data into your pipeline. They have no upstream connections.
 
 ## Models
 
-- **[Model Training](model-training.md)**  - trains a CatBoost, XGBoost, LightGBM, EBM or GLM model
+- **[Model Training](model-training.md)**  - trains a CatBoost, XGBoost, LightGBM, t-boost, EBM or GLM model
 - **[Model Scoring](model-score.md)**  - scores data with an MLflow-managed model
 - **[Load File](external-file.md)**  - loads and scores a standalone model file
 

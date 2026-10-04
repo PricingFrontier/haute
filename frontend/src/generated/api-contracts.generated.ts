@@ -2086,6 +2086,9 @@ export interface TrainResponse {
     [k: string]: unknown;
   }[];
   status: 'started' | 'completed' | 'error';
+  tboost_tables: {
+    [k: string]: unknown;
+  } | null;
   total_source_rows: number | null;
   tuning?: TuningReportPayload;
   validation_loss_history: {

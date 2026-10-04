@@ -269,6 +269,24 @@ test.describe("core browser flows", () => {
     )
   })
 
+  test("trains a t-boost node, saves its model file, and reads its rating tables", async ({ page }) => {
+    test.slow()
+    // The browser project trains on 30 rows, so internal early stopping is off and
+    // every round is kept: the model then holds tables to read.
+    await trainFamilyAndSaveModel(
+      page,
+      "tboost",
+      { n_trees: 60, learning_rate: 0.3, n_bags: 1, prune: false, validation_fraction: null },
+      ".tboost",
+    )
+    const resultTabs = page.getByRole("tablist", { name: "Model result panes" })
+    await resultTabs.getByRole("tab", { name: "Tables", exact: true }).click()
+    await expect(page.getByText(/· base /)).toBeVisible()
+    await expect(page.getByRole("img", { name: /^Table for / }).or(
+      page.getByRole("table", { name: /^Table for / }),
+    ).first()).toBeVisible()
+  })
+
   test("chooses an EBM interaction, trains it, and reads the interaction surface", async ({ page }) => {
     test.slow()
     addModellingNode("browser_ebm", "ebm", { max_rounds: 40, interactions: [] })

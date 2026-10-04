@@ -111,6 +111,13 @@ const EBM_DEFAULT_PARAMS: Record<string, unknown> = {
   interactions: 10,
 }
 
+// t-boost's own defaults are its recommended recipe; n_trees is the ceiling every
+// fit stops early within, and the order caps how many features a table couples.
+const TBOOST_DEFAULT_PARAMS: Record<string, unknown> = {
+  n_trees: 4000,
+  max_interaction_order: 3,
+}
+
 const STARTER_SEARCH_SPACES: Record<string, Record<string, unknown>> = {
   xgboost: {
     max_depth: [4, 6, 8],
@@ -127,6 +134,11 @@ const STARTER_SEARCH_SPACES: Record<string, Record<string, unknown>> = {
     learning_rate: [0.01, 0.02, 0.04],
     interactions: [0, 5, 10],
   },
+  tboost: {
+    learning_rate: [0.03, 0.05, 0.1],
+    max_interaction_order: [2, 3],
+    lambda_: [0.5, 1, 2],
+  },
 }
 
 const DEFAULT_PARAMS: Record<string, Record<string, unknown>> = {
@@ -134,6 +146,7 @@ const DEFAULT_PARAMS: Record<string, Record<string, unknown>> = {
   xgboost: XGBOOST_DEFAULT_PARAMS,
   lightgbm: LIGHTGBM_DEFAULT_PARAMS,
   ebm: EBM_DEFAULT_PARAMS,
+  tboost: TBOOST_DEFAULT_PARAMS,
 }
 
 const CATBOOST_RESERVED_PARAM_KEYS = ["task_type"] as const
@@ -186,6 +199,8 @@ const ALGORITHM_DESCRIPTIONS: Record<string, string> = {
     "Gradient boosting - fast leaf-wise trees with native categoricals and early stopping on CPU",
   ebm:
     "Explainable boosting - additive shape functions and pairwise interactions you can read directly",
+  tboost:
+    "Rating-table boosting - gradient boosting whose model is exactly a set of rating tables",
 }
 
 function AlgorithmGateway({ onUpdate }: { onUpdate: OnUpdateConfig }) {
@@ -592,6 +607,7 @@ export default function ModellingConfig({
           glm_smooth_terms: [],
           glm_regularization: null,
           ebm_terms: [],
+          tboost_tables: null,
           diagnostics_errors: [],
           feature_selection: null,
           final_tree_count: null,

@@ -206,6 +206,74 @@
       "early_stopping_round"
     ]
   },
+  "tboost": {
+    "allowed_params": [
+      "bag_subsample",
+      "cat_direct_max_levels",
+      "cat_min_data_per_group",
+      "cat_smooth",
+      "colsample_bytree",
+      "early_stopping_adaptive",
+      "early_stopping_rounds",
+      "interaction_gain_hurdle",
+      "l1_leaf",
+      "lambda_",
+      "leaf_refine_steps",
+      "learning_rate",
+      "max_bin",
+      "max_depth",
+      "max_interaction_order",
+      "min_data_in_leaf",
+      "min_split_gain",
+      "min_sum_hessian_in_leaf",
+      "n_bags",
+      "n_trees",
+      "path_smooth",
+      "prune",
+      "prune_min_stability",
+      "prune_n_folds",
+      "prune_se_rule",
+      "subsample",
+      "validation_fraction"
+    ],
+    "feature_controls": [
+      "monotone_constraints"
+    ],
+    "gpu_device": false,
+    "label": "t-boost",
+    "losses": {
+      "classification": [
+        "Logloss"
+      ],
+      "regression": [
+        "RMSE",
+        "Poisson",
+        "Gamma",
+        "Tweedie"
+      ]
+    },
+    "monotone_unsupported_losses": [],
+    "refit_policy": "fixed_budget",
+    "reserved_params": [
+      "categorical_features",
+      "monotone_constraints",
+      "n_jobs",
+      "objective",
+      "seed",
+      "tweedie_rho"
+    ],
+    "round_key": "n_trees",
+    "round_key_aliases": [
+      "n_trees"
+    ],
+    "suffix": ".tboost",
+    "supports_tuning": true,
+    "tasks": [
+      "classification",
+      "regression"
+    ],
+    "validation_only_params": []
+  },
   "xgboost": {
     "allowed_params": [
       "alpha",

@@ -89,4 +89,5 @@ def test_every_algorithm_has_a_model_file_suffix() -> None:
         "xgboost": ".ubj",
         "lightgbm": ".lgbm",
         "ebm": ".ebm",
+        "tboost": ".tboost",
     }

@@ -800,7 +800,8 @@ class TestLogExperiment:
             patch("haute.modelling._mlflow_log._log_model_card"),
             patch("mlflow.pyfunc.log_model") as pyfunc_log_model,
             pytest.raises(
-                HauteValidationError, match=r"expected one of \.cbm, \.ebm, \.lgbm, \.rsglm, \.ubj"
+                HauteValidationError,
+                match=r"expected one of \.cbm, \.ebm, \.lgbm, \.rsglm, \.tboost, \.ubj",
             ),
         ):
             log_experiment(experiment_name="exp", candidate=candidate)

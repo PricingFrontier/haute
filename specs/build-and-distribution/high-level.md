@@ -200,4 +200,8 @@ on Linux or Windows. Both distributions install the same `xgboost` import packag
 Homebrew `libomp`. `lightgbm>=4.7,<5` (also needing `libomp` on macOS) and
 `interpret-core>=0.7.8,<0.8` are core dependencies too; an `.ebm` model loads only under the
 exact `interpret-core` version its contract records, so a minor bump is a retrain boundary.
+`t-boost>=0.7.0,<0.8` is a core dependency with abi3 wheels for every supported platform; a
+`.tboost` model is t-boost's own JSON document, which t-boost versions read by its envelope
+`schema_version` (a release refuses a newer one), so a t-boost upgrade that cannot read a
+saved model fails to load it by name.
 

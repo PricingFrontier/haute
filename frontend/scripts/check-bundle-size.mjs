@@ -95,7 +95,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // inspection panel and the generated ModelFileInspectionResponse validator.
 // With both, the complete production bundle is 1,591.3 KiB; 1,593 KiB
 // restores about 1.7 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1593
+// The t-boost family adds its lazy Tables result tab, the chart components it
+// shares with the EBM Terms tab, and the tboost_tables response parser. The
+// complete production bundle is 1,593.2 KiB; 1,594 KiB restores about 0.8 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1594
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

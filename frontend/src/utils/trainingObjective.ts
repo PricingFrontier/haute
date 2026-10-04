@@ -34,6 +34,7 @@ export type TrainingConfigurationIssueCode =
   | "monotone-loss"
   | "ebm-max-rounds"
   | "ebm-interactions"
+  | "tboost-n-trees"
   | "evaluation-config"
   | "final-refit"
   | "tuning-config"
@@ -405,6 +406,7 @@ export function trainingConfigurationIssues(
     })
   }
   if (algorithm === "ebm") issues.push(...ebmParameterIssues(config))
+  if (algorithm === "tboost") issues.push(...tboostParameterIssues(config))
   const capability = algorithmCapability(algorithm)
   if (
     lossFunction
@@ -419,6 +421,21 @@ export function trainingConfigurationIssues(
     })
   }
   return issues
+}
+
+/** Mirrors the backend's ``tboost_value_issue``; t-boost checks every other value at fit time. */
+function tboostParameterIssues(config: Record<string, unknown>): TrainingConfigurationIssue[] {
+  const params = (
+    config.params !== null && typeof config.params === "object" && !Array.isArray(config.params)
+  )
+    ? config.params as Record<string, unknown>
+    : {}
+  const nTrees = params.n_trees
+  if (typeof nTrees === "number" && Number.isInteger(nTrees) && nTrees > 0) return []
+  return [{
+    code: "tboost-n-trees",
+    message: "Set n_trees to a positive whole number: it is the round ceiling every t-boost fit stops early within.",
+  }]
 }
 
 /** Mirrors the backend's ``ebm_value_issue``; feature membership is checked at fit time. */
@@ -522,7 +539,8 @@ export function trainingIssuePane(issue: TrainingConfigurationIssue): "target" |
     case "feature-selection":
     case "ebm-interactions":
     case "monotone-loss": return "features"
-    case "ebm-max-rounds": return "params"
+    case "ebm-max-rounds":
+    case "tboost-n-trees": return "params"
     default: return "target"
   }
 }

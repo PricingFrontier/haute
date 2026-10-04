@@ -1249,7 +1249,9 @@ class TestLoadLocalModel:
         """An unregistered suffix is refused by name, never guessed as a family."""
         from haute.errors import ConfigError
 
-        with pytest.raises(ConfigError, match=r"\.cbm, \.rsglm, \.ubj, \.lgbm, \.ebm") as exc:
+        with pytest.raises(
+            ConfigError, match=r"\.cbm, \.rsglm, \.ubj, \.lgbm, \.ebm, \.tboost"
+        ) as exc:
             load_local_model("/tmp/model.onnx")
         assert exc.value.context["supported_suffixes"] == [
             ".cbm",
@@ -1257,6 +1259,7 @@ class TestLoadLocalModel:
             ".ubj",
             ".lgbm",
             ".ebm",
+            ".tboost",
         ]
 
     def test_pyfunc_directory_does_not_load_locally(self):
@@ -1384,6 +1387,7 @@ class TestFindModelArtifact:
         # _find_artifact_by_extension(.ubj): same 2 calls → raises
         # _find_artifact_by_extension(.lgbm): same 2 calls → raises
         # _find_artifact_by_extension(.ebm): same 2 calls → raises
+        # _find_artifact_by_extension(.tboost): same 2 calls → raises
         # _find_model_artifact pyfunc check: list_artifacts(run_id) → [subdir] (not "model")
         #   then iterate dirs: list_artifacts(run_id, "custom_model") → sub_contents (has MLmodel)
         client.list_artifacts.side_effect = [
@@ -1397,6 +1401,8 @@ class TestFindModelArtifact:
             sub_contents,  # lgbm: subdir (no .lgbm)
             [subdir],  # ebm: top level
             sub_contents,  # ebm: subdir (no .ebm)
+            [subdir],  # tboost: top level
+            sub_contents,  # tboost: subdir (no .tboost)
             [subdir],  # pyfunc: top level "model" dir check
             sub_contents,  # pyfunc: subdir listing with MLmodel
         ]

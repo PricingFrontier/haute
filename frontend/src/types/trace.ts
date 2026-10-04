@@ -190,8 +190,8 @@ export interface ModelScoreContributionDetail {
 }
 
 export interface ModelScoreExplanationDetail {
-  type?: "catboost_shap" | "rustystats_glm_contributions" | "xgboost_contributions" | "lightgbm_contributions" | "ebm_terms" | string
-  method?: "catboost_shap" | "rustystats_glm_contributions" | "xgboost_contributions" | "lightgbm_contributions" | "ebm_terms" | string
+  type?: "catboost_shap" | "rustystats_glm_contributions" | "xgboost_contributions" | "lightgbm_contributions" | "ebm_terms" | "tboost_tables" | string
+  method?: "catboost_shap" | "rustystats_glm_contributions" | "xgboost_contributions" | "lightgbm_contributions" | "ebm_terms" | "tboost_tables" | string
   status?: "ok" | "error" | string
   output_space?: "prediction" | "raw_formula_val" | "linear_predictor" | string
   prediction_space?: string

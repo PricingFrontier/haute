@@ -10,7 +10,7 @@
 | `src/haute/_model_flavors.py` | The model family registry, the one place a scoring family is described: `ModelFamily` (one adapter per family — see Key types), `register_model_family`, the lookups by flavor (`model_family`), by Haute training algorithm (`family_for_algorithm`) and by artifact suffix (`family_for_artifact`), the registered file suffixes (`model_file_suffixes`), and `model_family_fixture`, the table the frontend's generated `modelFamilies.json` mirrors. `ModelFlavor` (`Literal`) types the built-in flavors and `_SUPPORTED_FLAVORS` is derived from it via `get_args`; the built-in registrations are exactly that set. Dependency-free leaf module: loaders and offset readers are bound lazily by module path, so importing it imports no engine and no other `haute` module (see high-level Design rationale for why). |
 | `src/haute/_model_source.py` | The Model Scoring node's model source: `parse_model_source` turns a node config into a typed `ModelSource` (`RunModelSource`, `RegisteredModelSource` or `FileModelSource`) once, owning every source default and validation rule; `resolve_model_file` and `model_contract_path` resolve a file source's model and the contract it scores under; and `load_scoring_model(source, task, ...)` is the one entry point that loads a source and binds it to that contract. Every Model Scoring consumer — the executor's builder, the column-contract planner, the standalone scorer, the trace explanation and the deploy bundler and scorer — takes the parsed source, and only this module calls the MLflow and local-file loaders. |
 | `src/haute/_model_scorer.py` | MODEL_SCORE node logic: the `ModelScorer` class, the unified `score_frame` dispatch (eager vs batched), the feature-validation cache, offset-column resolution, write-projection application, and `score_from_config` (codegen's delegation target). |
-| `src/haute/_model_explainability.py` | Per-prediction SHAP (CatBoost), native GLM contribution (RustyStats) and native wrapper contribution (XGBoost, LightGBM, EBM) explanations for trace enrichment, plus `explain_model_score_from_config`, the config-driven entry point trace enrichment calls, which dispatches on the loaded model's registered family's `explanation` (a family registering none gets no explanation). |
+| `src/haute/_model_explainability.py` | Per-prediction SHAP (CatBoost), native GLM contribution (RustyStats) and native wrapper contribution (XGBoost, LightGBM, EBM, t-boost) explanations for trace enrichment, plus `explain_model_score_from_config`, the config-driven entry point trace enrichment calls, which dispatches on the loaded model's registered family's `explanation` (a family registering none gets no explanation). |
 | `src/haute/routes/mlflow.py` | FastAPI router (`/api/mlflow/*`) exposing read-only experiment/run/model/version discovery for the MODEL_SCORE node's config UI — every discovery route accepts a `destination` query (`""` = the local folder) — plus the connection surface: the destinations inventory with optional concurrent bounded probes, `[mlflow]` settings read/write, and a bounded per-destination test-connection probe. |
 | `src/haute/schemas.py` | Shared Pydantic contracts owned by [server-api](../server-api/low-level.md) and returned by the MLflow discovery routes (`MlflowExperimentSummary`, run/model/version summaries). |
 
@@ -95,7 +95,7 @@
   identity — EBM), `self_describing` (a Haute wrapper that encodes its own
   inputs, applies its own offset and labels binary predictions; its contract
   identity is checked against its native objective — XGBoost, LightGBM,
-  EBM), `predict_frame` (`polars` | `tabular` | `pandas`, see Control flow),
+  EBM, t-boost), `predict_frame` (`polars` | `tabular` | `pandas`, see Control flow),
   `offset_input` (`column`: the offset rides in the predict frame and the
   model applies it; `baseline`: Haute supplies it as a CatBoost `Pool`
   baseline), `offset_column` / `offset_link` (readers of the offset a raw
@@ -106,7 +106,7 @@
   reverse). `register_model_family` refuses a flavor already registered and
   a suffix another family already loads (`ValueError`). Registration order
   is artifact discovery order: CatBoost, RustyStats, XGBoost, LightGBM, EBM,
-  then pyfunc. `family_for_artifact(path)` lowercases the last path
+  t-boost, then pyfunc. `family_for_artifact(path)` lowercases the last path
   component's suffix: a registered suffix names its family, no suffix names
   the directory family (pyfunc; MLflow's loader then requires the `MLmodel`
   file), and any other suffix raises `ConfigError` naming the registered

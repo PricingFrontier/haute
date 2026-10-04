@@ -227,6 +227,7 @@
       "cv_seed": 42
     },
     "ebm_terms": [],
+    "tboost_tables": null,
     "diagnostics_errors": [
       {
         "diagnostic": "shap",

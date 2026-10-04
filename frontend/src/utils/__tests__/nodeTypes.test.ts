@@ -41,6 +41,7 @@ describe("Model Training palette entry", () => {
     lightgbm: "gradient boosting",
     xgboost: "gradient boosting",
     ebm: "EBM",
+    tboost: "t-boost",
     glm: "GLM",
   }
 

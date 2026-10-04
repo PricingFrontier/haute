@@ -766,6 +766,10 @@ from haute.modelling._ebm import EBMAlgorithm  # noqa: E402
 
 ALGORITHM_REGISTRY["ebm"] = EBMAlgorithm
 
+from haute.modelling._tboost import TBoostAlgorithm  # noqa: E402
+
+ALGORITHM_REGISTRY["tboost"] = TBoostAlgorithm
+
 # Register GLM if RustyStats is installed (lazy import keeps it optional)
 try:
     from haute.modelling._rustystats import GLMAlgorithm

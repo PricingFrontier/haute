@@ -401,6 +401,8 @@ class TrainResult:
     glm_regularization: dict[str, Any] | None = None
     #: EBM shape functions and pairwise surfaces (empty for other families).
     ebm_terms: list[dict[str, Any]] = field(default_factory=list)
+    #: t-boost's rating tables (``None`` for other families).
+    tboost_tables: dict[str, Any] | None = None
     # Optional-diagnostic failures surfaced to callers so a degraded
     # run (SHAP/PDP/GLM diagnostics missing) is visible in the UI and
     # in test suites, instead of being silently swallowed.
@@ -491,6 +493,7 @@ class _MetricsResult:
     glm_smooth_terms: list[dict[str, Any]] = field(default_factory=list)
     glm_regularization: dict[str, Any] | None = None
     ebm_terms: list[dict[str, Any]] = field(default_factory=list)
+    tboost_tables: dict[str, Any] | None = None
     # Optional-diagnostic failures (SHAP, PDP, GLM diagnostics) —
     # surfaced rather than silently swallowed.
     diagnostics_errors: list[dict[str, str]] = field(default_factory=list)
@@ -905,6 +908,7 @@ class TrainingJob:
                 glm_smooth_terms=metrics_result.glm_smooth_terms,
                 glm_regularization=metrics_result.glm_regularization,
                 ebm_terms=metrics_result.ebm_terms,
+                tboost_tables=metrics_result.tboost_tables,
                 diagnostics_errors=metrics_result.diagnostics_errors,
             )
             fit_result = train_result.fit_result
@@ -2368,6 +2372,7 @@ class TrainingJob:
                     "class_labels": self._class_labels,
                     "seed": self.evaluation.seed if self.evaluation is not None else 0,
                     "device": self.device,
+                    "groups": self._plan_group_column(),
                 }
             with _training_stage(execution_context, "training_algorithm_fit"):
                 fit_result = algo.fit(
@@ -2521,10 +2526,23 @@ class TrainingJob:
         if self.algorithm == "glm":
             return None
         needed: list[str] = []
-        for column in [*features, self.target, self.weight, self.offset]:
+        for column in [
+            *features,
+            self.target,
+            self.weight,
+            self.offset,
+            self._plan_group_column(),
+        ]:
             if column and column not in needed:
                 needed.append(column)
         return needed
+
+    def _plan_group_column(self) -> str | None:
+        """The entity column of a group plan, for an engine that carves its own
+        internal holdouts (t-boost) and must not split an entity across them."""
+        if self.evaluation is not None and self.evaluation.strategy == "group":
+            return self.evaluation.group_column
+        return None
 
     def _scan_with_columns(self, data_path: str, features: list[str]) -> pl.LazyFrame:
         """Scan parquet with training-column projection when the algorithm supports it."""
@@ -2847,6 +2865,14 @@ class TrainingJob:
             except Exception as exc:
                 _record_diag_error(diagnostics_errors, "ebm_terms", exc)
 
+        # ── t-boost table report (OPTIONAL) ──
+        tboost_tables: dict[str, Any] | None = None
+        if hasattr(algo, "tboost_tables"):
+            try:
+                tboost_tables = algo.tboost_tables(model)
+            except Exception as exc:
+                _record_diag_error(diagnostics_errors, "tboost_tables", exc)
+
         del diag_df
         gc.collect()
 
@@ -2879,6 +2905,7 @@ class TrainingJob:
             glm_smooth_terms=glm_report.smooth_terms if glm_report else [],
             glm_regularization=glm_report.regularization if glm_report else None,
             ebm_terms=ebm_terms,
+            tboost_tables=tboost_tables,
             diagnostics_errors=diagnostics_errors,
         )
 
@@ -3216,6 +3243,7 @@ class TrainingJob:
             glm_smooth_terms=result.glm_smooth_terms,
             glm_regularization=result.glm_regularization,
             ebm_terms=result.ebm_terms,
+            tboost_tables=result.tboost_tables,
             lorenz_curve_perfect=result.lorenz_curve_perfect,
             pdp_data=result.pdp_data,
             final_test_metrics=result.final_test_metrics,

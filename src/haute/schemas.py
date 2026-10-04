@@ -3075,6 +3075,7 @@ class TrainResponse(BaseModel):
     glm_smooth_terms: list[dict[str, Any]] = Field(default_factory=list)
     glm_regularization: dict[str, Any] | None = None
     ebm_terms: list[dict[str, Any]] = Field(default_factory=list)
+    tboost_tables: dict[str, Any] | None = None
     diagnostics_errors: list[dict[str, str]] = Field(default_factory=list)
     warning: str | None = None
     total_source_rows: int | None = None
@@ -3475,7 +3476,7 @@ class LogExperimentRequest(BaseModel):
 
 class ModelSaveDestinationRequest(BaseModel):
     output_path: str = Field(min_length=1)
-    algorithm: Literal["catboost", "glm", "xgboost", "lightgbm", "ebm"]
+    algorithm: Literal["catboost", "glm", "xgboost", "lightgbm", "ebm", "tboost"]
 
 
 class ModelSaveDestinationResponse(BaseModel):

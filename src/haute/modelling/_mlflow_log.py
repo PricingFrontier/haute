@@ -167,6 +167,7 @@ _DIAGNOSTIC_ARTIFACTS: tuple[tuple[str, str, str], ...] = (
     ("glm_inference", "glm_inference", "glm"),
     ("glm_smooth_terms", "glm_smooth_terms", "glm"),
     ("ebm_terms", "ebm_terms", "ebm"),
+    ("tboost_tables", "tboost_tables", "tboost"),
     ("glm_regularization", "glm_regularization", "glm"),
 )
 
