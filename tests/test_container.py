@@ -1140,10 +1140,8 @@ class TestDetectExtraDeps:
         importable_from = {
             "catboost": "catboost",
             "interpret": "interpret-core",
-            "lightgbm": "lightgbm",
             "pandas": "pandas",
             "sklearn": "scikit-learn",
-            "xgboost": _EXPECTED_XGBOOST,
         }
         in_runtime_or_stdlib = {"numpy", "polars", "joblib", *sys.stdlib_module_names}
 

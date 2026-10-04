@@ -156,8 +156,8 @@ through `_resolve_output_node`: an explicit `@pipeline.output` node wins if ther
 otherwise the single node with no outgoing edge; otherwise raise, naming every candidate node.
 A lazy output is collected by `_collect_standalone_output` through Haute's
 `execution_collect` inside the call's scenario context, so `run()` and `score()` always return a
-`pl.DataFrame`, a node reading the scenario context during collection observes `batch` or
-`live`, and typed Haute errors raised while collecting (such as `RatingTableMissError` from a
+`pl.DataFrame`, a node reading the scenario context during collection observes the run's
+source (`run(source=...)`) or `live` (`score()`), and typed Haute errors raised while collecting (such as `RatingTableMissError` from a
 rating step's miss guard) keep their types; the scenario context is reset whether collection
 succeeds or fails. An eager output is returned unchanged.
 `Pipeline.to_graph()` converts the same live objects into a React-Flow-shaped plain `dict`,
@@ -504,7 +504,10 @@ it on the reading node instead of aborting the walk, and every other run propaga
   'x' must be zero or more; it is -1 for source 'nb_batch'.`. The render request
   (`PolarsStepsRenderRequest`) takes optional `global_constants`; given them, the first failing
   reference is the response's step problem.
-- `Pipeline.run` takes a keyword-only `source` (default `"batch"`); it and `Pipeline.score`
+- `Pipeline.run` takes a keyword-only `source`, which it requires: without one it raises
+  `TypeError` from `Pipeline._missing_source_message`, which names the sources of the
+  `.haute.json` sidecar beside the first node's file (read by
+  `src/haute/_sidecar.py::read_sidecar_state`; `live` when there is none). It and `Pipeline.score`
   (which uses `live`) set `_scenario_ctx` to that source for the run and build the table with
   `Pipeline._run_constants`, which loads a declared file through
   `src/haute/parser.py::load_declared_global_constants` from the pipeline directory that
@@ -516,9 +519,21 @@ it on the reading node instead of aborting the walk, and every other run propaga
   that are the module's plus `global_constants` bound to the view for
   `function_constant_reads(fn)`, the reads of the function's source (every constant when its
   source cannot be read). Two runs therefore never share a binding. Calling a node's decorated
-  name outside a run binds nothing, so its code reads the sentinel. A standalone run of a
-  pipeline that wires a submodel fails before any node runs
-  ([BUG-17](../roadmap/bugs.md#bug-17--a-standalone-run-of-a-pipeline-with-a-submodel-says-what-it-cannot-do)).
+  name outside a run binds nothing, so its code reads the sentinel.
+- A pipeline with submodel registrations runs through `Pipeline._with_submodels_expanded`:
+  `_load_submodel_definition` resolves each file with
+  `src/haute/_submodel_paths.py::resolve_submodel_reference` from the pipeline directory and
+  imports it under a fresh module name, requiring exactly one `Submodel` among its globals;
+  each definition node becomes a `dataclasses.replace` copy named `<occurrence>.<node>`;
+  boundary edges come from `_submodel_input` / `_submodel_output` (an unknown port is an
+  `ExecutionError` listing the ports); and `_in_parameter_order` orders each submodel node's
+  inputs: an input whose name (the input port's for an edge into an occurrence, otherwise
+  `_graph_utils.executable_input_name`'s, so a Quote Input frame by its frame handle) is a
+  positional parameter takes its place, the rest fill the open parameters in
+  order, and a node with more inputs than parameters, like the pipeline's own nodes, keeps
+  registration order. A registration records the file that made it
+  (`RegisteredSubmodel.registered_in`), which its path resolves against, and
+  `Pipeline._submodels_expanded` keeps each imported module in `sys.modules` for the run.
 
 ## Edge cases and invariants
 

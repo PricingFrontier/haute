@@ -1437,7 +1437,7 @@ function NodePanelContent({
     (field: string, search: string, signal: AbortSignal) => {
       if (!node) throw new Error("Explore node is unavailable.")
       return fetchExplorePivotMembers({
-        graph: buildGraph(allNodes, edges, submodels, preamble),
+        graph: buildGraph(allNodes, edges, submodels),
         node_id: node.id,
         field,
         source: activeSource,

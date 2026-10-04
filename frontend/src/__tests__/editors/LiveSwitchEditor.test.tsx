@@ -100,6 +100,24 @@ describe("LiveSwitchEditor", () => {
     expect(onUpdate).toHaveBeenCalledWith("input_scenario_map", { live_data: "backtest" })
   })
 
+  it("removes an input's key when it is set back to -", () => {
+    const onUpdate = vi.fn()
+    const inputs = [
+      { sourceNodeId: "a", name: "live_data", sourceLabel: "Live Data", edgeId: "e1" },
+      { sourceNodeId: "b", name: "batch_data", sourceLabel: "Batch Data", edgeId: "e2" },
+    ]
+    render(
+      <LiveSwitchEditor
+        config={{ input_scenario_map: { live_data: "live", batch_data: "backtest" } }}
+        onUpdate={onUpdate}
+        inputSources={inputs}
+        accentColor="#34d399"
+      />,
+    )
+    fireEvent.change(screen.getAllByRole("combobox")[0], { target: { value: "" } })
+    expect(onUpdate).toHaveBeenLastCalledWith("input_scenario_map", { batch_data: "backtest" })
+  })
+
   it("renders with non-live active source", () => {
     useSettingsStore.setState({ activeSource: "backtest" })
     render(

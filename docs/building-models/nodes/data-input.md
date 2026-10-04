@@ -22,7 +22,7 @@ The fields below **PROVIDER** depend on the provider. A field marked **\*** is r
 | **FORMAT** | The file format: **CSV**, **JSON**, **NDJSON** (`.jsonl`/`.ndjson`), **Parquet**, **Arrow IPC / Feather**, **Arrow IPC stream**, **Avro**, **Excel**, **OpenDocument spreadsheet** or **Text lines** (one text line per row). A format Polars marks as unstable says **(unstable)**, and a format whose reader needs a package that is not installed says "needs one of:" and the packages. Changing the format keeps the path and clears **ARGUMENTS**. |
 | **PATH \*** | The file, chosen in the file browser, which lists the folders of your project and the files with the format's extensions. Once a file is chosen, **change** opens the browser again. The path is stored relative to your project folder. |
 
-For a **CSV** file, the tab also shows the columns and types Haute detects in the file. **Use detected schema** copies them into **ARGUMENTS** as the reader's `schema`, which fixes each column's type; until you do, the tab shows "A schema mapping is required for this bounded input." Without a declared schema, Haute infers each column's type from the whole file when it copies the file into its snapshot (see [Snapshots](#in-the-data-preview)). Detection reads the file with the CSV reader's defaults and ignores **ARGUMENTS**, so for a file that needs an argument to read, such as a `;` separator, the detected columns are wrong: leave the types to inference, or add the `schema` argument by hand. If the file cannot be read, the tab says "Could not detect schema:" with the reason, and **Retry schema** tries again.
+For a **CSV** file, the tab also shows the columns and types Haute detects in the file. **Use detected schema** copies them into **ARGUMENTS** as the reader's `schema`, which fixes each column's type; until you do, the tab shows "A schema mapping is required for this bounded input." Without a declared schema, Haute infers each column's type from the whole file when it copies the file into its snapshot (see [Snapshots](#in-the-data-preview)). Detection reads the file with the node's **ARGUMENTS** (all but `schema`), so a `;` separator or a missing header row shapes the detected columns, and changing an argument detects them again. If the file cannot be read, the tab says "Could not detect schema:" with the reason, and **Retry schema** tries again.
 
 ### Database
 
@@ -38,7 +38,7 @@ For a **CSV** file, the tab also shows the columns and types Haute detects in th
 | Field | What it does |
 |---|---|
 | **FORMAT** | **Delta Lake** or **Iceberg (unstable)**. |
-| **TABLE LOCATOR \*** | The table's location in your project: a Delta table's folder, or an Iceberg table's metadata file (`metadata/<version>.metadata.json`). The file browser selects only files, so a Delta folder is set as `path` in the node's JSON sidecar (see "In the pipeline file" below). |
+| **TABLE LOCATOR \*** | The table's location in your project: a Delta table's folder, or an Iceberg table's metadata file (`metadata/<version>.metadata.json`). For Delta, open the table's folder in the file browser and click **Use this folder**. |
 
 ### Databricks
 
@@ -46,7 +46,7 @@ For a **CSV** file, the tab also shows the columns and types Haute detects in th
 |---|---|
 | **SQL WAREHOUSE** | The SQL warehouse's HTTP path, such as `/sql/1.0/warehouses/abc123`; your Databricks administrator can provide it. Type it, or click **Browse** to list the workspace's warehouses (each with its state and size) and pick one. |
 | **TABLE** | The table to read, chosen in three lists: **Select catalog...**, then **Select schema...**, then **Select table...**. The full name, `catalog.schema.table`, shows underneath. |
-| **SELECT CLAUSE** | Optional. A `SELECT` clause without `FROM`, such as `SELECT policy_id, premium`; Haute appends `FROM` and the chosen table ("Optional projection/filter clause. Haute supplies the validated table."). It must start with `SELECT` and must not contain `FROM`, semicolons, SQL comments or write keywords. Leave it empty to read every column. |
+| **SELECT CLAUSE** | Optional. A `SELECT` clause without `FROM`, such as `SELECT policy_id, premium`; Haute appends `FROM` and the chosen table ("Optional. A SELECT list without FROM, such as SELECT policy_id, premium. Haute adds FROM and the chosen table."). It must start with `SELECT` and must not contain `FROM`, semicolons, SQL comments or write keywords. Leave it empty to read every column. |
 
 A Databricks input has no format.
 
@@ -94,7 +94,7 @@ A CSV file that uses `;` as its separator:
 1. Choose **CSV** as the **FORMAT**, and `data/claims.csv` as the **PATH**.
 2. Under **ARGUMENTS**, click **Add argument**, type `separator` as the name and `";"` as the value.
 
-Haute infers the column types when it copies the file into its snapshot. Leave **Use detected schema** alone for this file: detection ignores the separator.
+The detected schema splits the columns on `;`. Click **Use detected schema** to fix their types, or leave the types to inference when Haute copies the file into its snapshot.
 
 A Databricks table:
 

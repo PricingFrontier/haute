@@ -29,7 +29,7 @@ from haute._lru_cache import LRUCache
 from haute._model_flavors import is_registered_flavor, model_families, model_family
 from haute._model_source import BoundModel, ModelSource, require_model_source
 from haute._polars_utils import bounded_collect_batches
-from haute._types import GLOBAL_CONSTANTS_NAME, _Frame
+from haute._types import _Frame
 from haute.errors import ConfigError
 from haute.errors import FeatureMismatchError as FeatureMismatchError
 
@@ -1336,7 +1336,7 @@ def _run_score_pipeline(
     required_output_columns: frozenset[str] | set[str] | None = None,
     temporary_paths: list[str] | None = None,
     categorical_levels: _CategoricalLevels = None,
-    global_constants: Any = None,
+    preamble_ns: dict[str, Any] | None = None,
 ) -> _Frame:
     """Core scoring logic shared by ``ModelScorer.score()`` and deploy scorer.
 
@@ -1355,6 +1355,9 @@ def _run_score_pipeline(
         Scoring configuration (same semantics as ``ModelScorer`` attributes).
     extra_dfs
         Additional upstream LazyFrames passed through to user code.
+    preamble_ns
+        The preamble's names (the run's global constants among them), which
+        the post-processing code sees beside ``model``.
     source
         ``"live"`` → eager path; anything else → batched path.
     row_limit
@@ -1469,11 +1472,7 @@ def _run_score_pipeline(
             code,
             ["df", *(source_names or [])[1:]],
             all_dfs,
-            extra_ns=(
-                {"model": scoring_model}
-                if global_constants is None
-                else {"model": scoring_model, GLOBAL_CONSTANTS_NAME: global_constants}
-            ),
+            extra_ns={**(preamble_ns or {}), "model": scoring_model},
             alias_first_input_as_df=True,
         )
     return result_lf
@@ -1578,12 +1577,12 @@ class ModelScorer:
         reuse_loaded_model: bool = False,
         input_fanout: int = 1,
         base_dir: str | Path | None = None,
-        global_constants: Any = None,
+        preamble_ns: dict[str, Any] | None = None,
     ) -> None:
         from haute.modelling._feature_contract import normalise_categorical_levels
 
-        # The run's constants, bound in the post-processing code beside ``model``.
-        self.global_constants = global_constants
+        # The preamble's names, seen by the post-processing code beside ``model``.
+        self.preamble_ns = preamble_ns
         self.model_source = model_source
         self.task = task
         self.output_col = output_col
@@ -1720,7 +1719,7 @@ class ModelScorer:
                 schema_only=self.schema_only,
                 required_output_columns=self.required_output_columns,
                 categorical_levels=categorical_levels,
-                global_constants=self.global_constants,
+                preamble_ns=self.preamble_ns,
             )
         finally:
             _score_input_fanout.reset(fanout_token)

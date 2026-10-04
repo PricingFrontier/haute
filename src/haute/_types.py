@@ -682,12 +682,8 @@ class OptimiserConfig(TypedDict, total=False):
 
     # Ratebook
     factor_columns: list[list[str]]
-    candidate_min: float
-    candidate_max: float
-    candidate_steps: int
     max_cd_iterations: int
     cd_tolerance: float
-    structure_mode: str  # "explicit" | "auto"
 
     # Executable incoming-edge frame name selected for optimisation.
     data_input: str
@@ -889,12 +885,8 @@ OPTIMISER_CONFIG_KEYS: tuple[str, ...] = (
     "frontier_ranges",
     "frontier_steps",
     "factor_columns",
-    "candidate_min",
-    "candidate_max",
-    "candidate_steps",
     "max_cd_iterations",
     "cd_tolerance",
-    "structure_mode",
     "data_input",
     "banding_source",
     "analysis_input",

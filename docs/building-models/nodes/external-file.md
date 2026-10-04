@@ -19,7 +19,7 @@ The **INPUT** chips at the top name the node's connections; the × on a chip rem
 | **FILE PATH** | The file, chosen in the file browser: a `.pkl`, `.pickle`, `.json` or `.joblib` file inside your project folder. Once a file is chosen, **change** opens the browser again. |
 
 !!! warning "Pickle and joblib files load only known classes"
-    For safety, Haute loads pickle and joblib files through an exact list of allowed classes: NumPy arrays, pandas and Polars DataFrames and Series, plain Python values such as dictionaries and lists, CatBoost models, scikit-learn's `RandomForestRegressor`, `LinearRegression` and `DecisionTreeRegressor`, and InterpretML's `ExplainableBoostingRegressor` and `ExplainableBoostingClassifier`. Any other class fails with "Blocked unpickling of ...". That includes other scikit-learn estimators (classifiers among them) and pickled XGBoost or LightGBM models.
+    For safety, Haute loads pickle and joblib files through an exact list of allowed classes: NumPy arrays, pandas and Polars DataFrames and Series, plain Python values such as dictionaries and lists, CatBoost models, scikit-learn's `RandomForestRegressor`, `LinearRegression` and `DecisionTreeRegressor`, and InterpretML's `ExplainableBoostingRegressor` and `ExplainableBoostingClassifier`. Any other class fails with "Blocked unpickling of ...". That includes other scikit-learn estimators (classifiers among them) and pickled XGBoost or LightGBM models, which fail naming their own class (such as "Blocked unpickling of xgboost.sklearn.XGBRegressor"); save such a model in its own format (`.ubj` or `.lgbm`) and score it with [Model Scoring](model-score.md).
 
 ## The TRANSFORM tab
 

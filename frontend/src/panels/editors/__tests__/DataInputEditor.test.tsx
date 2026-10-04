@@ -4,6 +4,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react"
 import type { IoCapabilityGroup } from "../../../api/types"
@@ -38,6 +39,7 @@ vi.mock("../CodeEditor", () => ({
 import {
   fetchSchema,
   fetchIoCapabilities,
+  listFiles,
 } from "../../../api/client"
 import DataInputEditor from "../DataInputEditor"
 import { resetIoCapabilitiesRequestForTests } from "../_ioFormats"
@@ -67,6 +69,7 @@ const groups: IoCapabilityGroup[] = [
           cache_mode: "direct",
           direct_bounded: true,
           needs_schema_when_bounded: false,
+          source_is_folder: false,
           snapshot_build: "bounded",
           cached_read: true,
         },
@@ -85,6 +88,7 @@ const groups: IoCapabilityGroup[] = [
           cache_mode: "snapshot",
           direct_bounded: true,
           needs_schema_when_bounded: true,
+          source_is_folder: false,
           snapshot_build: "bounded",
           cached_read: true,
         },
@@ -103,6 +107,7 @@ const groups: IoCapabilityGroup[] = [
           cache_mode: "snapshot",
           direct_bounded: false,
           needs_schema_when_bounded: false,
+          source_is_folder: false,
           snapshot_build: "admitted_eager",
           cached_read: true,
         },
@@ -121,6 +126,7 @@ const groups: IoCapabilityGroup[] = [
           cache_mode: "snapshot",
           direct_bounded: false,
           needs_schema_when_bounded: false,
+          source_is_folder: false,
           snapshot_build: "admitted_eager",
           cached_read: true,
         },
@@ -164,6 +170,7 @@ const groups: IoCapabilityGroup[] = [
           cache_mode: "snapshot",
           direct_bounded: false,
           needs_schema_when_bounded: false,
+          source_is_folder: false,
           snapshot_build: "bounded",
           cached_read: true,
         },
@@ -200,6 +207,7 @@ const groups: IoCapabilityGroup[] = [
           cache_mode: "snapshot",
           direct_bounded: true,
           needs_schema_when_bounded: false,
+          source_is_folder: true,
           snapshot_build: "bounded",
           cached_read: true,
         },
@@ -255,6 +263,7 @@ const groups: IoCapabilityGroup[] = [
           cache_mode: "snapshot",
           direct_bounded: true,
           needs_schema_when_bounded: false,
+          source_is_folder: false,
           snapshot_build: "bounded",
           cached_read: true,
         },
@@ -356,6 +365,41 @@ describe("DataInputEditor", () => {
       null_values: ["NA"],
       schema: { policy_id: "Int64", premium: "Float64" },
     })
+  })
+
+  it("detects the schema with the node's reader settings, its schema argument aside", async () => {
+    renderEditor({
+      inputType: "file",
+      format: "csv",
+      mode: "scan",
+      path: "claims.csv",
+      arguments: { separator: ";", schema: { claim_id: "Int64" } },
+      code: "",
+    })
+
+    await waitFor(() => expect(fetchSchema).toHaveBeenCalled())
+    expect(fetchSchema).toHaveBeenLastCalledWith(
+      "claims.csv",
+      { signal: expect.any(AbortSignal) },
+      { format: "csv", arguments: { separator: ";" } },
+    )
+  })
+
+  it("points a Delta Lakehouse input at a table folder", async () => {
+    vi.mocked(listFiles).mockImplementation((dir) =>
+      Promise.resolve(
+        dir === "."
+          ? { items: [{ name: "claims", path: "tables/claims", type: "directory" }] }
+          : { items: [{ name: "_delta_log", path: "tables/claims/_delta_log", type: "directory" }] },
+      ) as ReturnType<typeof listFiles>,
+    )
+    const { onUpdate } = renderEditor({ inputType: "lakehouse", format: "delta", mode: "scan", code: "" })
+
+    fireEvent.click(await screen.findByText("claims"))
+    await screen.findByText("_delta_log")
+    fireEvent.click(screen.getByRole("button", { name: "Use this folder" }))
+
+    expect(onUpdate).toHaveBeenCalledWith("path", "tables/claims")
   })
 
   it("tolerates a leftover cacheMode key and never migrates it", async () => {
@@ -577,6 +621,23 @@ describe("DataInputEditor", () => {
       arguments: {},
       code: "df",
     })
+  })
+
+  it("describes the Databricks query as a SELECT clause Haute completes with FROM", async () => {
+    renderEditor({
+      inputType: "databricks",
+      http_path: "/sql/1.0/warehouses/abc",
+      table: "catalog.schema.quotes",
+      arguments: {},
+      code: "df",
+    })
+
+    await screen.findByLabelText("SELECT clause")
+    expect(
+      screen.getByText(
+        "Optional. A SELECT list without FROM, such as SELECT policy_id, premium. Haute adds FROM and the chosen table.",
+      ),
+    ).toBeInTheDocument()
   })
 
   it("validates inline records and commits one parsed update on blur", async () => {

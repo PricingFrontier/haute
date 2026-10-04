@@ -24,6 +24,7 @@ from haute._ast_helpers import (
     _get_decorator_kwargs,
     _is_pipeline_authored_decorator,
     _is_submodel_authored_decorator,
+    unkept_module_statements,
 )
 from haute._cache import canonical_json
 from haute._editor_identities import (
@@ -1712,6 +1713,44 @@ def name_violations_payload(violations: Sequence[NameViolation]) -> list[Pipelin
     ]
 
 
+def _unkept_statement_diagnostics(
+    source: str, *, source_file: str
+) -> list[PipelineRecoveryDiagnostic]:
+    """One diagnostic per module statement that a save would drop.
+
+    Each degrades the document, so nothing regenerates the file without the
+    statement until it moves into the preamble or a preserved block.
+    """
+    lines = source.splitlines()
+    diagnostics = []
+    for start_line, end_line in unkept_module_statements(source):
+        first = lines[start_line - 1].strip()
+        excerpt = first if len(first) <= 60 else f"{first[:57]}..."
+        diagnostics.append(
+            _diagnostic(
+                code="unkept_module_statement",
+                scope="pipeline",
+                message=(
+                    f"`{excerpt}` is outside the preamble and preserved blocks, where a save "
+                    "would drop it."
+                ),
+                source_file=source_file,
+                source_span=RecoverySourceSpan(
+                    start_line=start_line,
+                    start_column=0,
+                    end_line=end_line,
+                    end_column=len(lines[end_line - 1]),
+                ),
+                remediation=(
+                    "Move it between the `import haute` line and `pipeline = haute.Pipeline(...)`, "
+                    "where it becomes part of the preamble, or wrap it in "
+                    "`# haute:preserve-start` and `# haute:preserve-end` lines."
+                ),
+            )
+        )
+    return diagnostics
+
+
 def _capabilities(
     status: PipelineLoadStatus,
     *,
@@ -1906,6 +1945,7 @@ def _load_readable_pipeline_editor_document(
         edges = snapshot.edges
         unresolved = snapshot.unresolved_connections
         submodels = snapshot.submodels
+        diagnostics.extend(_unkept_statement_diagnostics(source, source_file=source_file))
 
     if strict_graph is None:
         if sidecar_issue is not None:

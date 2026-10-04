@@ -279,7 +279,10 @@ is the API preview contract. While expanded, the picker remains the sole
 selected-path summary; its embedded `FileBrowser` does not repeat the path.
 Registry-defined input paths are browser-only, matching Preview Data. Output
 destinations may additionally enable committed manual entry because their
-target file need not exist yet.
+target file need not exist yet. A format whose input capability reports
+`source_is_folder` (Delta Lake, whose table is a folder) adds a **Use this
+folder** action to the browser's header once it has opened a folder below the
+project root; it selects that folder as the path.
 
 **Shared Transform tab.** Known non-instance Data Input, External File, Scenario
 Expander, Rating Step, and Model Score nodes expose `Config`, `Transform`, then
@@ -607,8 +610,9 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   filtered/merged before persistence without making existing user rows disappear.
 - Rating table normalisation supports missing/malformed entries by producing the editable table
   contract; two-way grids keep their cartesian factor coordinates aligned with their entry values.
-  It preserves canonical row order and valid `factorDtypes` metadata instead of dropping either
-  during a view-only open/save cycle.
+  It preserves canonical row order, valid `factorDtypes` metadata and `onMissing` instead of
+  dropping any of them during a view-only open/save cycle, and leaves an absent or null
+  `defaultValue` as it is rather than filling one in.
 - `frontend/src/panels/editors/shared/tableClipboard.ts` parses tab/newline data before applying
   it, while the rating/banding grids validate their target coordinates and numeric values.
 - Path tools preserve/rewrite only recognised path prefixes. JSON path validation and

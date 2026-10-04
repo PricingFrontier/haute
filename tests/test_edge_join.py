@@ -291,7 +291,7 @@ def test_codegen_emits_edge_join_with_base_first_params_and_connects(
 
     namespace = {"__file__": str(_write_pipeline(tmp_path, code))}
     exec(compile(code, str(tmp_path / "pipeline.py"), "exec"), namespace)
-    result = namespace["pipeline"].run()
+    result = namespace["pipeline"].run(source="batch")
     assert result["factor"].to_list() == [1.1]
     preview = execute_graph(parsed)["Join_Rates"]
     assert preview.status == "ok"
@@ -384,7 +384,7 @@ def test_edge_join_round_trip_resolves_roles_when_node_ids_differ_from_labels(
     # Preview off the generated module produces the joined frame.
     namespace = {"__file__": str(path)}
     exec(compile(code, str(path), "exec"), namespace)
-    result = namespace["pipeline"].run()
+    result = namespace["pipeline"].run(source="batch")
     assert result["factor"].to_list() == [1.1]
 
     # Re-save (second codegen pass) is byte-stable for the decorator kwargs.
@@ -729,7 +729,7 @@ def test_edge_join_pipeline_run_honours_configured_roles_for_reversed_connects()
     pipeline.connect("lookup", "join_rates", target_port="join")
     pipeline.connect("quotes", "join_rates", target_port="base")
 
-    result = pipeline.run()
+    result = pipeline.run(source="batch")
 
     assert result["quote_id"].to_list() == [1, 2, 3]
     assert result["factor"].to_list() == [1.1, 0.9, None]
@@ -763,7 +763,7 @@ def test_edge_join_declaration_joins_in_pipeline_run() -> None:
     pipeline.connect("quotes", "join_rates", target_port="base")
     pipeline.connect("lookup", "join_rates", target_port="join")
 
-    result = pipeline.run()
+    result = pipeline.run(source="batch")
 
     assert result["quote_id"].to_list() == [1, 2, 3]
     assert result["factor"].to_list() == [1.1, 0.9, None]
@@ -999,7 +999,7 @@ def _run_pipeline_edge_join(
 
     pipeline.connect("base_src", "joined", target_port="base")
     pipeline.connect("lookup_src", "joined", target_port="join")
-    return pipeline.run()
+    return pipeline.run(source="batch")
 
 
 def _run_edge_join(

@@ -17,6 +17,10 @@ import { makeSimpleNode, makeSimpleEdge } from "../../test-utils/factories"
 import useGraphStore from "../../stores/useGraphStore"
 
 describe("buildGraph", () => {
+  afterEach(() => {
+    useGraphStore.getState().resetForTests()
+  })
+
   it("serializes nodes with id, type, data, and zeroed position", () => {
     // Catches: if position is taken from the input node instead of
     // being zeroed, the backend would receive UI coordinates that
@@ -58,26 +62,29 @@ describe("buildGraph", () => {
     expect(result.nodes[0].type).toBe("submodel")
   })
 
-  it("preserves canonical submodels and preamble when provided", () => {
-    // Catches: if these optional fields are accidentally dropped,
-    // saving a pipeline with submodels or preamble would lose that data.
+  it("preserves canonical submodels when provided", () => {
+    // Catches: if this optional field is accidentally dropped,
+    // saving a pipeline with submodels would lose that data.
     const submodels = { sub1: { graph: { nodes: [], edges: [] } } }
-    const preamble = "import polars as pl"
 
-    const result = buildGraph([], [], submodels, preamble)
+    const result = buildGraph([], [], submodels)
 
     expect(result.submodels).toEqual(submodels)
     expect(result.submodels).not.toBe(submodels)
-    expect(result.preamble).toBe(preamble)
   })
 
-  it("sets submodels and preamble to undefined when not provided", () => {
-    // Catches: if defaults were accidentally set to empty objects/strings,
-    // the backend might interpret them differently than "not provided".
+  it("carries the graph store's preamble, so no request can leave it out", () => {
+    useGraphStore.getState().setPreambleRaw("import polars as pl")
+
+    expect(buildGraph([], []).preamble).toBe("import polars as pl")
+  })
+
+  it("sets submodels to undefined when not provided", () => {
+    // Catches: if the default were accidentally an empty object,
+    // the backend might interpret it differently than "not provided".
     const result = buildGraph([], [])
 
     expect(result.submodels).toBeUndefined()
-    expect(result.preamble).toBeUndefined()
   })
 
   it("handles empty node and edge arrays", () => {
@@ -188,20 +195,16 @@ describe("graphForRequestIdentity", () => {
       },
       position: { x: 12, y: 34 },
     }
-    const graph = buildGraph(
-      [topNode],
-      [],
-      {
-        child: {
-          label: "Child",
-          graph: {
-            nodes: [nestedNode],
-            edges: [],
-          },
+    useGraphStore.getState().setPreambleRaw("import polars as pl")
+    const graph = buildGraph([topNode], [], {
+      child: {
+        label: "Child",
+        graph: {
+          nodes: [nestedNode],
+          edges: [],
         },
       },
-      "import polars as pl",
-    )
+    })
 
     const identity = graphForRequestIdentity(graph)
     const identityNodes = identity.nodes as Array<{ data: Record<string, unknown> }>

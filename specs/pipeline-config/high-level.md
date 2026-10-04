@@ -73,10 +73,11 @@ code (API Input, Data Output, Edge Join, Banding, Output, Live Switch, Modelling
 Optimiser Apply, Constant) every function is a declaration, and a parameter named `df` is
 just an input. Registration fails loudly for a declaration with a body (the code would never
 run; on a type that accepts no code the message says so) and for a hook without one. The
-static parser enforces the same shapes. Canvas execution gives a hook's code the same names
-the saved function has: `df` and the node's other inputs (an External File's inputs and
-`obj`), never the first input under its own name. One difference remains: a Model Score's
-code on the canvas can also use `model`, which a standalone run does not provide. Node code
+static parser enforces the same shapes. Canvas execution and the deployed scorer give a hook's
+code the same names the saved function has: the preamble's names, `df` and the node's other
+inputs (an External File's inputs and `obj`), never the first input under its own name. One
+difference remains: a Model Score's code on the canvas and when deployed can also use
+`model`, which a standalone run does not provide. Node code
 leaves its result in `df`; a closing `return <expr>` reads as `df = <expr>`, and an earlier
 return is a parse error rather than an assignment that would fall through. The decorator returns a callable that runs the node:
 calling a configured node's function directly — `quotes()` in a notebook — performs the same
@@ -85,13 +86,6 @@ function itself. A sidecar-typed node registered without `config=` has no settin
 decorator to act on, so the live API treats it as a plain function and a standalone run calls
 its body as written; the static parser rejects that form, so it never appears in a saved
 pipeline file.
-
-> NOTE: A Model Score's code on the canvas and in the deployed scorer also lacks the
-> preamble's names, which its saved function sees in a standalone run, and deployed External
-> File code sees `obj` without the preamble's names it has in the editor.
-> [BUG-14](../roadmap/bugs.md#bug-14--model-score-code-sees-the-preamble-on-the-canvas-and-when-deployed)
-> and [BUG-13](../roadmap/bugs.md#bug-13--deployed-external-file-code-sees-the-preamble-as-in-the-editor)
-> give both the preamble's names.
 
 **Strict parsing and editor recovery.** `parse_pipeline_file()` and
 `parse_pipeline_source()` are strict canonical entry points: Python syntax, decorator,
@@ -110,6 +104,10 @@ Only a valid sidecar supplies source selection. Corrupt or unreadable content le
 bytes untouched, uses presentation-only default positions, degrades the document, and blocks
 preview because active-source state is untrusted. Recovery revisions hash raw dependency
 bytes and explicit missing sentinels rather than requiring a valid `PipelineGraph`.
+A module-level statement that a save would drop (see [codegen](../codegen/high-level.md))
+is an `unkept_module_statement` diagnostic on its lines, so the document is degraded until the
+statement moves between the imports and the constructor or into preserve markers. Save refuses a document that is not ready on disk with `409`, naming each diagnostic's
+location, message and fix, and leaves the file untouched.
 Every mutation of a persisted document, including Save, names the `source_revision` it was
 based on and fails closed when the on-disk document has moved; initial creation names no
 revision and succeeds only while the target file is absent.
@@ -158,17 +156,29 @@ pipelines take a bare frame), or a bare frame against a multi-port source all ra
 multiple ports. Both `run()` and `score()` resolve each edge's frame through the same
 port-aware selection the full executor uses, keeping the
 single-execution-engine invariant.
+A pipeline that registers submodels runs them: `run()` and `score()` import each registered
+file's one `haute.Submodel` (a file that defines none, or several, is refused naming it) and
+execute a copy of the pipeline in which every occurrence is replaced by its definition's nodes,
+named `<occurrence>.<node>`. An edge into an occurrence's input port feeds every node the port
+targets, an edge out of an output port leaves the node the port names, as flattening wires them
+for `haute run`, and a submodel's node with several inputs receives them in its parameters'
+order: an input named by a parameter (its source's name, or the port's) takes that place, and
+the others fill the remaining parameters in order, as a hook's `df` names no input (the
+pipeline's own nodes keep their connection order, as without submodels). Each definition's
+module is in `sys.modules` while the run uses it, and a pipeline whose nodes all live in
+submodels runs too. Two
+occurrences of one definition each run its nodes under their own names.
 `@pipeline.instance` registrations are not executable on this live-object surface: the
 decorator records an internal instance marker, and `run()`/`score()` raise `ExecutionError`
 before calling the node regardless of whether `instanceOf` or `inputMapping` is empty. Static
 codegen may resolve an instance into a concrete generated function; the live registry may not
 silently treat an unresolved instance as an ordinary Polars node.
 
-> NOTE: `run()` runs under the scenario `"batch"`, a source no pipeline has unless the analyst
-> adds one, so a Source Switch mapped to the pipeline's own sources fails a bare `run()` with
-> `LiveSwitchScenarioError`.
-> [BUG-15](../roadmap/bugs.md#bug-15--a-bare-pipelinerun-routes-a-source-the-pipeline-has)
-> decides which source a bare `run()` routes.
+`run()` takes the source to run under as the keyword `source`, which it requires: a bare
+`run()` raises `TypeError` before any node runs, naming the sources the pipeline's
+`.haute.json` sidecar lists (`live` alone when there is no sidecar), because no default source
+is right for every pipeline. The source is what Source Switches route on, which value each
+global constant takes, and (anything but `live`) selects batched model scoring.
 
 **Project & discovery.** A Haute project is a directory containing `haute.toml` that also
 sits inside a git repository. Every surface that binds one pipeline, including `run`, `lint`,
@@ -478,16 +488,14 @@ Source Switches route on:
 - the optimiser, and a Data Output write started under `live`, use the graph's batch scenario
   (its Source Switches' one non-live source, or `"batch"`), as they do today;
 - deployed scoring uses `live`;
-- `pipeline.run(source=...)` uses the source it is given (by default `"batch"`, the scenario a
-  standalone run uses today), and `pipeline.score()` and `haute run` use `live`.
+- `pipeline.run(source=...)` uses the source it is given, which it requires, and
+  `pipeline.score()` and `haute run` use `live`.
 
 A run binds concrete values, never a lookup that depends on the calling thread, so a lazy
 Polars callback that reads a constant during collection reads the run's value on whichever
 thread runs it, and two runs under different sources never see each other's values. A
-standalone run of a pipeline that wires a submodel fails before any node runs
-([BUG-17](../roadmap/bugs.md#bug-17--a-standalone-run-of-a-pipeline-with-a-submodel-says-what-it-cannot-do)),
-so the binding in a submodel file serves `ruff check` and imports until standalone runs execute
-submodels.
+submodel's nodes read the run's constants through the binding in their own file, as the
+pipeline's nodes do.
 
 No node, step variable, node code or preamble may bind the name `global_constants`, so nothing
 shadows it. A constant's name is only ever an attribute of that name, so it can never collide

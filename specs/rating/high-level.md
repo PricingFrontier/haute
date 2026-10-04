@@ -112,6 +112,12 @@ Out of scope (owned by neighbouring components):
   (3) the default policy, `onMissing: "error"`, raises
   `RatingTableMissError` naming the table, the missing key(s), and the
   affected row count.
+- A table the editor creates (the Rating Step node default and **Add table**)
+  has no `defaultValue`, so its misses stop the run until the analyst types a
+  default or sets **On miss** (`onMissing`) to **Leave empty** (`"neutral"`).
+  The editor shows **On miss** beside **Default** and disables it while
+  Default holds a value; clearing Default removes `defaultValue`. Every edit
+  keeps a table's `onMissing` and leaves an absent `defaultValue` absent.
 - Table lookup keys are compared as strings through the factor column's
   originating Polars dtype. Table-entry values are first coerced through that
   dtype, then both the entry and input values use the same Polars expression:

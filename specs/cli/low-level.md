@@ -90,7 +90,7 @@ point is `rating/main.py`, so the root file is treated as a tooling artifact, no
 name contract without requiring execution data. Init creates neither `prompts/` nor node sidecars.
 
 **`run`**: resolves the pipeline file via `haute._project.resolve_pipeline_file`, calls
-`parse_pipeline_file` then `execute_graph`, prints one line per node (row/column count or error),
+`parse_pipeline_file(..., flatten=True)` then `execute_graph`, prints one line per node (row/column count or error),
 exits 1 if any node failed, then previews the last node's output as a `polars.DataFrame`.
 
 **`lint`**: resolves the pipeline file and parses it through the strict canonical entry point. Any

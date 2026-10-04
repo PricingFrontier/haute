@@ -92,7 +92,7 @@ class TestPipeline:
 
     def test_run(self):
         p = self._simple_pipeline()
-        result = p.run()
+        result = p.run(source="batch")
         assert "y" in result.columns
         assert result["y"].to_list() == [2, 4, 6]
 
@@ -215,7 +215,7 @@ class TestPipeline:
     def test_empty_pipeline_raises(self):
         p = Pipeline("empty")
         with pytest.raises(ValueError, match="no nodes"):
-            p.run()
+            p.run(source="batch")
 
     def test_topo_order_delegates_to_graph_utils(self):
         p = Pipeline("topo")
@@ -276,7 +276,7 @@ class TestPipeline:
 
         # No connect() calls — must raise, not silently use wrong data
         with pytest.raises(ValueError, match="no inbound edges"):
-            p.run()
+            p.run(source="batch")
 
     def test_score_no_edges_raises(self):
         """score() without edges raises rather than silently chaining."""
@@ -331,8 +331,8 @@ class TestPipeline:
         g = p.to_graph()
         assert g["edges"] == []
 
-    def test_run_sets_scenario_ctx_to_batch(self):
-        """Pipeline.run() must set _scenario_ctx to 'batch' during execution."""
+    def test_run_sets_scenario_ctx_to_its_source(self):
+        """Pipeline.run(source=...) sets _scenario_ctx to that source during execution."""
         captured: list[str] = []
         p = Pipeline("ctx_batch")
 
@@ -347,7 +347,7 @@ class TestPipeline:
             return df
 
         p.connect("source", "transform")
-        p.run()
+        p.run(source="batch")
         assert captured == ["batch", "batch"]
         # Context must be reset after run() completes
         assert _scenario_ctx.get() == "batch"  # default
@@ -390,7 +390,7 @@ class TestPipeline:
 
         p.connect("source", "boom")
         with pytest.raises(RuntimeError, match="kaboom"):
-            p.run()
+            p.run(source="batch")
         assert _scenario_ctx.get() == "batch"  # reset despite error
 
     def test_run_raises_typed_rating_miss_from_a_lazy_output(self):
@@ -413,7 +413,7 @@ class TestPipeline:
 
         p.connect("source", "rated")
         with pytest.raises(RatingTableMissError):
-            p.run()
+            p.run(source="batch")
         assert _scenario_ctx.get() == "batch"
 
     @pytest.mark.parametrize(("method", "expected"), [("run", "batch"), ("score", "live")])
@@ -433,7 +433,7 @@ class TestPipeline:
 
         p.connect("source", "tagged")
         runner = getattr(p, method)
-        result = runner() if method == "run" else runner(pl.DataFrame({"x": [1]}))
+        result = runner(source="batch") if method == "run" else runner(pl.DataFrame({"x": [1]}))
 
         assert isinstance(result, pl.DataFrame)
         assert result["ctx"].to_list() == [expected]
@@ -513,7 +513,7 @@ class TestPipelinePortAwareExecution:
 
         p.connect("api_source", "consume", source_port="quotes")
 
-        result = p.run()
+        result = p.run(source="batch")
         assert isinstance(result, pl.DataFrame)
         assert result.to_dict(as_series=False) == {"quote_id": [17]}
 
@@ -541,7 +541,7 @@ class TestPipelinePortAwareExecution:
         p.connect("api_source", "combine", source_port="quotes")
         p.connect("api_source", "combine", source_port="drivers")
 
-        assert p.run().to_dict(as_series=False) == {
+        assert p.run(source="batch").to_dict(as_series=False) == {
             "quote_id": [17],
             "driver_id": [31],
         }
@@ -872,7 +872,7 @@ class TestPipelineEdgeCases:
 
         p.connect("a", "b")
         with pytest.raises(ValueError, match="disconnected|no inbound edges"):
-            p.run()
+            p.run(source="batch")
 
     def test_self_loop_detected(self):
         p = Pipeline("loop")
@@ -909,7 +909,7 @@ class TestPipelineEdgeCases:
             return left.hstack(right.select("c"))
 
         p.connect("a", "b").connect("a", "c").connect("b", "d").connect("c", "d")
-        result = p.run()
+        result = p.run(source="batch")
         assert result["b"].to_list() == [11]
         assert result["c"].to_list() == [101]
 
@@ -1053,7 +1053,7 @@ class TestPipelineEdgeCases:
     def test_empty_pipeline_run_raises(self):
         p = Pipeline("empty")
         with pytest.raises(ValueError, match="no nodes"):
-            p.run()
+            p.run(source="batch")
 
     def test_no_edges_multiple_nodes_raises(self):
         p = Pipeline("no_edges")
@@ -1067,7 +1067,7 @@ class TestPipelineEdgeCases:
             return df
 
         with pytest.raises(ValueError, match="no inbound edges"):
-            p.run()
+            p.run(source="batch")
 
     def test_to_graph_config_filters_internal_keys(self):
         p = Pipeline("cfg_filter")
@@ -1182,7 +1182,7 @@ class TestOutputResolution:
         # 'audit' is wired after 'result' so it sorts last in topo order, but
         # 'result' is the declared output that must be returned.
         p.connect("src", "result").connect("result", "audit")
-        out = p.run()
+        out = p.run(source="batch")
         assert "kept" in out.columns
         assert "sink" not in out.columns
 
@@ -1204,7 +1204,7 @@ class TestOutputResolution:
 
         p.connect("src", "left").connect("src", "right")
         with pytest.raises(ExecutionError, match="multiple terminal nodes"):
-            p.run()
+            p.run(source="batch")
 
     def test_run_multiple_output_nodes_raises(self):
         p = Pipeline("two_outputs")
@@ -1223,7 +1223,7 @@ class TestOutputResolution:
 
         p.connect("src", "out_a").connect("src", "out_b")
         with pytest.raises(ExecutionError, match="multiple @pipeline.output"):
-            p.run()
+            p.run(source="batch")
 
     def test_score_returns_declared_output(self):
         p = Pipeline("score_out")
@@ -1317,7 +1317,7 @@ class TestNodeArityValidation:
 
         p.connect("a", "one_input").connect("b", "one_input")
         with pytest.raises(ExecutionError, match="accepts 1 input.*2 edge"):
-            p.run()
+            p.run(source="batch")
 
     def test_multi_param_node_under_wired_raises_haute_error(self):
         """Under-wiring must raise an actionable HauteError, not a raw TypeError."""
@@ -1333,7 +1333,7 @@ class TestNodeArityValidation:
 
         p.connect("a", "needs_two")
         with pytest.raises(ExecutionError, match="accepts 2 input.*1 edge"):
-            p.run()
+            p.run(source="batch")
 
     def test_node_call_extra_dfs_raises(self):
         def one(df: pl.DataFrame) -> pl.DataFrame:
@@ -1401,7 +1401,7 @@ class TestInstanceReferencesFailLoud:
 
         p.connect("src", "inst")
         with pytest.raises(ExecutionError, match="instanceOf.*inputMapping|cannot resolve"):
-            p.run()
+            p.run(source="batch")
 
     def test_instance_decorator_without_reference_values_still_raises(self):
         p = Pipeline("instance_marker")
@@ -1417,7 +1417,7 @@ class TestInstanceReferencesFailLoud:
         p.connect("src", "inst")
 
         with pytest.raises(ExecutionError, match="instance"):
-            p.run()
+            p.run(source="batch")
         with pytest.raises(ExecutionError, match="instance"):
             p.score(pl.DataFrame({"x": [2]}))
 
@@ -1429,7 +1429,7 @@ class TestInstanceReferencesFailLoud:
             return pl.DataFrame({"stub": [1]})
 
         with pytest.raises(ExecutionError, match="instance"):
-            p.run()
+            p.run(source="batch")
         with pytest.raises(ExecutionError, match="instance"):
             p.score(pl.DataFrame({"x": [2]}))
 
@@ -1550,3 +1550,411 @@ class TestGlobalConstantsRuntimeApi:
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             assert module.global_constants is Pipeline("x").global_constants
+
+
+def _switch_pipeline(tmp_path, *, sources: list[str] | None) -> Pipeline:
+    """A file-backed pipeline whose switch routes ``live`` and ``nb_batch``."""
+    import json
+
+    from tests.conftest import write_node_config
+
+    def constant(name: str, origin: str) -> str:
+        values = {"values": [{"name": "origin", "value": origin}]}
+        return write_node_config(tmp_path, NodeType.CONSTANT, name, values)
+
+    live = constant("live_rows", "live")
+    batch = constant("nb_rows", "nb_batch")
+    switch = write_node_config(
+        tmp_path,
+        NodeType.LIVE_SWITCH,
+        "switch",
+        {"input_scenario_map": {"live_rows": "live", "nb_rows": "nb_batch"}},
+    )
+    source = (
+        "import haute\n\n"
+        'pipeline = haute.Pipeline("p")\n\n\n'
+        f'@pipeline.constant(config="{live}")\n'
+        "def live_rows(): ...\n\n\n"
+        f'@pipeline.constant(config="{batch}")\n'
+        "def nb_rows(): ...\n\n\n"
+        f'@pipeline.live_switch(config="{switch}")\n'
+        "def switch(live_rows, nb_rows): ...\n\n\n"
+        'pipeline.connect("live_rows", "switch")\n'
+        'pipeline.connect("nb_rows", "switch")\n'
+    )
+    path = tmp_path / "main.py"
+    path.write_text(source, encoding="utf-8")
+    if sources is not None:
+        sidecar = {"sources": sources, "active_source": sources[0]}
+        (tmp_path / "main.haute.json").write_text(json.dumps(sidecar), encoding="utf-8")
+    namespace: dict = {"__file__": str(path), "__name__": "pipeline_under_test"}
+    exec(compile(source, str(path), "exec"), namespace)
+    return namespace["pipeline"]
+
+
+class TestRunSource:
+    """``run()`` routes the source it is given and never guesses one."""
+
+    def test_run_routes_the_named_source(self, tmp_path) -> None:
+        pipeline = _switch_pipeline(tmp_path, sources=["live", "nb_batch"])
+
+        assert pipeline.run(source="nb_batch").lazy().collect()["origin"].to_list() == ["nb_batch"]
+        assert pipeline.run(source="live").lazy().collect()["origin"].to_list() == ["live"]
+
+    def test_a_bare_run_is_refused_naming_the_pipelines_sources(self, tmp_path) -> None:
+        pipeline = _switch_pipeline(tmp_path, sources=["live", "nb_batch"])
+
+        with pytest.raises(TypeError, match=r"source=.*sources are live, nb_batch"):
+            pipeline.run()
+
+    def test_without_a_sidecar_the_only_source_is_live(self, tmp_path) -> None:
+        pipeline = _switch_pipeline(tmp_path, sources=None)
+
+        with pytest.raises(TypeError, match=r"sources are live\."):
+            pipeline.run()
+
+
+_FACTORS_MODULE = """\
+import haute
+import polars as pl
+
+submodel = haute.Submodel(
+    "factors",
+    definition_id="definition_factors",
+    input_ports=[{"name": "rows", "targets": [{"nodeId": "aged", "handleId": None}]}],
+    output_ports=[{"name": "factored", "source": {"nodeId": "factor", "handleId": None}}],
+    pipeline_dir="..",
+)
+
+
+@submodel.polars
+def aged(rows: pl.LazyFrame) -> pl.LazyFrame:
+    return rows.with_columns(age=2025 - pl.col("year"))
+
+
+@submodel.polars
+def factor(aged: pl.LazyFrame) -> pl.LazyFrame:
+    return aged.with_columns(factor=pl.when(pl.col("age") > 10).then(1.2).otherwise(1.0))
+
+
+submodel.connect("aged", "factor")
+"""
+
+
+def _submodel_pipeline(tmp_path, main_body: str):
+    """Write a pipeline using ``modules/factors.py``; return its path and live pipeline."""
+    from tests.conftest import write_node_config
+
+    rows = write_node_config(
+        tmp_path,
+        NodeType.CONSTANT,
+        "quotes",
+        {"values": [{"name": "year", "value": 2010}]},
+    )
+    (tmp_path / "modules").mkdir()
+    (tmp_path / "modules" / "factors.py").write_text(_FACTORS_MODULE, encoding="utf-8")
+    source = (
+        "import haute\n"
+        "import polars as pl\n\n"
+        'pipeline = haute.Pipeline("p")\n\n\n'
+        f'@pipeline.constant(config="{rows}")\n'
+        "def quotes(): ...\n\n\n" + main_body
+    )
+    path = tmp_path / "main.py"
+    path.write_text(source, encoding="utf-8")
+    namespace: dict = {"__file__": str(path), "__name__": "pipeline_under_test"}
+    exec(compile(source, str(path), "exec"), namespace)
+    return path, namespace["pipeline"]
+
+
+def _haute_run_frame(path, node_id: str) -> pl.DataFrame:
+    """The frame ``haute run`` computes for *node_id*: parse, flatten, execute."""
+    from haute.executor import execute_graph
+    from haute.parser import parse_pipeline_file
+
+    result = execute_graph(parse_pipeline_file(path, flatten=True), node_id, source="live")[node_id]
+    assert result.status == "ok", result.error
+    return pl.DataFrame(result.preview)
+
+
+class TestStandaloneSubmodels:
+    """A standalone run executes a submodel occurrence as ``haute run`` does."""
+
+    def test_a_run_through_a_submodel_returns_haute_runs_result(self, tmp_path) -> None:
+        path, pipeline = _submodel_pipeline(
+            tmp_path,
+            "@pipeline.polars\n"
+            "def premium(factored: pl.LazyFrame) -> pl.LazyFrame:\n"
+            "    return factored.with_columns(premium=pl.col('factor') * 100)\n\n\n"
+            'pipeline.submodel("modules/factors.py", "factors")\n'
+            'pipeline.connect("quotes", "factors", target_port="rows")\n'
+            'pipeline.connect("factors", "premium", source_port="factored")\n',
+        )
+
+        standalone = pipeline.run(source="live")
+
+        assert standalone.to_dicts() == [{"year": 2010, "age": 15, "factor": 1.2, "premium": 120.0}]
+        assert standalone.equals(_haute_run_frame(path, "premium"))
+
+    def test_a_submodel_can_be_the_pipelines_output(self, tmp_path) -> None:
+        _path, pipeline = _submodel_pipeline(
+            tmp_path,
+            'pipeline.submodel("modules/factors.py", "factors")\n'
+            'pipeline.connect("quotes", "factors", target_port="rows")\n',
+        )
+
+        assert pipeline.run(source="live")["factor"].to_list() == [1.2]
+
+    def test_two_occurrences_of_one_definition_each_run(self, tmp_path) -> None:
+        _path, pipeline = _submodel_pipeline(
+            tmp_path,
+            "@pipeline.polars\n"
+            "def both(factored: pl.LazyFrame, again: pl.LazyFrame) -> pl.LazyFrame:\n"
+            "    return pl.concat([factored, again])\n\n\n"
+            'pipeline.submodel("modules/factors.py", "factors")\n'
+            'pipeline.submodel("modules/factors.py", "again", instance_of="factors")\n'
+            'pipeline.connect("quotes", "factors", target_port="rows")\n'
+            'pipeline.connect("quotes", "again", target_port="rows")\n'
+            'pipeline.connect("factors", "both", source_port="factored")\n'
+            'pipeline.connect("again", "both", source_port="factored")\n',
+        )
+
+        assert pipeline.run(source="live")["factor"].to_list() == [1.2, 1.2]
+
+    def test_score_seeds_its_frame_through_a_submodel(self, tmp_path) -> None:
+        _path, pipeline = _submodel_pipeline(
+            tmp_path,
+            'pipeline.submodel("modules/factors.py", "factors")\n'
+            'pipeline.connect("quotes", "factors", target_port="rows")\n',
+        )
+
+        scored = pipeline.score(pl.DataFrame({"year": [2020]}))
+
+        assert scored["factor"].to_list() == [1.0]
+
+    def test_a_port_input_takes_its_parameters_place_among_a_nodes_inputs(self, tmp_path) -> None:
+        module = tmp_path / "modules" / "rates.py"
+        module.parent.mkdir()
+        module.write_text(
+            "import haute\n"
+            "import polars as pl\n\n"
+            "submodel = haute.Submodel(\n"
+            '    "rates",\n'
+            '    definition_id="definition_rates",\n'
+            '    input_ports=[{"name": "rows", "targets": [{"nodeId": "joined"}]}],\n'
+            '    output_ports=[{"name": "out", "source": {"nodeId": "joined"}}],\n'
+            '    pipeline_dir="..",\n'
+            ")\n\n\n"
+            "@submodel.polars\n"
+            "def table() -> pl.LazyFrame:\n"
+            '    return pl.LazyFrame({"rate": [2.0]})\n\n\n'
+            "@submodel.polars\n"
+            "def joined(rows: pl.LazyFrame, table: pl.LazyFrame) -> pl.LazyFrame:\n"
+            '    return rows.join(table, how="cross")\n\n\n'
+            'submodel.connect("table", "joined")\n',
+            encoding="utf-8",
+        )
+        source = (
+            "import haute\n"
+            "import polars as pl\n\n"
+            'pipeline = haute.Pipeline("p")\n\n\n'
+            "@pipeline.polars\n"
+            "def quotes() -> pl.LazyFrame:\n"
+            '    return pl.LazyFrame({"year": [2010]})\n\n\n'
+            'pipeline.submodel("modules/rates.py", "rates")\n'
+            'pipeline.connect("quotes", "rates", target_port="rows")\n'
+        )
+        path = tmp_path / "main.py"
+        path.write_text(source, encoding="utf-8")
+        namespace: dict = {"__file__": str(path), "__name__": "pipeline_under_test"}
+        exec(compile(source, str(path), "exec"), namespace)
+
+        assert namespace["pipeline"].run(source="live").columns == ["year", "rate"]
+
+    def test_a_submodel_module_imports_as_a_module_and_is_released_after_the_run(
+        self, tmp_path
+    ) -> None:
+        import sys
+
+        _path, pipeline = _submodel_pipeline(
+            tmp_path,
+            'pipeline.submodel("modules/factors.py", "factors")\n'
+            'pipeline.connect("quotes", "factors", target_port="rows")\n',
+        )
+        module = tmp_path / "modules" / "factors.py"
+        module.write_text(
+            _FACTORS_MODULE.replace(
+                "import polars as pl\n",
+                "import polars as pl\n"
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass\n"
+                "class Rate:\n"
+                '    value: "float"\n',
+            ),
+            encoding="utf-8",
+        )
+        modules_before = set(sys.modules)
+
+        assert pipeline.run(source="live")["factor"].to_list() == [1.2]
+        assert set(sys.modules) == modules_before
+
+    def test_a_pipeline_whose_nodes_all_live_in_a_submodel_runs_and_scores(self, tmp_path) -> None:
+        (tmp_path / "modules").mkdir()
+        (tmp_path / "modules" / "whole.py").write_text(
+            "import haute\n"
+            "import polars as pl\n\n"
+            "submodel = haute.Submodel(\n"
+            '    "whole",\n'
+            '    definition_id="definition_whole",\n'
+            "    input_ports=[],\n"
+            '    output_ports=[{"name": "out", "source": {"nodeId": "doubled"}}],\n'
+            '    pipeline_dir="..",\n'
+            ")\n\n\n"
+            "@submodel.polars\n"
+            "def rows() -> pl.LazyFrame:\n"
+            '    return pl.LazyFrame({"x": [1]})\n\n\n'
+            "@submodel.polars\n"
+            "def doubled(rows: pl.LazyFrame) -> pl.LazyFrame:\n"
+            '    return rows.with_columns(y=pl.col("x") * 2)\n\n\n'
+            'submodel.connect("rows", "doubled")\n',
+            encoding="utf-8",
+        )
+        source = (
+            "import haute\n\n"
+            'pipeline = haute.Pipeline("p")\n'
+            'pipeline.submodel("modules/whole.py", "whole")\n'
+        )
+        path = tmp_path / "main.py"
+        path.write_text(source, encoding="utf-8")
+        namespace: dict = {"__file__": str(path), "__name__": "pipeline_under_test"}
+        exec(compile(source, str(path), "exec"), namespace)
+        pipeline = namespace["pipeline"]
+
+        assert pipeline.run(source="live")["y"].to_list() == [2]
+        assert pipeline.score(pl.DataFrame({"x": [5]}))["y"].to_list() == [10]
+        with pytest.raises(TypeError, match=r"sources are live\."):
+            pipeline.run()
+
+    def test_a_hooks_df_input_from_a_port_comes_first(self, tmp_path) -> None:
+        from tests.conftest import write_node_config
+
+        rated_config = write_node_config(
+            tmp_path,
+            NodeType.RATING_STEP,
+            "rated",
+            {
+                "tables": [
+                    {
+                        "factors": ["year"],
+                        "outputColumn": "rel",
+                        "entries": [{"year": 2010, "value": 1.5}],
+                    }
+                ],
+                "combinedOutputs": [],
+            },
+        )
+        (tmp_path / "modules").mkdir()
+        (tmp_path / "modules" / "rating.py").write_text(
+            "import haute\n"
+            "import polars as pl\n\n"
+            "submodel = haute.Submodel(\n"
+            '    "rating",\n'
+            '    definition_id="definition_rating",\n'
+            '    input_ports=[{"name": "rows", "targets": [{"nodeId": "rated"}]}],\n'
+            '    output_ports=[{"name": "out", "source": {"nodeId": "rated"}}],\n'
+            '    pipeline_dir="..",\n'
+            ")\n\n\n"
+            "@submodel.polars\n"
+            "def lookup() -> pl.LazyFrame:\n"
+            '    return pl.LazyFrame({"note": ["n"]})\n\n\n'
+            f'@submodel.rating_step(config="{rated_config}")\n'
+            "def rated(df: pl.LazyFrame, lookup: pl.LazyFrame) -> pl.LazyFrame:\n"
+            '    return df.join(lookup, how="cross")\n\n\n'
+            'submodel.connect("lookup", "rated")\n',
+            encoding="utf-8",
+        )
+        source = (
+            "import haute\n"
+            "import polars as pl\n\n"
+            'pipeline = haute.Pipeline("p")\n\n\n'
+            "@pipeline.polars\n"
+            "def quotes() -> pl.LazyFrame:\n"
+            '    return pl.LazyFrame({"year": [2010]})\n\n\n'
+            'pipeline.submodel("modules/rating.py", "rating")\n'
+            'pipeline.connect("quotes", "rating", target_port="rows")\n'
+        )
+        path = tmp_path / "main.py"
+        path.write_text(source, encoding="utf-8")
+        namespace: dict = {"__file__": str(path), "__name__": "pipeline_under_test"}
+        exec(compile(source, str(path), "exec"), namespace)
+
+        assert namespace["pipeline"].run(source="live").to_dicts() == [
+            {"year": 2010, "rel": 1.5, "note": "n"}
+        ]
+
+    def test_a_quote_input_frame_is_named_by_its_frame_handle(self, tmp_path) -> None:
+        from tests.conftest import write_node_config
+
+        rated_config = write_node_config(
+            tmp_path,
+            NodeType.RATING_STEP,
+            "rated",
+            {
+                "tables": [
+                    {
+                        "factors": ["year"],
+                        "outputColumn": "rel",
+                        "entries": [{"year": 2010, "value": 1.5}],
+                    }
+                ],
+                "combinedOutputs": [],
+            },
+        )
+        (tmp_path / "modules").mkdir()
+        (tmp_path / "modules" / "rating.py").write_text(
+            "import haute\n"
+            "import polars as pl\n\n"
+            "submodel = haute.Submodel(\n"
+            '    "rating",\n'
+            '    definition_id="definition_rating",\n'
+            '    input_ports=[{"name": "rows", "targets": [{"nodeId": "rated"}]}],\n'
+            '    output_ports=[{"name": "out", "source": {"nodeId": "rated"}}],\n'
+            '    pipeline_dir="..",\n'
+            ")\n\n\n"
+            '@submodel.api_input(config="config/api_input/payload.json")\n'
+            "def payload(): ...\n\n\n"
+            f'@submodel.rating_step(config="{rated_config}")\n'
+            "def rated(df: pl.LazyFrame, lookup: pl.LazyFrame) -> pl.LazyFrame:\n"
+            '    return df.join(lookup.lazy(), how="cross")\n\n\n'
+            'submodel.connect("payload", "rated", source_port="lookup")\n',
+            encoding="utf-8",
+        )
+        source = (
+            "import haute\n"
+            "import polars as pl\n\n"
+            'pipeline = haute.Pipeline("p")\n\n\n'
+            "@pipeline.polars\n"
+            "def quotes() -> pl.LazyFrame:\n"
+            '    return pl.LazyFrame({"year": [2010]})\n\n\n'
+            'pipeline.submodel("modules/rating.py", "rating")\n'
+            'pipeline.connect("quotes", "rating", target_port="rows")\n'
+        )
+        path = tmp_path / "main.py"
+        path.write_text(source, encoding="utf-8")
+        namespace: dict = {"__file__": str(path), "__name__": "pipeline_under_test"}
+        exec(compile(source, str(path), "exec"), namespace)
+
+        scored = namespace["pipeline"].score({"lookup": pl.DataFrame({"note": ["n"]})})
+
+        assert scored.to_dicts() == [{"year": 2010, "rel": 1.5, "note": "n"}]
+
+    def test_a_file_without_a_submodel_is_refused_naming_it(self, tmp_path) -> None:
+        _path, pipeline = _submodel_pipeline(
+            tmp_path,
+            'pipeline.submodel("modules/empty.py", "factors")\n'
+            'pipeline.connect("quotes", "factors", target_port="rows")\n',
+        )
+        (tmp_path / "modules" / "empty.py").write_text("import haute\n", encoding="utf-8")
+
+        with pytest.raises(ExecutionError, match=r"modules/empty\.py.*defines no haute\.Submodel"):
+            pipeline.run(source="live")

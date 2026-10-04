@@ -609,10 +609,6 @@ rather than a generic fuzz sweep — regressions in that area are pinned down
 individually as they're found, consistent with the repo's TDD convention of
 writing a failing test before the fix.
 
-> Known gap: no test imports and runs a hierarchical `graph_to_code_multi()` main file through
-> the live `Pipeline.run()` API. That API only records `pipeline.submodel(...)` paths, so runtime
-> equivalence is intentionally established after static parse/flatten, not through live module
-> registration.
 ## Recovery single-node generation
 
 Single-node generation for a recovery candidate preserves an explicit authored

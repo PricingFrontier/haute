@@ -113,8 +113,10 @@ export default function useNodeDataProfile({
       fence = captureDocumentExecutionFence(),
     ) => {
       if (!nodeId || !slotKey) return
+      // buildGraph reads the preamble from the store; listing it renews this callback.
+      void preamble
       const response = await getNodeDataProfile({
-        graph: buildGraph(allNodes, edges, submodels, preamble),
+        graph: buildGraph(allNodes, edges, submodels),
         node_id: nodeId,
         source: activeSource,
       })

@@ -238,7 +238,10 @@ the installed I/O registry. Directory items omit file size in the backend model 
 serialize it as `null`; file items carry their byte size. `GET /api/schema` reads a data file's
 column schema, a 5-row preview, and (for parquet) an exact row count or (for JSONL) an estimated
 one, without loading the whole file. XML is decoded through the API-input structured-record
-normaliser and returns an exact row count; invalid or unsafe XML returns 400.
+normaliser and returns an exact row count; invalid or unsafe XML returns 400. Given a Data
+Input's `format` and `arguments`, it reads the file with that format's scanner and those
+arguments (the `schema` argument aside, since the schema is what is detected), so a CSV's
+separator shapes the columns; reader settings the scanner cannot take return 400.
 `GET /api/model-file` inspects a model file in the project for the Model Scoring editor
 (family, recorded task, features, offset and the contract it scores under) by loading it
 and binding its contract exactly as scoring does; a file scoring would refuse returns 400

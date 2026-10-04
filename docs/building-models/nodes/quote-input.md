@@ -23,7 +23,7 @@ The **TABLES** section maps the request into tables. Its header holds three cont
 
 - **salt names** - how a key copied into another table is named (see [Nested requests](#nested-requests)). Ticked by default.
 - **Infer Tables** (shown once a preview file is chosen) - reads the whole preview file and proposes the tables and their columns. The first time, it fills the section directly; after that it asks before replacing anything.
-- **Add Table** - adds an empty table to fill in by hand: give it a label and a path, then add its columns.
+- **Add Table** - adds an empty table to fill in by hand. The first one is the root table, labelled `quote_info`; a later one gets the placeholder path `$[:].table_1[:]` and the label `table_1`. Set its path, rename it if you like, then add its columns.
 
 With no tables yet, the section says "No tables yet. Click Infer Tables to auto-populate from the data file, or Add Table to start from scratch."
 

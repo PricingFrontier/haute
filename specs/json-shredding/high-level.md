@@ -92,7 +92,10 @@ labels are readable identifiers derived from the source key names — the root
 table is `quote_info`, `$[:].proposer.claims[:]` becomes `claims`, and two levels
 sharing a key name qualify symmetrically (`a_items`/`b_items`) — never raw path
 strings, so an inferred schema is immediately valid under the label rule below
-and its labels read as the argument names they will become.
+and its labels read as the argument names they will become. A table added by
+hand in the editor is labelled the same way: the first is the root table
+`quote_info`, a later one takes its placeholder array key (`table_1` for
+`$[:].table_1[:]`), and a label already in use gets a numeric suffix (`_2`).
 
 The standalone shred and table builds use the same aggregate byte/row-bounded
 Parquet row-group writer. JSON arrays are tokenised one top-level value at a time,

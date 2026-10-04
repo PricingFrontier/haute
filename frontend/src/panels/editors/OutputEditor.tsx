@@ -324,10 +324,12 @@ export default function OutputEditor({
   const outputReqSeq = useRef(0)
 
   const runOutputPreview = useCallback(() => {
+    // buildGraph reads the preamble from the store; listing it renews this callback.
+    void preamble
     const reqId = ++outputReqSeq.current
     setOutputLoading(true)
     setOutputError(null)
-    const graph = buildGraph(allNodes, edges, submodels, preamble)
+    const graph = buildGraph(allNodes, edges, submodels)
     outputAssembleDryRun({
       graph,
       nodeId,
@@ -395,9 +397,11 @@ export default function OutputEditor({
       edge: SimpleEdge,
       columns: string[],
     ): Promise<{ rows: Record<string, unknown>[]; total: number }> => {
+      // buildGraph reads the preamble from the store; listing it renews this callback.
+      void preamble
       const sourceNode = nodeById[edge.source]
       if (!sourceNode) throw new ApiError("Frame source node not found", 404)
-      const graph = buildGraph(allNodes, edges, submodels, preamble)
+      const graph = buildGraph(allNodes, edges, submodels)
       const res = await previewNode({
         graph,
         nodeId: edge.source,

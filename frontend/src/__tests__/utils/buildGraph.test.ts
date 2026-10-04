@@ -81,19 +81,6 @@ describe("buildGraph", () => {
     expect(result.submodels).toBeUndefined()
   })
 
-  it("passes preamble through", () => {
-    const preamble = "def helper():\n    return 42\n"
-    const result = buildGraph([], [], undefined, preamble)
-
-    expect(result.preamble).toBe(preamble)
-  })
-
-  it("handles undefined preamble", () => {
-    const result = buildGraph([], [])
-
-    expect(result.preamble).toBeUndefined()
-  })
-
   it("preserves all data fields on mapped nodes", () => {
     const nodes: SimpleNode[] = [
       {

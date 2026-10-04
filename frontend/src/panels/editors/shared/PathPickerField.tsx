@@ -11,6 +11,7 @@ export default function PathPickerField({
   onSelect,
   extensions,
   manualEntry = false,
+  selectFolder = false,
   testIdPrefix = "path-picker",
 }: {
   label: string
@@ -21,6 +22,8 @@ export default function PathPickerField({
   extensions?: string
   /** Show a committed text field above the browser for hand-typed paths. */
   manualEntry?: boolean
+  /** Let the browser select the open folder, for a source stored as a folder. */
+  selectFolder?: boolean
   testIdPrefix?: string
 }) {
   const [expanded, setExpanded] = useState(false)
@@ -81,6 +84,12 @@ export default function PathPickerField({
               onSelect(path)
               setExpanded(false)
             }}
+            onSelectFolder={selectFolder
+              ? (path) => {
+                onSelect(path)
+                setExpanded(false)
+              }
+              : undefined}
           />
         </div>
       )}

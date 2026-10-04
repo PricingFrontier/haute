@@ -7,7 +7,7 @@ import dataclasses
 import json
 import time
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import partial
@@ -200,6 +200,7 @@ from haute.schemas import (
     OutputDestinationResponse,
     PipelineEditorDocument,
     PipelineNodeSaveRequest,
+    PipelineRecoveryDiagnostic,
     PipelineRepairApplyResponse,
     PipelineRepairRecoverRequest,
     PipelineRepairRemoveRequest,
@@ -1081,6 +1082,22 @@ async def apply_recover_unavailable_node(
         )
 
 
+def _diagnostics_summary(diagnostics: Sequence[PipelineRecoveryDiagnostic], limit: int = 5) -> str:
+    """Where each of a refused save's diagnostics is, what it says, and how to fix it."""
+    entries: list[str] = []
+    for diagnostic in diagnostics[:limit]:
+        location = diagnostic.source_file or ""
+        if diagnostic.source_span is not None:
+            location = f"{location}:{diagnostic.source_span.start_line}"
+        entries.append(f"{location}: {diagnostic.message}" if location else diagnostic.message)
+    if len(diagnostics) > limit:
+        entries.append(f"and {len(diagnostics) - limit} more.")
+    fixes = dict.fromkeys(
+        diagnostic.remediation for diagnostic in diagnostics[:limit] if diagnostic.remediation
+    )
+    return "".join(f" {text}" for text in [*entries, *fixes])
+
+
 @router.post("/pipeline/save", response_model=SavePipelineResponse)
 async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
     """Save a graph: .py (source of truth) + config JSON + .haute.json (positions).
@@ -1110,6 +1127,7 @@ async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
                             detail=(
                                 "The pipeline is not ready on disk. Reload it and resolve "
                                 "its diagnostics before saving."
+                                + _diagnostics_summary(current_document.diagnostics)
                             ),
                         )
             svc = SavePipelineService(

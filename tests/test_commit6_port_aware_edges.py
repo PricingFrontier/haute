@@ -230,4 +230,4 @@ def test_generated_multiport_file_executes_as_plain_python(tmp_path) -> None:
     pipeline = ns["pipeline"]
     assert pipeline.edges == [("quotes", "processing")]
     assert pipeline.edge_ports == ["policies"]
-    assert pipeline.run() is not None
+    assert pipeline.run(source="batch") is not None

@@ -308,103 +308,112 @@ class TestExecutorRuns:
 
         _build_node_fn(node, source_names=["src"], preamble_ns={"global_constants": constants})
 
-        assert captured["global_constants"] is constants
+        assert captured["preamble_ns"] == {"global_constants": constants}
 
 
 class TestDeployedScoring:
     def test_model_score_code_reads_the_live_value(self, tmp_path: Path) -> None:
-        from haute.deploy._scorer import score_graph
-        from haute.modelling._feature_contract import (
-            CONTRACT_FILENAME,
-            build_contract,
-            save_contract,
-        )
+        code = "df = df.with_columns(priced=pl.col('prediction') * global_constants.rate)"
 
-        model_path = tmp_path / "model.cbm"
-        model_path.write_bytes(b"fake")
-        contract_path = tmp_path / CONTRACT_FILENAME
-        save_contract(
-            build_contract(
-                features=["x"],
-                feature_types={"x": "Float64"},
-                categorical_features=[],
-                target_name="y",
-                target_type="Float64",
-                task="regression",
+        assert _served_model_score(tmp_path, code)["priced"].to_list() == [6.0]
+
+    def test_model_score_code_calls_a_preamble_helper(self, tmp_path: Path) -> None:
+        code = "df = df.with_columns(priced=surcharge(pl.col('prediction')))"
+        preamble = "def surcharge(value):\n    return value + 1\n"
+
+        assert _served_model_score(tmp_path, code, preamble)["priced"].to_list() == [5.0]
+
+
+def _served_model_score(tmp_path: Path, code: str, preamble: str = "") -> pl.DataFrame:
+    """Serve one Model Score with post-processing *code* through the deploy scorer."""
+    from haute.deploy._scorer import score_graph
+    from haute.modelling._feature_contract import (
+        CONTRACT_FILENAME,
+        build_contract,
+        save_contract,
+    )
+
+    model_path = tmp_path / "model.cbm"
+    model_path.write_bytes(b"fake")
+    contract_path = tmp_path / CONTRACT_FILENAME
+    save_contract(
+        build_contract(
+            features=["x"],
+            feature_types={"x": "Float64"},
+            categorical_features=[],
+            target_name="y",
+            target_type="Float64",
+            task="regression",
+        ),
+        contract_path,
+    )
+    model = MagicMock()
+    model.feature_names_ = ["x"]
+    model.predict.return_value = np.array([4.0])
+    graph = _graph(
+        [
+            make_node(
+                {
+                    "id": "src",
+                    "data": {"label": "src", "nodeType": "apiInput", "config": {"path": ""}},
+                }
             ),
-            contract_path,
-        )
-        model = MagicMock()
-        model.feature_names_ = ["x"]
-        model.predict.return_value = np.array([4.0])
-        graph = _graph(
-            [
-                make_node(
-                    {
-                        "id": "src",
-                        "data": {"label": "src", "nodeType": "apiInput", "config": {"path": ""}},
-                    }
-                ),
-                make_node(
-                    {
-                        "id": "ms",
-                        "data": {
-                            "label": "ms",
-                            "nodeType": "modelScore",
-                            "config": {
-                                "sourceType": "run",
-                                "run_id": "r1",
-                                "artifact_path": "model.cbm",
-                                "task": "regression",
-                                "code": (
-                                    "df = df.with_columns("
-                                    "priced=pl.col('prediction') * global_constants.rate)"
-                                ),
-                            },
+            make_node(
+                {
+                    "id": "ms",
+                    "data": {
+                        "label": "ms",
+                        "nodeType": "modelScore",
+                        "config": {
+                            "sourceType": "run",
+                            "run_id": "r1",
+                            "artifact_path": "model.cbm",
+                            "task": "regression",
+                            "code": code,
                         },
-                    }
-                ),
-                make_node(
-                    {
-                        "id": "out",
-                        "data": {
-                            "label": "out",
-                            "nodeType": "output",
-                            "config": {
-                                "outputMapping": [
-                                    {
-                                        "source_port": "ms",
-                                        "source_column": "priced",
-                                        "output_path": "$[:].priced",
-                                        "enabled": True,
-                                    }
-                                ],
-                                "outputFormat": "json",
-                            },
+                    },
+                }
+            ),
+            make_node(
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": {
+                            "outputMapping": [
+                                {
+                                    "source_port": "ms",
+                                    "source_column": "priced",
+                                    "output_path": "$[:].priced",
+                                    "enabled": True,
+                                }
+                            ],
+                            "outputFormat": "json",
                         },
-                    }
-                ),
-            ],
-            [
-                make_edge("src", "ms", source_handle="src"),
-                make_edge("ms", "out"),
-            ],
-            RATE,
+                    },
+                }
+            ),
+        ],
+        [
+            make_edge("src", "ms", source_handle="src"),
+            make_edge("ms", "out"),
+        ],
+        RATE,
+    )
+    graph.preamble = preamble
+
+    with patch("haute._mlflow_io._load_catboost_model", return_value=model):
+        return score_graph(
+            graph=graph,
+            input_df=pl.DataFrame({"x": [1.0]}),
+            input_node_ids=["src"],
+            output_node_id="out",
+            artifact_paths={
+                "ms__model.cbm": str(model_path),
+                f"ms__{CONTRACT_FILENAME}": str(contract_path),
+            },
         )
-
-        with patch("haute._mlflow_io._load_catboost_model", return_value=model):
-            result = score_graph(
-                graph=graph,
-                input_df=pl.DataFrame({"x": [1.0]}),
-                input_node_ids=["src"],
-                output_node_id="out",
-                artifact_paths={
-                    "ms__model.cbm": str(model_path),
-                    f"ms__{CONTRACT_FILENAME}": str(contract_path),
-                },
-            )
-
-        assert result["priced"].to_list() == [6.0]
 
 
 class TestDeployValidation:
