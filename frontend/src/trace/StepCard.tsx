@@ -19,6 +19,7 @@ import { hasRichRatingStepDetail } from "./ratingStepHelpers"
 import {
   hasPrimaryNodeDetail,
   hasRichBandingDetail,
+  stepCodeComputesColumn,
 } from "../panels/trace/traceStoryView"
 
 function detailUsesDefault(value: unknown): boolean {
@@ -123,7 +124,10 @@ export function StepCard({
 
   // All output columns for expanded view
   const allOutputCols = Object.keys(step.output_values)
-  const richNodeDetail = hasPrimaryNodeDetail(step)
+  // A model, optimiser or expander whose own code computed the traced column
+  // shows that formula, with its node detail beneath it.
+  const codeComputesTraced = stepCodeComputesColumn(step, tracedColumn)
+  const richNodeDetail = hasPrimaryNodeDetail(step) && !codeComputesTraced
   const isOriginStep = isTraceOriginStep(step, tracedColumn)
   const sourceCalculationIsPlaceholder = isComputedPlaceholder(step.calculation?.substituted_text)
   const showSourceOrigin = isOriginStep &&
@@ -147,6 +151,7 @@ export function StepCard({
     step.node_detail &&
     (
       !showCalculationHero ||
+      codeComputesTraced ||
       hasRichRatingStepDetail(step) ||
       (
         hasRichBandingDetail(step) &&
@@ -154,6 +159,9 @@ export function StepCard({
       )
     ),
   )
+  // The node's code ran after its rule (a model's prediction, an expander's
+  // scenario), so the rule's detail comes first and the card reads top to bottom.
+  const nodeDetailFirst = showSecondaryDetail && codeComputesTraced
   // The traced column's own formula is already shown above when the step has one.
   const computedHere = step.derivations.filter((derivation) =>
     derivation.expression_text &&
@@ -316,6 +324,9 @@ export function StepCard({
               />
             </div>
           )}
+          {nodeDetailFirst && step.node_detail && (
+            <NodeDetailBlock detail={step.node_detail} tracedColumn={tracedColumn} step={step} />
+          )}
           {showCalculationHero && tracedColumn && (
             <div className="pt-2">
               <CalculationHero
@@ -368,7 +379,7 @@ export function StepCard({
           <ComputedHere derivations={computedHere} />
 
           {/* Node detail section */}
-          {showSecondaryDetail && step.node_detail && (
+          {showSecondaryDetail && !nodeDetailFirst && step.node_detail && (
             <NodeDetailBlock detail={step.node_detail} tracedColumn={tracedColumn} step={step} />
           )}
 

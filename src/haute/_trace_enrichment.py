@@ -1189,9 +1189,13 @@ def _build_input_sources(
                     parsed = parse_expression(other_code, ref_col)
                     if parsed and parsed.expression_text:
                         parsed_refs = list(parsed.referenced_columns)
-                    source_info.update(
-                        _formula_fields(other_step, ref_col, other_code, parsed, preamble_ns)
-                    )
+                    # Code that never assigns the column (a model's transform
+                    # steps around its prediction) did not compute it: the
+                    # value is the one the node produced, as for a code-less node.
+                    if parsed is not None and parsed.expression_text:
+                        source_info.update(
+                            _formula_fields(other_step, ref_col, other_code, parsed, preamble_ns)
+                        )
             except Exception as exc:
                 # Surface the derivation failure on the source entry so
                 # the caller can see why an input column's value/
