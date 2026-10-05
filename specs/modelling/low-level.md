@@ -127,8 +127,9 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   paced round, reports "Iteration i of n" across its training span before forwarding the
   row; when the fit returns, `finish` sends a last round the pacing held back, so a fit
   that early stopping ends before its budget still ends its live curve there. The
-  job's live `train_loss_history` holds the current fit: a row whose iteration does not
-  follow the last starts a new history, and past `HAUTE_TRAIN_LOSS_HISTORY_LIMIT`
+  job's live `train_loss_history` holds the current fit: a row for the last row's iteration
+  replaces it (a bagged fit reports its furthest round again while slower bags catch up), a
+  row for an earlier iteration starts a new history, and past `HAUTE_TRAIN_LOSS_HISTORY_LIMIT`
   (default 200) rows `_append_live_loss_row` compacts it to its first and newest rows,
   the rows holding each value's lowest and highest so far, and the first row to reach
   each of the even buckets the rest of the limit splits the fit's rounds into, so the
@@ -2223,7 +2224,11 @@ used for staged input.
   forwarded (Haute's callback is also its cancellation check) with progress as the furthest
   round any bag has reached, capped one round below `n_trees` during the fit because Haute's
   progress gate always passes a final round; `finish()` reports the final round once after
-  the fit when a bag reached the ceiling. It adds no live loss row. The result carries
+  the fit when a bag reached the ceiling. Each report carries a live loss row for the round it
+  shows: the mean of every bag's latest finite train and validation deviance (reported as
+  `deviance` and `validation_deviance`), so a report that repeats a round replaces that row
+  as slower bags catch up. These live means are progress only; the result's `loss_history`
+  is rebuilt after the fit from the complete per-bag history. The result carries
   `rounds_configured = n_trees`, `rounds_fitted = n_trees_` (the largest per-bag kept count),
   `stopping_reason` mapped from t-boost's `stopping_reason_` (`early_stopping` → `validation`,
   `max_trees` → `none`, `no_split` → `native_exhaustion`; any other value fails),
@@ -2251,8 +2256,8 @@ used for staged input.
   counting as one); under a log link the offset is the exposure, and an identity-link offset
   shifts the target without entering the mass. A numeric
   axis lists every cell: the missing cell first, then t-boost's right-closed border intervals
-  (`<= b0`, `> b0 to <= b1`, ..., `> bk`, the closure t-boost scores a value equal to a border
-  with) with their `cuts`. A categorical axis keeps only the cells that hold levels, in cell
+  (`≤ b0`, `(b0, b1]`, ..., `> bk`, the closure t-boost scores a value equal to a border
+  with, each border written out as its shortest float32 form) with their `cuts`. A categorical axis keeps only the cells that hold levels, in cell
   order, each labelled by its member levels (t-boost's missing level as `Missing`). The native
   tensors are reshaped to the table's `shape` in row-major axis order and sliced with the kept
   cell indices of every axis together (`numpy.ix_`), so scores, relativities, support and

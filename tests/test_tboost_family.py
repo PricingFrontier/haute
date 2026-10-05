@@ -154,6 +154,37 @@ def test_the_loss_history_is_the_bag_mean_deviance_per_round() -> None:
     )
 
 
+def test_each_round_report_carries_a_live_loss_row_for_its_round() -> None:
+    reports: list[tuple[int, dict[str, float], dict[str, float]]] = []
+
+    def on_iteration(iteration: int, total: int, metrics: Any, row: Any) -> None:
+        reports.append((iteration, metrics, row))
+
+    result = fit_adapter(
+        frame(1500),
+        threads=1,
+        offset="exposure",
+        params={**FAST, "n_bags": 2},
+        eval_df=frame(400, seed=9),
+        on_iteration=on_iteration,
+    )
+    for iteration, metrics, row in reports:
+        assert row["iteration"] == iteration
+        assert set(row) == {"iteration", "train_deviance", "eval_deviance"}
+        assert metrics == {
+            "deviance": row["train_deviance"],
+            "validation_deviance": row["eval_deviance"],
+        }
+    # Once every bag has reported a round, its live row is the history's bag mean.
+    evals = result.model.estimator.evals_result_
+    final_round = {bag: len(curve) for bag, curve in enumerate(evals["eval"]["deviance"])}
+    iteration, _metrics, row = reports[-1]
+    assert iteration == max(final_round.values())
+    assert row["eval_deviance"] == pytest.approx(
+        np.mean([curve[-1] for curve in evals["eval"]["deviance"]])
+    )
+
+
 def test_a_classification_offset_and_feature_weights_fail_before_fitting() -> None:
     with pytest.raises(HauteValidationError, match="classification does not support an offset"):
         fit_adapter(
@@ -246,14 +277,28 @@ def test_numeric_cells_are_right_closed_like_t_boosts_own_scoring() -> None:
     )
     axis = age["axes"][0]
     cuts = axis["cuts"]
-    assert axis["labels"][:2] == ["Missing", f"<= {cuts[0]:.6g}"]
-    assert axis["labels"][-1] == f"> {cuts[-1]:.6g}"
+    shown = [np.format_float_positional(np.float32(cut), trim="-") for cut in cuts]
+    assert axis["labels"][:2] == ["Missing", f"≤ {shown[0]}"]
+    assert axis["labels"][-1] == f"> {shown[-1]}"
     # A value equal to a cut scores in the cell that ends at it.
     on_cut = pl.DataFrame({"region": ["east"], "age": [float(np.float32(cuts[1]))]})
     contributions = model.contributions(on_cut)
     column = contributions.terms.index(("age",))
     assert contributions.values[0, column] == pytest.approx(age["scores"][2], abs=1e-9)
-    assert axis["labels"][2] == f"> {cuts[0]:.6g} to <= {cuts[1]:.6g}"
+    assert axis["labels"][2] == f"({shown[0]}, {shown[1]}]"
+
+
+def test_numeric_cell_labels_write_float32_borders_out_in_full() -> None:
+    from haute.modelling._tboost import _cell_labels
+
+    cuts = [float(np.float32(37.85)), 1e6, float(np.float32(1234567))]
+    assert _cell_labels(cuts) == [
+        "Missing",
+        "≤ 37.85",
+        "(37.85, 1000000]",
+        "(1000000, 1234567]",
+        "> 1234567",
+    ]
 
 
 def test_contributions_rebuild_the_margin_and_shapley_values_share_its_total() -> None:

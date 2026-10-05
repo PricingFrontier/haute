@@ -972,6 +972,24 @@ def test_live_loss_history_spans_its_fit_and_restarts_with_the_next() -> None:
     assert truncated is True
 
 
+def test_live_loss_history_updates_a_repeated_round_in_place() -> None:
+    from haute.routes import _training_worker
+
+    history: list[dict[str, float]] = []
+    for row in (
+        {"iteration": 1.0, "train_deviance": 0.5},
+        {"iteration": 2.0, "train_deviance": 0.4},
+        # A bagged fit reports its furthest round again as slower bags catch up.
+        {"iteration": 2.0, "train_deviance": 0.45},
+    ):
+        history, truncated = _training_worker._append_live_loss_row(history, False, row, 10)
+    assert history == [
+        {"iteration": 1.0, "train_deviance": 0.5},
+        {"iteration": 2.0, "train_deviance": 0.45},
+    ]
+    assert truncated is False
+
+
 def test_live_loss_history_refuses_a_limit_too_small_for_its_extremes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -5,21 +5,23 @@
  * Main effects are shape functions (a score per category or per value bin,
  * with the missing-value bin first); a pairwise interaction is one surface
  * over two features. Scores are additive term scores, never SHAP values.
+ * Each term shows as a table by default, with a chart of it a click away.
  */
 import { useState } from "react"
-import type { EbmTerm, EbmTermAxis } from "../../api/types"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { ChartEmptyState } from "./ChartScaffold"
 import { formatChartNumber } from "../../utils/chartHelpers"
 import { FeatureBrowser } from "./FeatureBrowser"
-import { LevelBars, StepShape, SurfaceTable } from "./termCharts"
+import { TERM_DISPLAY_OPTIONS, TermTableView, ViewSwitch, type TermDisplay } from "./TermTableView"
 
 export function EBMTermsTab({ result }: { result: TrainResult }) {
   const terms = result.ebm_terms ?? []
   const [selected, setSelected] = useState<string | null>(null)
   const [search, setSearch] = useState("")
+  const [display, setDisplay] = useState<TermDisplay>("table")
   if (!terms.length) return <ChartEmptyState>No EBM terms available</ChartEmptyState>
   const active = terms.find((term) => term.term === selected) ?? terms[0]
+  const interaction = active.kind === "interaction"
   return (
     <div className="validation-feature-layout">
       <FeatureBrowser
@@ -34,60 +36,22 @@ export function EBMTermsTab({ result }: { result: TrainResult }) {
           <div>
             <h4 className="validation-feature-heading">{active.term}</h4>
             <p className="validation-chart-description">
-              {active.kind === "interaction" ? "Pairwise interaction" : "Main effect"} · importance{" "}
+              {interaction ? "Pairwise interaction" : "Main effect"} · importance{" "}
               {formatChartNumber(active.importance)}
             </p>
           </div>
+          <ViewSwitch label="Term display" options={TERM_DISPLAY_OPTIONS} value={display} onChange={setDisplay} />
         </div>
-        {active.kind === "interaction" ? (
-          <InteractionSurface key={active.term} term={active} />
-        ) : active.axes[0].type === "nominal" ? (
-          <NominalShape key={active.term} term={active} />
-        ) : (
-          <ContinuousShape key={active.term} term={active} />
-        )}
+        <TermTableView
+          key={active.term}
+          title={`${interaction ? "Interaction surface" : "Shape function"} for ${active.term}`}
+          axes={active.axes}
+          values={active.scores}
+          reference={0}
+          valueLabel="Score"
+          display={display}
+        />
       </div>
     </div>
-  )
-}
-
-function mainScores(term: EbmTerm): number[] {
-  return (term.scores as number[]).map(Number)
-}
-
-function NominalShape({ term }: { term: EbmTerm }) {
-  return (
-    <LevelBars
-      title={`Shape function for ${term.term}`}
-      labels={term.axes[0].labels}
-      values={mainScores(term)}
-      reference={0}
-      valueLabel="Score"
-    />
-  )
-}
-
-function ContinuousShape({ term }: { term: EbmTerm }) {
-  return (
-    <StepShape
-      title={`Shape function for ${term.term}`}
-      labels={term.axes[0].labels}
-      values={mainScores(term)}
-      reference={0}
-      valueLabel="Score"
-    />
-  )
-}
-
-function InteractionSurface({ term }: { term: EbmTerm }) {
-  const [first, second] = term.axes as [EbmTermAxis, EbmTermAxis]
-  return (
-    <SurfaceTable
-      title={`Interaction surface for ${term.term}`}
-      first={first}
-      second={second}
-      grid={(term.scores as number[][]).map((row) => row.map(Number))}
-      reference={0}
-    />
   )
 }

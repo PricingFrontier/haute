@@ -236,15 +236,18 @@ def _append_live_loss_row(
 ) -> tuple[list[dict[str, float]], bool]:
     """Add a fit's newest loss row to the live history, keeping its span and extremes.
 
-    A row that does not follow the last one starts a new fit's history. Past
-    the limit the history is compacted to its first and newest rows, the rows
-    holding each value's lowest and highest so far, and the first row to reach
-    each of the even buckets the rest of the limit splits the fit's rounds
-    into. Its rows therefore span every round so far, and axes drawn from them
-    never shrink during a fit. Returns the history and whether it has dropped
-    any row it was given.
+    A row for the last row's round replaces it, as when a bagged fit reports
+    its furthest round again while slower bags catch up; a row for an earlier
+    round starts a new fit's history. Past the limit the history is compacted
+    to its first and newest rows, the rows holding each value's lowest and
+    highest so far, and the first row to reach each of the even buckets the
+    rest of the limit splits the fit's rounds into. Its rows therefore span
+    every round so far, and axes drawn from them never shrink during a fit.
+    Returns the history and whether it has dropped any row it was given.
     """
-    if history and row["iteration"] <= history[-1]["iteration"]:
+    if history and row["iteration"] == history[-1]["iteration"]:
+        return [*history[:-1], row], truncated
+    if history and row["iteration"] < history[-1]["iteration"]:
         history, truncated = [], False
     history = [*history, row]
     limit = _max_train_loss_history()

@@ -636,21 +636,27 @@ this discrete solve a positive λ can sit beside positive slack.
   feature pairs picked from the included features, with monotone-constrained features
   disabled and a saved pair naming a missing column kept visible. The readiness issues mirror
   the backend's EBM rules (`ebm-max-rounds` on Parameters, `ebm-interactions` on Features).
-- An EBM result adds a Terms tab: terms ranked by importance, a main effect drawn as its shape
-  (bars per category, a step line over value bins, the missing-value score stated), and an
-  interaction as a score table over its two axes, all additive link-scale term scores and
-  never labelled as SHAP. A traced EBM prediction lists one contribution per term, an interaction
+- An EBM result adds a Terms tab: terms ranked by importance, each shown as a table by default
+  with the same Table/Chart switch, axis selectors and one-line labels as the t-boost Tables
+  tab. A main effect's table lists its bins (the missing bin first, numeric bins as
+  left-closed intervals such as `[25, 40)`) with their scores, and its chart is its shape
+  (bars per category, a step line over value bins, the missing-value score stated); an
+  interaction is a score table over its two axes, or one line per cell of its column axis.
+  All are additive link-scale term scores, never labelled as SHAP. A traced EBM prediction lists one contribution per term, an interaction
   as one row.
 - A t-boost node starts with `n_trees` 4000 and `max_interaction_order` 3 in its parameters and
   no other key, so every other setting is t-boost's own recommended recipe; its starter search
   space varies `learning_rate`, `max_interaction_order` and `lambda_`. Its readiness issue
   `tboost-n-trees` mirrors the backend's `n_trees` rule on Parameters.
 - A t-boost result adds a Tables tab: the model's rating tables ranked by importance, with the
-  base value. A main effect is drawn over its cells (bars per level group, a step line over
-  numeric intervals, the missing cell stated) with each cell's training mass, labelled as
-  weight × exposure; a two-way
-  table is a heatmap over its two axes; a table of three or more factors is a heatmap of two
-  chosen axes with a selector for each remaining axis. Under a log link the tab shows
+  base value. Every table shows as a table by default, with a Table/Chart switch. A main
+  effect's table lists its cells (level groups, or numeric intervals such as `(25, 40]` after
+  the missing cell) with each cell's value and training mass, labelled as weight × exposure;
+  its chart is bars per level group or a step line over the numeric intervals with the
+  missing cell stated. A table of two or more factors is a heatmap of two chosen axes, the
+  longest axis on the rows and the shortest other axis on the columns by default, with a
+  selector for each remaining axis; its chart draws the row axis along x and one line per
+  column cell. Labels stay on one line and a narrow table scrolls sideways. Under a log link the tab shows
   relativities by default and can switch to link-scale values; other links show link-scale
   values only. Factored effects, which have no dense table, are listed by name and importance.
   A traced t-boost prediction lists one contribution per table, an interaction as one row.

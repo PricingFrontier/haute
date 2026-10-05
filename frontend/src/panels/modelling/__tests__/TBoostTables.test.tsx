@@ -86,39 +86,73 @@ function cellTexts(table: HTMLElement): string[][] {
 describe("TBoostTablesTab", () => {
   afterEach(cleanup)
 
-  it("shows the most important table as relativities with its training mass and the base", () => {
+  it("shows the most important table as a table of relativities with its training mass and the base", () => {
     render(<TBoostTablesTab result={makeTrainResult({ tboost_tables: TABLES })} />)
     expect(screen.getByRole("heading", { name: "region" })).toBeInTheDocument()
     expect(screen.getByText(/Main effect · importance 0.5 · base 0.12/)).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Table" })).toHaveAttribute("aria-pressed", "true")
+    const table = screen.getByRole("table", { name: "Table for region" })
+    expect(within(table).getAllByRole("columnheader").map((cell) => cell.textContent)).toEqual([
+      "region",
+      "Relativity",
+      "Training mass (weight × exposure)",
+    ])
+    expect(within(table).getAllByRole("rowheader").map((cell) => cell.textContent)).toEqual([
+      "east",
+      "south, west",
+      "Missing",
+      "north",
+    ])
+    expect(cellTexts(table)[3]).toEqual(["1.49", "433"])
+    expect(within(table).getByText("north").closest("tr")).toHaveAttribute(
+      "title",
+      `north: Relativity: ${Math.exp(0.4)}; Training mass (weight × exposure): 433`,
+    )
+  })
+
+  it("draws a main effect as a chart on request, keeping the choice across tables", () => {
+    render(<TBoostTablesTab result={makeTrainResult({ tboost_tables: TABLES })} />)
+    fireEvent.click(screen.getByRole("button", { name: "Chart" }))
     const shape = screen.getByRole("img", { name: "Table for region" })
-    expect(within(shape).getByText("south, west")).toBeInTheDocument()
     expect(within(shape).getByText("north").closest("[title]")).toHaveAttribute(
       "title",
       `north: Relativity: ${Math.exp(0.4)}; Training mass (weight × exposure): 433`,
     )
+    expect(screen.queryByRole("table")).toBeNull()
+    select("age")
+    expect(screen.getByRole("img", { name: "Table for age" })).toBeInTheDocument()
+    expect(screen.getByText(/Missing values have relativity 1.05/)).toBeInTheDocument()
   })
 
   it("switches a log-link table to link-scale values", () => {
     render(<TBoostTablesTab result={makeTrainResult({ tboost_tables: TABLES })} />)
     fireEvent.click(screen.getByRole("button", { name: "Link scale" }))
     expect(screen.getByRole("button", { name: "Link scale" })).toHaveAttribute("aria-pressed", "true")
-    expect(within(screen.getByRole("img", { name: "Table for region" })).getByText("north").closest("[title]"))
-      .toHaveAttribute("title", "north: Score: 0.4; Training mass (weight × exposure): 433")
+    const table = screen.getByRole("table", { name: "Table for region" })
+    expect(within(table).getAllByRole("columnheader")[1]).toHaveTextContent("Score")
+    expect(cellTexts(table).map(([value]) => value)).toEqual(["-0.3", "-0.1", "0", "0.4"])
     select("age")
+    fireEvent.click(screen.getByRole("button", { name: "Chart" }))
     expect(screen.getByText("Missing values score 0.05 · Training mass (weight × exposure) 3")).toBeInTheDocument()
   })
 
-  it("draws a two-way table over its two axes", () => {
+  it("draws a two-way table with its longer axis down the rows", () => {
     render(<TBoostTablesTab result={makeTrainResult({ tboost_tables: TABLES })} />)
     select("region × age")
     expect(screen.getByText(/2-way table/)).toBeInTheDocument()
     const table = screen.getByRole("table", { name: "Table for region × age" })
-    // The table's first axis is on the rows, as chosen, though age has more cells.
-    expect(within(table).getAllByRole("columnheader")[0]).toHaveTextContent(String.raw`region \ age`)
+    expect(screen.getByRole("combobox", { name: "Rows" })).toHaveValue("1")
+    expect(screen.getByRole("combobox", { name: "Columns" })).toHaveValue("0")
+    expect(within(table).getAllByRole("columnheader")[0]).toHaveTextContent(String.raw`age \ region`)
     expect(within(table).getAllByRole("rowheader").map((cell) => cell.textContent)).toEqual([
-      "east",
-      "north",
+      "Missing",
+      "<= 25",
+      "> 25",
     ])
+    expect(cellTexts(table)).toEqual([["1", "1"], ["1.22", "0.905"], ["0.98", "1.01"]])
+    // Choosing region for the rows swaps age onto the columns.
+    fireEvent.change(screen.getByRole("combobox", { name: "Rows" }), { target: { value: "0" } })
+    expect(screen.getByRole("combobox", { name: "Columns" })).toHaveValue("1")
     expect(cellTexts(table)[0]).toEqual(["1", "1.22", "0.98"])
   })
 
@@ -127,22 +161,48 @@ describe("TBoostTablesTab", () => {
     select("region × age × cover")
     fireEvent.click(screen.getByRole("button", { name: "Link scale" }))
     const table = () => screen.getByRole("table", { name: "Table for region × age × cover" })
-    // Rows are region and columns age, as the selectors show; cover is fixed at basic.
-    expect(screen.getByRole("combobox", { name: "Rows" })).toHaveValue("0")
-    expect(screen.getByRole("combobox", { name: "Columns" })).toHaveValue("1")
-    expect(cellTexts(table())).toEqual([["0", "0.01", "0.02"], ["0.1", "0.11", "0.12"]])
-    fireEvent.change(screen.getByRole("combobox", { name: "cover" }), { target: { value: "1" } })
-    expect(cellTexts(table())).toEqual([["0.001", "0.011", "0.021"], ["0.101", "0.111", "0.121"]])
-    // Swapping the axes puts age on the rows.
-    fireEvent.change(screen.getByRole("combobox", { name: "Rows" }), { target: { value: "1" } })
+    // Age, the longest axis, is on the rows and region, the first of the
+    // shorter two, on the columns; cover is fixed at basic.
+    expect(screen.getByRole("combobox", { name: "Rows" })).toHaveValue("1")
     expect(screen.getByRole("combobox", { name: "Columns" })).toHaveValue("0")
+    expect(cellTexts(table())).toEqual([["0", "0.1"], ["0.01", "0.11"], ["0.02", "0.12"]])
+    fireEvent.change(screen.getByRole("combobox", { name: "cover" }), { target: { value: "1" } })
     expect(cellTexts(table())).toEqual([["0.001", "0.101"], ["0.011", "0.111"], ["0.021", "0.121"]])
-    // Putting cover on the columns (rows stay age) leaves region to be sliced.
+    // Swapping the axes puts region on the rows.
+    fireEvent.change(screen.getByRole("combobox", { name: "Rows" }), { target: { value: "0" } })
+    expect(screen.getByRole("combobox", { name: "Columns" })).toHaveValue("1")
+    expect(cellTexts(table())).toEqual([["0.001", "0.011", "0.021"], ["0.101", "0.111", "0.121"]])
+    // Putting cover on the columns (rows stay region) leaves age to be sliced.
     fireEvent.change(screen.getByRole("combobox", { name: "Columns" }), { target: { value: "2" } })
     expect(screen.queryByRole("combobox", { name: "cover" })).toBeNull()
-    expect(cellTexts(table())).toEqual([["0", "0.001"], ["0.01", "0.011"], ["0.02", "0.021"]])
-    fireEvent.change(screen.getByRole("combobox", { name: "region" }), { target: { value: "1" } })
-    expect(cellTexts(table())).toEqual([["0.1", "0.101"], ["0.11", "0.111"], ["0.12", "0.121"]])
+    expect(cellTexts(table())).toEqual([["0", "0.001"], ["0.1", "0.101"]])
+    fireEvent.change(screen.getByRole("combobox", { name: "age" }), { target: { value: "1" } })
+    expect(cellTexts(table())).toEqual([["0.01", "0.011"], ["0.11", "0.111"]])
+  })
+
+  it("draws a two-way table as one line per column cell, with its axes swappable", () => {
+    render(<TBoostTablesTab result={makeTrainResult({ tboost_tables: TABLES })} />)
+    select("region × age")
+    fireEvent.click(screen.getByRole("button", { name: "Chart" }))
+    const chart = screen.getByRole("img", { name: "Table for region × age" })
+    // Age runs across; each region cell is a line, flat over every age slot.
+    expect(screen.getByRole("combobox", { name: "Across" })).toHaveValue("1")
+    expect(screen.getByRole("combobox", { name: "Lines" })).toHaveValue("0")
+    expect(chart.querySelectorAll("path")).toHaveLength(2)
+    expect(within(chart).getByText("<= 25", { selector: "text" })).toBeInTheDocument()
+    // Pointing at a slot states every line's value there.
+    fireEvent.mouseEnter(within(chart).getByText("<= 25", { selector: "title" }).parentElement!)
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "age <= 25region east: Relativity 1.22region north: Relativity 0.905",
+    )
+    // Hovering the last age slot, then putting region (two slots) across, starts afresh.
+    fireEvent.mouseEnter(within(chart).getByText("> 25", { selector: "title" }).parentElement!)
+    fireEvent.change(screen.getByRole("combobox", { name: "Across" }), { target: { value: "0" } })
+    expect(screen.getByRole("combobox", { name: "Lines" })).toHaveValue("1")
+    const swapped = screen.getByRole("img", { name: "Table for region × age" })
+    expect(swapped.querySelectorAll("path")).toHaveLength(3)
+    expect(within(swapped).getByText("north", { selector: "text" })).toBeInTheDocument()
+    expect(screen.getByRole("status")).toBeEmptyDOMElement()
   })
 
   it("lists a factored effect without a table", () => {

@@ -20,7 +20,7 @@ from haute._model_scorer import score_frame
 from haute._sandbox import ArtifactVersionMismatchError
 from haute.errors import ConfigError, HauteValidationError
 from haute.modelling._descriptors import EBM
-from haute.modelling._ebm import EBMAlgorithm, EBMModel
+from haute.modelling._ebm import EBMAlgorithm, EBMModel, _cell_labels
 from haute.modelling._feature_contract import load_contract, save_contract
 from haute.modelling._train_config import TrainingConfigError, build_training_job_kwargs
 from haute.modelling._training_job import TrainingJob, model_contract_filename
@@ -256,6 +256,7 @@ def test_term_report_describes_shapes_missing_bins_and_surfaces(tmp_path: Path) 
     age = terms["age"]
     assert age["axes"][0]["type"] == "continuous"
     assert len(age["scores"]) == len(age["axes"][0]["labels"])
+    assert age["axes"][0]["labels"] == _cell_labels(age["axes"][0]["cuts"])
     surface = terms["region & age"]
     assert surface["kind"] == "interaction"
     assert len(surface["scores"]) == len(surface["axes"][0]["labels"])
@@ -914,3 +915,14 @@ def test_published_responses_match_the_staged_ebm_artifacts(tmp_path: Path, tune
         expected_tuning=tuning_payload,
     )
     assert set(published) == set(staged)
+
+
+def test_numeric_bin_labels_are_left_closed_intervals_written_out() -> None:
+    assert _cell_labels([23.500000000000004, 1e6, 1234567.0]) == [
+        "Missing",
+        "< 23.5",
+        "[23.5, 1000000)",
+        "[1000000, 1234570)",
+        "≥ 1234570",
+    ]
+    assert _cell_labels([]) == ["Missing", "All values"]

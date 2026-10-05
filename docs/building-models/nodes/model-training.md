@@ -519,9 +519,10 @@ selecting the CPU or reducing rows or features.
   progress message. If anything blocks training, a **Complete before training** list names
   each problem with a **Go to …** link to the pane that fixes it.
 - **Cancel training** stops a run in progress.
-- While a CatBoost, XGBoost or LightGBM model trains, the pane draws its loss curve live,
-  for every fit in the run: each validation fit, cross-validation fold and tuning trial,
-  then the final fit. Each fit starts a fresh chart whose axes are set from its first round:
+- While a CatBoost, XGBoost, LightGBM or t-boost model trains, the pane draws its loss curve
+  live, for every fit in the run: each validation fit, cross-validation fold and tuning trial,
+  then the final fit. t-boost's bags boost side by side, so its live curve is the mean of each
+  bag's latest deviance; the **Loss** tab draws the exact per-round bag mean once it finishes. Each fit starts a fresh chart whose axes are set from its first round:
   rounds from 0 to the fit's round budget, and loss from 0 to a little over the starting
   loss, so the curve fills in as the fit trains. A tuned run also shows the trial and fold
   it is on and the best objective so far.
@@ -636,22 +637,30 @@ The Summary keeps model-selection evidence distinct from final performance:
   final tree count (tree families) or the winning round budget (EBM), and exact total
   fit count. **Use best as fixed parameters** copies the winning parameters into the
   node's **Parameters JSON** and turns tuning off, after asking.
-- An EBM's **Terms** view shows each main effect's shape (including the score for
-  missing values) and each interaction's score table, as additive scores on the model's
-  link scale (log for Poisson, Gamma and Tweedie; log-odds for Logloss): the prediction is
-  the intercept plus every term's score. They are the model itself, not SHAP values.
+- An EBM's **Terms** view shows each term's additive scores on the model's link scale
+  (log for Poisson, Gamma and Tweedie; log-odds for Logloss): the prediction is the
+  intercept plus every term's score. They are the model itself, not SHAP values. Each
+  term shows as a table, with **Chart** to draw it. A main effect lists its bins, the
+  missing-value bin first and numeric bins as ranges such as `[25, 40)`, each including
+  its lower bound; its chart is its shape, with the score for missing values stated
+  above a numeric one. An interaction is a score grid, with **Rows** and **Columns**
+  choosing its orientation, or as a chart one line per cell of its **Lines** feature.
 - A t-boost result's **Tables** view lists the model's rating tables, most important
   first, with the model's **base** value. The prediction is the base plus one value from
   every table (for Poisson, Gamma and Tweedie, the base times one relativity from every
   table, times the exposure when the model has an offset), so the tables are the model
   itself. Under those log-link losses the view shows relativities, with **Link scale** to
   switch to the additive log-scale values; for RMSE and Logloss it shows link-scale values
-  (log-odds for Logloss). A main effect is drawn over its cells: a bar per group of levels
+  (log-odds for Logloss). Each table shows as a table, with **Chart** to draw it. A main
+  effect lists its cells with their values and training mass: a cell per group of levels
   (levels t-boost cannot tell apart share a cell, and missing values are their own level),
-  or a step line over numeric ranges, each range including its upper bound, with the value
-  for missing numbers stated above it. A two-feature table is a value grid; for a table of
-  three or more features, **Rows** and **Columns** choose the grid's features and a list
-  per remaining feature chooses its cell. Point at a cell to see its value and its
+  or a numeric range such as `(25, 40]`, each range including its upper bound, after a
+  cell for missing numbers. Its chart is a bar per group of levels, or a step line over
+  the numeric ranges with the value for missing numbers stated above it. A table of two or
+  more features is a value grid, its feature with the most cells down the rows; **Rows**
+  and **Columns** choose the grid's features, and a list per remaining feature chooses its
+  cell. Its chart draws the rows' feature along the axis (**Across**) and one line per
+  cell of the columns' feature (**Lines**). Point at a cell to see its value and its
   training mass: the sum of weight times exposure over the training rows in it (the
   exposure is the offset under Poisson, Gamma and Tweedie; an RMSE offset does not count),
   which is the exposure when the weight or offset is the exposure. A factored effect, one too large

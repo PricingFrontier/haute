@@ -103,22 +103,42 @@ const TERMS: EbmTerm[] = [
 describe("EBMTermsTab (MOD-F04)", () => {
   afterEach(cleanup)
 
-  it("shows the most important term's shape with its missing bin, not as SHAP values", () => {
+  it("shows the most important term's scores as a table with its missing bin, not as SHAP values", () => {
     render(<EBMTermsTab result={makeTrainResult({ ebm_terms: TERMS })} />)
     expect(screen.getByRole("heading", { name: "age" })).toBeInTheDocument()
     expect(screen.getByText(/Main effect/)).toBeInTheDocument()
-    expect(screen.getByText("Missing values score 0.05")).toBeInTheDocument()
-    expect(screen.getByRole("img", { name: "Shape function for age" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Table" })).toHaveAttribute("aria-pressed", "true")
+    const table = screen.getByRole("table", { name: "Shape function for age" })
+    expect(within(table).getAllByRole("columnheader").map((cell) => cell.textContent)).toEqual(["age", "Score"])
+    expect(within(table).getAllByRole("row").slice(1).map((row) => row.textContent)).toEqual([
+      "Missing0.05",
+      "< 30-0.2",
+      ">= 300.3",
+    ])
     expect(screen.queryByText(/SHAP/)).toBeNull()
   })
 
-  it("draws a category shape and an interaction surface as one two-feature term", () => {
+  it("draws a term as a chart on request, keeping the choice across terms", () => {
     render(<EBMTermsTab result={makeTrainResult({ ebm_terms: TERMS })} />)
+    fireEvent.click(screen.getByRole("button", { name: "Chart" }))
+    expect(screen.getByText("Missing values score 0.05")).toBeInTheDocument()
+    expect(screen.getByRole("img", { name: "Shape function for age" })).toBeInTheDocument()
+
     fireEvent.click(screen.getByText("region", { selector: "button *, button" }))
     const shape = screen.getByRole("img", { name: "Shape function for region" })
     expect(within(shape).getByText("Missing")).toBeInTheDocument()
     expect(within(shape).getByText("north")).toBeInTheDocument()
 
+    // An interaction draws one line per cell of its shorter axis, age.
+    fireEvent.click(screen.getByText("region & age", { selector: "button *, button" }))
+    const lines = screen.getByRole("img", { name: "Interaction surface for region & age" })
+    expect(screen.getByRole("combobox", { name: "Across" })).toHaveValue("0")
+    expect(screen.getByRole("combobox", { name: "Lines" })).toHaveValue("1")
+    expect(lines.querySelectorAll("path")).toHaveLength(2)
+  })
+
+  it("draws an interaction as a table with its longer axis down the rows", () => {
+    render(<EBMTermsTab result={makeTrainResult({ ebm_terms: TERMS })} />)
     fireEvent.click(screen.getByText("region & age", { selector: "button *, button" }))
     expect(screen.getByText(/Pairwise interaction/)).toBeInTheDocument()
     const surface = screen.getByRole("table", { name: "Interaction surface for region & age" })
@@ -130,6 +150,12 @@ describe("EBMTermsTab (MOD-F04)", () => {
       "0.04",
       "0.05",
     ])
+    // Choosing age for the rows swaps region onto the columns.
+    fireEvent.change(screen.getByRole("combobox", { name: "Rows" }), { target: { value: "1" } })
+    expect(screen.getByRole("combobox", { name: "Columns" })).toHaveValue("0")
+    expect(within(surface).getAllByRole("rowheader").map((cell) => cell.textContent)).toEqual(["Missing", "< 30"])
+    expect(within(within(surface).getAllByRole("row")[2]).getAllByRole("cell").map((cell) => cell.textContent))
+      .toEqual(["0.01", "0.03", "0.05"])
   })
 
   it("states plainly when a result has no EBM terms", () => {

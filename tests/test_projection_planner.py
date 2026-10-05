@@ -4132,6 +4132,66 @@ def test_a_malformed_deploy_optimiser_annotation_is_refused_without_a_load(
         )
 
 
+def test_a_model_score_whose_model_is_refused_fails_planning_as_its_setting_error(tmp_path):
+    from haute.errors import FeatureMismatchError, NodeConfigError
+
+    stale = tmp_path / "model.feature_contract.json"
+    stale.write_text(json.dumps({"features": ["a"]}), encoding="utf-8")
+    graph = _single_parent_graph(
+        "modelScore",
+        {"output_column": "prediction", "feature_contract_path": str(stale)},
+    )
+
+    with pytest.raises(NodeConfigError) as raised:
+        plan(
+            ProjectionRequest(
+                graph=graph,
+                target_node_id="child",
+                profile=ExecutionProfile.PREVIEW_EAGER,
+                required_columns_by_node={"child": {"prediction"}},
+            )
+        )
+
+    # The preview names the node and keeps Haute's own reason, not an internal error.
+    assert raised.value.to_payload() == {
+        "error_code": "node_config_invalid",
+        "message": "Model Score 'child' cannot load its model: contract file is not a "
+        "version-3 feature contract; retrain the model to write a current contract",
+        "setting": "model",
+    }
+    assert isinstance(raised.value.__cause__, FeatureMismatchError)
+
+
+def test_a_model_refusal_wrapping_a_dependency_failure_stays_internal(tmp_path, monkeypatch):
+    from haute.errors import ConfigError, NodeConfigError
+
+    def wrapped_download_failure(_path):
+        try:
+            raise OSError("https://storage.internal/?token=secret-token")
+        except OSError as exc:
+            raise ConfigError(f"Run r has no feature contract ({exc}).") from exc
+
+    monkeypatch.setattr(
+        "haute.modelling._feature_contract.load_contract_cached", wrapped_download_failure
+    )
+    graph = _single_parent_graph(
+        "modelScore",
+        {"output_column": "prediction", "feature_contract_path": str(tmp_path / "c.json")},
+    )
+
+    # Its text quotes the dependency failure, so it never becomes the public setting error.
+    with pytest.raises(ConfigError) as raised:
+        plan(
+            ProjectionRequest(
+                graph=graph,
+                target_node_id="child",
+                profile=ExecutionProfile.PREVIEW_EAGER,
+                required_columns_by_node={"child": {"prediction"}},
+            )
+        )
+    assert not isinstance(raised.value, NodeConfigError)
+
+
 def test_ratebook_optimiser_apply_keeps_the_generic_rules(tmp_path):
     artifact_path = tmp_path / "optimiser.json"
     artifact_path.write_text(
