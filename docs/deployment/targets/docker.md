@@ -144,7 +144,7 @@ Once the image is in the registry, your IT team (or a separate platform workflow
 
     1. **In the CI logs** - `✓ Deployed: motor-pricing v1`, followed by `Image:` and the image tag, such as `ghcr.io/yourorg/motor-pricing:a1b2c3d`
     2. **From your IT team** - confirmation that the image is running and the endpoint URL to test
-    3. **In the CI workflow** - smoke and impact jobs can pass only after your hosting process runs the staging and production services and you have set their addresses ([Step 3](#step-3-give-smoke-and-impact-their-endpoints))
+    3. **In the CI workflow** - smoke and impact jobs can pass only after your hosting process runs the staging service and you have set its address ([Step 3](#step-3-give-smoke-and-impact-their-endpoints)); the impact report compares against production once its address is set too
 
     The deploy job's success confirms only validation and image packaging/push. It does not make the later smoke and impact jobs green by itself, and the pipeline is live only after your hosting process has started the image and its health checks pass.
 

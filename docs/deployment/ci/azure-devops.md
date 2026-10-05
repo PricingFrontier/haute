@@ -26,7 +26,7 @@ When you run `haute init --ci azure-devops`, Haute creates an `azure-pipelines.y
 | `DeployStaging` | On push to main only | Runs the target-dependent staging deploy command |
 | `SmokeTest` | After a successful staging deploy | Scores test quotes against an existing live staging endpoint |
 | `ImpactAnalysis` | After smoke succeeds | Compares existing staging and production endpoints |
-| `DeployProduction` | After `ImpactAnalysis` | Runs production deployment. It runs **automatically** unless the `production` environment has an approval check ([Step 2](#step-2-create-the-production-environment)) |
+| `DeployProduction` | After `ImpactAnalysis` (after `DeployStaging` for the platform-container targets) | Runs production deployment. It runs **automatically** unless the `production` environment has an approval check ([Step 2](#step-2-create-the-production-environment)) |
 
 This gives you the same command sequence as GitHub Actions and GitLab; a live release still depends on the selected target and hosting process:
 
@@ -59,7 +59,7 @@ Once validation passes and your teammate has reviewed the PR, you [merge](../bef
 
 ### 4. Staging deployment (automatic)
 
-The `DeployStaging` stage runs `haute deploy --endpoint-suffix "-staging"`. Databricks submits an endpoint create/update request but does not wait for readiness; the generic container target does not host an endpoint; platform-container targets push the image and leave the service update to you, so their workflow ends there.
+The `DeployStaging` stage runs `haute deploy --endpoint-suffix "-staging"`. Databricks submits an endpoint create/update request but does not wait for readiness; the generic container target does not host an endpoint; platform-container targets push the image and leave the service update to you, so their pipeline has no smoke or impact stage and `DeployProduction` follows `DeployStaging` directly.
 
 ### 5. Smoke test (automatic)
 

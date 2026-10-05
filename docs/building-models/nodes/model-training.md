@@ -334,7 +334,7 @@ For CatBoost, GPU training is set in the **TRAIN** pane rather than here.
     scores the rate times the offset. Under RMSE the offset is added to the prediction as it
     is. Logloss takes no offset, and MAE and CrossEntropy are not available. A categorical
     value the model never saw, such as a make that only appears in the validation rows or
-    arrives after training, never fails (unless the pipeline file declares that feature's levels in `categorical_levels`, which scoring enforces): t-boost scores it in its pooled rare level, like the levels too thin to model alone (the default level on a feature where nothing was pooled). t-boost scores numeric features as 32-bit floats. The `.tboost` file is t-boost's own JSON model with
+    arrives after training, never fails unless the node declares that feature's levels (see **In the pipeline file**): t-boost scores it in its pooled rare level, like the levels too thin to model alone (the default level on a feature where nothing was pooled). t-boost scores numeric features as 32-bit floats. The `.tboost` file is t-boost's own JSON model with
     Haute's record in its metadata, so it describes its own inputs and offset, and plain
     t-boost (0.8 or later) can read it too.
 
@@ -756,7 +756,7 @@ A Poisson claim-frequency GLM with an exposure offset:
     | `cv_seed` | The GLM penalty's cross-validation seed; the editor writes 42 when you choose a regularisation. |
     | `evaluation.seed` | The split seed; the editor writes 42. |
     | `evaluation.validation.window` | `"expanding"` for time-based cross-validation; the editor sets it. |
-    | `categorical_levels` | Declared category levels for categorical feature columns. |
+    | `categorical_levels` | Declared category levels for categorical feature columns. They go into the model's feature contract, and scoring refuses a value outside them, for a t-boost model too. |
 
     `feature_columns` and `monotone_constraints` apply to the tree, t-boost and EBM
     families (`feature_weights` to CatBoost only) and are ignored for a GLM, whose features

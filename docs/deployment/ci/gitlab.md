@@ -59,7 +59,7 @@ Once validation passes and your teammate has reviewed the MR, you [merge](../bef
 
 ### 4. Staging deployment (automatic)
 
-The `deploy-staging` stage runs `haute deploy --endpoint-suffix "-staging"`. Databricks submits an endpoint create/update request but does not wait for readiness; the generic container target does not host it; platform-container targets push the image and leave the service update to you, so their workflow ends there.
+The `deploy-staging` stage runs `haute deploy --endpoint-suffix "-staging"`. Databricks submits an endpoint create/update request but does not wait for readiness; the generic container target does not host it; platform-container targets push the image and leave the service update to you, so their pipeline has no smoke or impact stage and goes straight to the manual `deploy-production` job.
 
 ### 5. Smoke test (automatic)
 
@@ -147,7 +147,7 @@ Your pipeline needs credentials to deploy. In GitLab, these are stored as **CI/C
 | `AZURE_CLIENT_SECRET` | Your service principal secret | Mask variable ✓ |
 
 !!! warning "Container targets need Docker and a registry login"
-    The generated jobs run in the `python:3.11` image, which has no Docker, so for a container target `haute deploy` stops with "Docker is not available". Give the `deploy-staging` and `deploy-production` jobs a Docker-capable setup (for example a `docker:dind` service with a Docker CLI in the job image), and add a registry login line before `haute deploy` (see [Docker](../targets/docker.md#log-in-to-the-registry-before-the-deploy); for ECR, which needs no `DOCKER_*` variables, see [AWS ECS](../targets/aws.md#step-2-add-credentials-to-ci)).
+    The generated jobs run in the `python:3.11` image, which has no Docker, so for a container target `haute deploy` stops with "Docker is not available". Give the `deploy-staging` and `deploy-production` jobs a Docker-capable setup (for example a `docker:dind` service with a Docker CLI in the job image), and add a registry login line before `haute deploy` (see [Docker](../targets/docker.md#log-in-to-the-registry-before-the-deploy)). For ECR, which needs no `DOCKER_*` variables, the login line in [AWS ECS](../targets/aws.md#step-2-add-credentials-to-ci) also needs the AWS CLI, which `python:3.11` lacks: install it in those jobs or use an image that has Python, the Docker CLI and the AWS CLI.
 
 !!! tip "Mask variable"
     Always tick **Mask variable** for secrets - this prevents them from appearing in pipeline logs.
