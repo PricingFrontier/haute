@@ -15,9 +15,9 @@ uv add haute
 uv run haute init --target databricks
 ```
 
-`uv run` runs Haute from the project's environment, which you have not activated yet. `--target` names where you will deploy: `databricks` (the default), `container`, `azure-container-apps`, `aws-ecs` or `gcp-run`.
+`uv run` runs Haute from the project's environment, which you have not activated yet. `--target` names where you will deploy: `databricks` (the default), `container`, `azure-container-apps`, `aws-ecs` or `gcp-run`. `--ci` names where your CI/CD runs: `github` (the default), `gitlab`, `azure-devops` or `none`.
 
-This fills the project folder with everything Haute needs: the starter pipeline `rating/main.py` (the pipeline the editor opens), a `rating/utility/` folder for your own helper functions, a `data/` folder for your data files, a `haute.toml` configuration file, test quote templates, CI/CD workflow files, and a `.env.example` credential template. It also removes the `main.py` that `uv init` created, because Haute uses `rating/main.py`.
+This fills the project folder with everything Haute needs: the starter pipeline `rating/main.py` (the pipeline the editor opens), a `rating/utility/` folder for your own helper functions, a `data/` folder for your data files, a `haute.toml` configuration file, a starter test with an example test quote in `tests/`, CI/CD workflow files, and a `.env.example` credential template. It also removes the `main.py` that `uv init` created, because Haute uses `rating/main.py`.
 
 Copy the credential template to `.env` and fill in your values. `.env` is gitignored, so your credentials are never committed:
 
@@ -98,7 +98,7 @@ Windows and Linux installs need no extra step.
 
 **`haute serve` doesn't open anything in my browser**
 
-Look at the terminal output for a line like `Running on http://localhost:8000`. Copy that address and paste it into your browser. If you see an error, make sure your virtual environment is active (`(.venv)` in your prompt).
+Look at the terminal output for a line like `Uvicorn running on http://localhost:8000`. Copy that address and paste it into your browser. If you see an error, make sure your virtual environment is active (`(.venv)` in your prompt).
 
 **`(.venv)` isn't showing in my terminal prompt**
 

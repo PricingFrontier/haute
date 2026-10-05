@@ -6,7 +6,7 @@ Deployment packages a pricing pipeline for a serving target. For **Databricks**,
     If you haven't installed Haute yet, start with **[Getting Started](../getting-started/index.md)** - it covers installing everything and running your first `haute serve`. If you don't know what a pull request, CI/CD, or staging means, read **[Before You Start](before-you-start.md)** next - it explains every deployment concept in plain English.
 
 !!! tip "Haven't built your pipeline yet?"
-    These docs assume you already have a working pricing pipeline (`rating/main.py`). If you haven't created one yet, start with the **Building Pipelines** guide first, then come back here when you're ready to deploy.
+    These docs assume you already have a working pricing pipeline (`rating/main.py`). If you haven't created one yet, start with the **[Building Models](../building-models/index.md)** guide first, then come back here when you're ready to deploy.
 
 `haute init` generates CI examples, but they are ordinary workflow files that your team owns. They run Haute commands in sequence; they do **not** themselves provision infrastructure, create a staging environment, or enforce an approval policy. Review the generated workflow and configure your CI provider's own branch protections, environments, and approvals before relying on it for a release process.
 
@@ -56,6 +56,8 @@ You pick your target once when you set up the project. The command is:
 ```powershell
 haute init --target databricks
 ```
+
+`--ci` picks the CI/CD provider the workflow files are written for: `github` (the default), `gitlab`, `azure-devops`, or `none` for no workflow files.
 
 This generates all the deployment files you need. You don't write them by hand - `haute init` creates them for you. Here's what your project folder looks like before and after:
 
@@ -152,6 +154,8 @@ endpoint_suffix = "-staging"
 
 Each section is explained in detail on the target-specific pages. The key idea is: **`haute.toml` says *what* gets deployed and *where***. It never contains passwords or secrets.
 
+One optional setting is shared by every target: `output_fields` under `[deploy]` lists the output columns the deployed API returns, for example `output_fields = ["quote_id", "technical_price"]`. Without it, the API returns every column of the [Quote Response](../building-models/nodes/output.md). A name that is not an output column fails the deploy, listing the columns there are.
+
 ---
 
 ## Credentials
@@ -171,23 +175,31 @@ The target-specific pages and the [CI/CD setup guides](ci/github-actions.md) exp
 
 ## Test quotes
 
-Before every deployment, Haute scores your **test quotes** - example JSON payloads that represent real requests your API will receive. If any of them fail, the deployment is blocked.
+Before every deployment, Haute scores your **test quotes** - example requests your API will receive, with the answers you expect where you know them. If any of them fail, the deployment is blocked.
 
-Test quotes live in `tests/quotes/` as JSON files:
+Test quotes live in `tests/quotes/` as JSON files, each holding a list of cases:
 
 ```json
 [
   {
-    "IDpol": 99001,
-    "VehPower": 7,
-    "DrivAge": 42,
-    "Area": "C",
-    "VehBrand": "B12"
+    "_description": "Typical 42-year-old driver",
+    "input": {"IDpol": 99001, "VehPower": 7, "DrivAge": 42, "Area": "C", "VehBrand": "B12"},
+    "expected": {"technical_price": 536.12},
+    "tolerance_pct": 0.01
   }
 ]
 ```
 
-This catches problems early: schema mismatches, missing model files, runtime errors. Think of it as a sanity check that runs automatically before every deploy.
+- `input` is the request, as your API receives it.
+- `expected` (optional) lists outputs the response must match. A number matches within `tolerance_pct`, a fraction (`0.01` is 1%, at most `1`; the default, `0`, means exactly); any other value must be equal.
+- Keys starting with `_` are notes and are ignored.
+
+The smoke test sends the same `input` requests to the deployed staging endpoint.
+
+!!! warning "Replace the starter example"
+    The `tests/quotes/example.json` that `haute init` writes puts its fields at the top level, without `input`, so the deploy check refuses it. Replace it with your own quotes in the shape above before your first deploy.
+
+This catches problems early: schema mismatches, missing model files, runtime errors, and prices that drift from the ones you expect. Think of it as a sanity check that runs automatically before every deploy.
 
 ---
 
@@ -199,8 +211,8 @@ Haute validates a deployment graph and scores configured test quotes before a no
 |---|---|
 | **Dry-run validation** | Parses the pipeline, checks all model files exist, scores test quotes |
 | **Staging deployment** | `--endpoint-suffix` chooses a different name; the target and your infrastructure must provide that endpoint |
-| **Smoke testing** | `haute smoke` scores configured test quotes against an existing Databricks or HTTP endpoint |
-| **Impact analysis** | `haute impact` compares existing staging and production endpoints using a configured portfolio sample |
+| **Smoke testing** | `haute smoke` scores configured test quotes against an existing Databricks or HTTP endpoint. For HTTP endpoints it reads the address from `[ci.staging] endpoint_url` in `haute.toml` and does not accept `--endpoint-suffix` (see [Docker](targets/docker.md#step-3-give-smoke-and-impact-their-endpoints)) |
+| **Impact analysis** | `haute impact` compares existing staging and production endpoints on the Parquet portfolio sample named by `[safety] impact_dataset`. The sample must be committed to the repository for CI to read it, and `haute init` gitignores `data/`, where the setting points at first. The report is advisory and never fails the run |
 | **Approval gate** | Configure this in GitHub, GitLab, Azure DevOps, or your own release process; `min_approvers` is configuration metadata, not an enforced gate |
 | **Rollback** | Use your target platform's model/image revision and rollback procedure |
 

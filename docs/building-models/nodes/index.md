@@ -16,7 +16,7 @@ Every step in a Haute pipeline is a node. You connect nodes on the canvas to def
 |---|---|
 | Bring in quote data for live pricing | [Quote Input](quote-input.md) |
 | Load a parquet or CSV file, a database, lakehouse or Databricks table | [Data Input](data-input.md) |
-| Store fixed parameters (tax rate, loadings) | [Constant](constant.md) |
+| Store fixed parameters (tax rate, loadings) | [Constant](constant.md), or a [global constant](constant.md#global-constants) every node can read |
 | Join, filter, or calculate new columns | [Transform](transform.md) |
 | Join another dataframe into an existing connection | [Edge Join](edge-join.md) |
 | Convert ages or values into bands | [Banding](banding.md) |
@@ -36,15 +36,15 @@ Every step in a Haute pipeline is a node. You connect nodes on the canvas to def
 
 ## Working with any node
 
-- **Adding and connecting nodes.** Drag a node from the **Nodes** palette on the left onto the canvas, then drag a connection from one node to the next. A connection carries the upstream node's data, under the upstream node's name; a connection from a Quote Input table carries it under the table's label, and one from a submodel output under the output's port name.
+- **Adding and connecting nodes.** Drag a node from the **NODES** palette on the left onto the canvas, then drag a connection from one node to the next. A connection carries the upstream node's data, under the upstream node's name; a connection from a Quote Input table carries it under the table's label, and one from a submodel output under the output's port name.
 - **The node panel.** Click a node to open its panel on the right. Most nodes have tabs along its top:
     - **CONFIG** holds the node's own settings, described on its page. On a Transform node this tab is called **TRANSFORM**, because the node's settings are its steps.
     - **TRANSFORM**, on Data Input, Load File, Expander, Rating Step and Model Scoring nodes, adds optional steps that run on the node's result, built the same way as a Transform node's (see [Building the node from steps](transform.md#building-the-node-from-steps)).
-    - **COLUMNS** lists the node's **Output Columns**: untick a column to stop the node passing it on. **Filter columns...** finds a column by name, and **All** and **None** tick or clear every box. The list appears once the node has been previewed. Quote Input, Quote Response, Model Training, Optimisation, Explore and Submodel nodes have no Columns tab.
+    - **COLUMNS** lists the node's **OUTPUT COLUMNS**: untick a column to stop the node passing it on. **Filter columns...** finds a column by name, and **All** and **None** tick or clear every box. The list appears once the node has been previewed. Quote Input, Quote Response, Model Training, Optimisation, Explore and Submodel nodes have no Columns tab.
 
     Model Training, Optimisation and Explore nodes split their settings into panes instead, described on their pages.
-- **The preview.** Under the canvas, the preview shows the selected node's output. With **Calculation** set to **Automatic** in Pipeline settings (the toolbar's **Pipeline** button), clicking a node calculates its preview; set to **Manual**, a node shows its last result until you click **Refresh** (Ctrl+Enter). **Preview rows** in Pipeline settings sets how many rows a preview shows (0 means no limit), and **Search columns...** narrows the columns shown. Click a cell to trace how its value was calculated (see [Price tracing](../../getting-started/polars.md#price-tracing)).
-- **Renaming, copying and deleting.** Right-click a node for **Rename**, **Duplicate** and **Delete**. A node's name is also the name downstream nodes use for its data.
+- **The preview.** Under the canvas, the preview shows the selected node's output. With **Calculation** set to **Automatic** in Pipeline settings (the button beside **Pipeline:** in the toolbar, which reads **Calculating** or **Manual**), clicking a node calculates its preview; set to **Manual**, a node shows its last result until you click **Refresh** (Ctrl+Enter). **Preview rows** in Pipeline settings sets how many rows a preview shows (0 means no limit), and **Search columns...** narrows the columns shown. Click a cell to trace how its value was calculated (see [Price tracing](../../getting-started/polars.md#price-tracing)).
+- **Renaming, copying and deleting.** Right-click a node for **Rename**, **Duplicate** and **Delete**. A node's name is also the name downstream nodes use for its data, so names are unique: **Rename** refuses a name another node already has, saying why under the name, and **Duplicate** gives the copy the first free name (`quotes copy`, then `quotes copy 2`).
 
 ---
 
@@ -104,8 +104,8 @@ Nodes that bring data into your pipeline. They have no upstream connections.
 ## Models
 
 - **[Model Training](model-training.md)**  - trains a CatBoost, XGBoost, LightGBM, t-boost, EBM or GLM model
-- **[Model Scoring](model-score.md)**  - scores data with an MLflow-managed model
-- **[Load File](external-file.md)**  - loads and scores a standalone model file
+- **[Model Scoring](model-score.md)**  - scores data with a model from a training run, the MLflow model registry or a model file in your project
+- **[Load File](external-file.md)**  - loads a pickle, joblib or JSON file, such as a colleague's model or a lookup, for you to apply in code
 
 ## Optimisation
 

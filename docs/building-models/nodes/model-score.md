@@ -44,7 +44,7 @@ With **Model file**:
 
 | Field | What it does |
 |---|---|
-| **MODEL FILE** | The model file, chosen in the file browser, which lists only model files: `.cbm`, `.rsglm`, `.ubj`, `.lgbm` and `.ebm`. Once a file is chosen, **change** opens the browser again. |
+| **MODEL FILE** | The model file, chosen in the file browser, which lists only model files: `.cbm`, `.ebm`, `.lgbm`, `.rsglm`, `.tboost` and `.ubj`. Once a file is chosen, **change** opens the browser again. |
 
 Under the file the panel shows what it found: the kind of model, its features, its offset (or **none**) and the feature contract it scores with. A file the node cannot score shows the reason here instead, the same message the preview would give.
 
@@ -64,7 +64,7 @@ Use **Regression** when your model predicts a number (frequency, severity, premi
 
 A classification model also adds an `<output column>_proba` column (for example `prediction_proba`) beside the predicted class: the probability of the positive class, which is usually what you use downstream. It appears when the model can produce probabilities. The panel reminds you of the extra column when **Classification** is chosen.
 
-A run logged by Haute's Model Training node records its task. When you pick such a run or registered version, **TASK** shows it read-only with **Task recorded by the training run.** A model file saved with its feature contract records its task too, shown with **Task recorded with the model.** A model logged elsewhere may not record one, so you choose the task yourself. If the node's task and the recorded one disagree, the panel warns and offers a button to use the recorded task. Either way, scoring a model as the wrong task fails with an error naming the task it was trained for.
+A run logged by Haute's Model Training node records its task. When you pick such a run or registered version, **TASK** shows it read-only with **Task recorded by the training run.** A model file records its task too, in the feature contract beside it or, for an XGBoost, LightGBM or t-boost file, in the file itself; the panel shows it with **Task recorded with the model.** A model logged elsewhere may not record one, so you choose the task yourself. If the node's task and the recorded one disagree, the panel warns and offers a button to use the recorded task. Either way, scoring a model as the wrong task fails with an error naming the task it was trained for.
 
 ### Model files
 

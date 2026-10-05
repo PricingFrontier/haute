@@ -30,14 +30,14 @@ If a mapped column is not in the input, the **SOLVE** pane names it (for example
 
 In **Ratebook** mode the pane opens with **RATING FACTOR SOURCE**: the connected [Banding](banding.md) input that supplies the rating-factor levels. Choosing it ticks every factor it defines for optimisation. With no Banding node connected the pane says **No Banding nodes found. Add a Banding node to define rating factors.**; a Banding output with no valid levels is named, asking you to add labelled rules before selecting it.
 
-**FACTORS** then lists the columns you can use, with **Search factors** to narrow the list:
+**FACTORS** then starts with **Validation input**, which chooses the connected input the validation factors come from. It defaults to the **OBJECTIVES & CONSTRAINTS** input; another input must contain the **Row ID** column. A ticked validation factor that is not a column of the chosen input shows a warning with **Remove**.
+
+Below it the pane lists the columns you can use, with **Search factors** to narrow the list:
 
 | Column | What it does |
 |---|---|
 | **Ratebook** | Tick a factor to optimise its table. Only the **RATING FACTOR SOURCE**'s factors can be ticked, and only in **Ratebook** mode. Ratebook mode needs at least one. |
 | **Validation** | Tick up to 12 columns (for example a region or channel) to break the result down by segment after the solve. The solver never sees them. Each must hold one value per quote. |
-
-**Validation input** chooses the connected input the validation factors come from. It defaults to the **OBJECTIVES & CONSTRAINTS** input; another input must contain the **Row ID** column. A ticked validation factor that is not a column of the chosen input shows a warning with **Remove**.
 
 ## The CONSTRAINTS pane
 
@@ -60,14 +60,7 @@ Above the list, **Result:** says what the solve will produce: **single point**, 
 
 ## The SOLVE pane
 
-Once the input can be counted, the pane shows its size: **Quotes**, **Scenarios / quote** and **Total rows**. It warns when each quote has one scenario (**Each quote has one scenario, so the optimiser has nothing to choose between. Check the Scenario Index mapping.**) or when quotes have different numbers of scenarios.
-
-- **Optimise** runs the solve (Ctrl+Enter from anywhere in the node's panel does the same). If anything blocks the solve, the button is disabled and a **Complete before optimising** list names each problem with a **Go to …** link to the pane that fixes it.
-- While the solve runs, the pane shows its progress and a **Stop** button.
-- **Config changed since last solve** appears when you change a setting after a solve, with **Re-run** to solve again.
-- A finished solve reports **Converged** (or **Did not converge**) with the iterations, the number of quotes and the number of steps. A solve that did not converge also shows **Solver did not converge** with advice, usually to increase the maximum iterations or relax the tolerance. A failed solve shows **Optimisation failed** and the reason.
-
-**SOLVER SETTINGS**
+The pane opens with **SOLVER SETTINGS**:
 
 | Field | What it does |
 |---|---|
@@ -77,6 +70,14 @@ Once the input can be counted, the pane shows its size: **Quotes**, **Scenarios 
 | **CD tolerance** | Ratebook mode: coordinate descent convergence tolerance. Defaults to `1e-3`. |
 
 The solver reads the scored scenarios in batches of **Chunk rows** from Pipeline settings, raised when needed to hold at least one whole quote.
+
+Below the settings:
+
+- **Config changed since last solve** appears when you change a setting after a solve, with **Re-run** to solve again.
+- Once the input can be counted, the pane shows its size: **Quotes**, **Scenarios / quote** and **Total rows**. It warns when each quote has one scenario (**Each quote has one scenario, so the optimiser has nothing to choose between. Check the Scenario Index mapping.**) or when quotes have different numbers of scenarios.
+- **Optimise** runs the solve (Ctrl+Enter from anywhere in the node's panel does the same). If anything blocks the solve, the button is disabled and a **Complete before optimising** list names each problem with a **Go to …** link to the pane that fixes it.
+- While the solve runs, the pane shows its progress and a **Stop** button.
+- A finished solve reports **Converged** (or **Did not converge**) with the iterations, the number of quotes and the number of steps. A solve that did not converge also shows **Solver did not converge** with advice, usually to increase the maximum iterations or relax the tolerance. A failed solve shows **Optimisation failed** and the reason.
 
 ## The EXPORT pane
 
@@ -107,7 +108,7 @@ A ratebook result also states its **Combined factor collar**: the optimiser scor
 A finished solve opens in a results panel under the canvas. Its header shows whether the solve converged, its iterations and its number of quotes. Every figure is an expected value from the scoring models on the solve's quotes, not an observed outcome. The views:
 
 - **Frontier** (when a frontier was computed): each point is a solve at a different constraint target, the highest expected objective found at that level. The line joins feasible points (converged, with every bound met); a hollow point did not converge and a cross converged but breaches a bound. The ringed marker is the solve itself. The points table beside the chart lists each point's bound, achieved total, objective and status. Selecting a point in either makes it what the **EXPORT** pane publishes, and the summary under the chart describes it. With more than one swept constraint, **X axis:** chooses the constraint to plot against and **Holding … at** chooses the values the others are held at. The arrows in the panel header step to the previous or next point.
-- **Summary** (under the frontier chart, or a view of its own when nothing was swept): the objective and, per constraint, the bound the result was solved at, the achieved total, the slack, whether the bound is met, and λ, the constraint's multiplier. A min constraint enters each quote's choice as +λ × its column and a max constraint as −λ × its column. In ratebook mode, the clamp rate is the mean, over every grouped solve, of the share of (quote, candidate) targets strictly outside the scenario range; quotes at a grid edge are not counted. For the solve itself, it also shows the shares of quotes adjusted up, down and to the edge of the range, with a link to **Adjustments**.
+- **Summary** (under the frontier chart, or a view of its own when nothing was swept): the objective and, per constraint, the bound the result was solved at, the achieved total, the slack, whether the bound is met, and λ, the constraint's multiplier. A min constraint enters each quote's choice as +λ × its column and a max constraint as −λ × its column. In ratebook mode, the clamp rate is the mean, over every grouped solve, of the share of (quote, candidate) targets strictly outside the scenario range; quotes at a grid edge are not counted. For the solve itself, it also shows the shares of quotes adjusted up, down and to the edge of the range, with a link to **Adjustments**. A ratebook result adds a **MECHANICAL PRICE EFFECT** chart: a dot for each level of the factors whose rates move most (the top 8, or **All**), placed by the effect of its rate on a log scale and coloured by the level's value.
 - **Rates** (ratebook): the rate chosen for each factor level. A quote's combined factor is the product of its levels' rates, collared to the scenario range the solve scored.
 - **Adjustments**: how many quotes (or how much weight) sit at each scenario value of the grid, against 1.0, the base price with no adjustment.
 - **Segments**: the mean chosen scenario value for each level of a validation or rating factor, with the shares adjusted up, down and at the edge of the range.

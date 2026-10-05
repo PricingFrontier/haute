@@ -7,6 +7,10 @@ are fixed. `BUG-18` was found on 4 October 2026 while making standalone runs
 execute submodels: `haute run` then ran a pipeline without its submodels, and
 deploy still parses the same way. `BUG-19` extends the
 check for statements a save would drop from the pipeline file to submodel files.
+`BUG-20` to `BUG-26` were found on 5 October 2026 while checking the deployment
+guides against the CI/CD files `haute init` generates: as generated, several of
+those files fail before a first release succeeds. The guides now give the manual
+step that works today for each, and drop it when the package lands.
 
 ## Priorities
 
@@ -14,6 +18,13 @@ check for statements a save would drop from the pipeline file to submodel files.
 |---|---|---:|---|
 | BUG-18 | Decision | P1 | A deployed pipeline runs each submodel, and an unflattened submodel placeholder never reaches an executor silently. |
 | BUG-19 | Planned | P2 | A save never drops a statement written after a submodel file's constructor. |
+| BUG-20 | Decision | P1 | The starter test quote passes the deploy check, and the deploy specification and code agree on which test-quote rows are accepted. |
+| BUG-21 | Planned | P2 | The generated smoke and impact steps work for the generic container target once its endpoint addresses are set. |
+| BUG-22 | Planned | P1 | Databricks smoke and impact authenticate with the credentials the guides and generated workflows provide. |
+| BUG-23 | Decision | P2 | A new project's impact step reads a portfolio sample that CI can see. |
+| BUG-24 | Decision | P1 | Container targets log in to their registry before `haute deploy` pushes, and GitLab container deploys run where Docker is available. |
+| BUG-25 | Planned | P2 | The Databricks release tag carries the registered model version on GitHub and Azure DevOps. |
+| BUG-26 | Planned | P3 | The generated GitLab pipeline reuses uv's package cache between runs. |
 
 ## Planned improvements
 
@@ -71,3 +82,138 @@ line, and a save is refused with that location.
 **Evidence:** `src/haute/_pipeline_recovery.py::_unkept_statement_diagnostics`;
 `src/haute/_ast_helpers.py::unkept_module_statements`; `src/haute/codegen.py::_render_module`.
 
+
+### BUG-20 — The starter test quote passes the deploy check
+**Why:** Since the golden test-quote format (`bc527d74`), every row in
+`tests/quotes/*.json` must be `{"input": {...}, "expected": {...}?, "tolerance_pct": ...?}`
+plus `_`-prefixed notes, and any other top-level key fails with "unknown golden test
+quote key(s)". `haute init` still writes `tests/quotes/example.json` as a flat input row
+(`id`, `field_a`, `field_b`), so the generated CI's dry-run deploy and every deploy fail
+until the analyst rewrites it. The deploy specification says the opposite: test-quote
+files "may be plain input rows or golden rows".
+
+**Plan:** Decide whether plain input rows are accepted (the code changes to treat a row
+without `input` as the input, as the specification says) or refused (the specification
+changes). Either way, write the starter quote in the golden shape, and keep
+`docs/deployment/index.md#test-quotes` in step.
+
+**Acceptance:** A freshly initialised project's `haute deploy --dry-run` gets past the
+test-quote parse with the starter file in place; a test pins the starter quote to the
+loader; the specification and `_parse_test_quote_case` agree on plain rows.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/deploy/_validators.py::_parse_test_quote_case`
+(`_GOLDEN_QUOTE_KEYS`); `src/haute/_scaffold.py::starter_test_quote`;
+`specs/deploy/high-level.md` (Behaviour: test quotes).
+
+### BUG-21 — Container smoke and impact steps reach their endpoints
+**Why:** The generated smoke and impact steps run `haute smoke --endpoint-suffix
+"-staging"` and `haute impact --endpoint-suffix "-staging"` for every target except the
+three build-and-push-only ones. For `container`, both commands refuse the option ("is
+only supported for Databricks") and need `[ci.staging] endpoint_url` instead, which
+`haute init` does not write, so those jobs fail on every run.
+
+**Plan:** Generate the container target's smoke and impact steps without the option,
+and write commented `[ci.staging] endpoint_url` and `[ci.production] endpoint_url`
+entries into its `haute.toml`, so the steps fail with the existing "No staging endpoint
+URL configured" message until IT supplies the addresses.
+
+**Acceptance:** Scaffold tests show the container workflows for every CI provider call
+smoke and impact without `--endpoint-suffix`; with `endpoint_url` set, `haute smoke`
+reaches the configured address.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_scaffold.py::github_deploy_yml`, `gitlab_ci_yml`,
+`azure_devops_yml`; `src/haute/cli/_smoke.py` and `src/haute/cli/_impact.py` (the suffix refusal);
+`src/haute/cli/_helpers.py::resolve_transport`.
+
+### BUG-22 — Databricks smoke and impact use the RATING credentials
+**Why:** `haute deploy` updates the serving endpoint with `DATABRICKS_RATING_HOST` and
+`DATABRICKS_RATING_TOKEN`, the pair the guides and generated workflows provide, but
+`haute smoke` and `haute impact` build `WorkspaceClient()` with no arguments, which
+reads the SDK's default `DATABRICKS_HOST`/`DATABRICKS_TOKEN`. In CI those are unset, so
+both steps fail with "default auth: cannot configure default credentials".
+
+**Plan:** Build the smoke and impact workspace clients from the RATING pair, as the
+endpoint update does, failing with the same message naming a missing variable.
+
+**Acceptance:** With only the four documented secrets set, `haute smoke` and `haute
+impact` authenticate (a test checks the client receives the RATING host and token);
+the warning in `docs/deployment/targets/databricks.md` Step 3 is removed.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/cli/_smoke.py` and `src/haute/cli/_impact.py`
+(`WorkspaceClient()`); `src/haute/deploy/_mlflow.py` (the RATING pair);
+`src/haute/_scaffold.py::TARGETS` (the Databricks secrets).
+
+### BUG-23 — The impact step's portfolio sample is in the repository
+**Why:** `haute init` sets `[safety] impact_dataset = "data/portfolio_sample.parquet"`,
+and the same command gitignores `data/`, so CI's checkout never has the file and the
+impact step stops with "Impact dataset not found".
+
+**Plan:** Decide where a committed portfolio sample lives (for example
+`tests/impact/`) and whether the impact step should read a governed source instead of
+a file in Git; then make the scaffold default match.
+
+**Acceptance:** A new project's default `impact_dataset` path is not gitignored, and the
+deployment guides describe the chosen location.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_scaffold.py::haute_toml`;
+`src/haute/_gitignore_guard.py::GITIGNORE_GUARD_ENTRIES`; `src/haute/cli/_impact.py`.
+
+### BUG-24 — Container deploys log in to their registry
+**Why:** For the container targets, `haute deploy` pushes with a plain `docker push`
+and the generated workflows pass `DOCKER_USERNAME`/`DOCKER_PASSWORD` (and the AWS or
+Azure credentials) to the deploy steps, but nothing logs in with them, so a push to a
+private registry fails. The generated GitLab jobs also run in `python:3.11`, which has
+no Docker, so `haute deploy` stops with "Docker is not available".
+
+**Plan:** Decide how each registry authenticates (a `docker login` with the DOCKER pair,
+`aws ecr get-login-password` for ECR, a service principal for ACR) and whether Haute or
+the generated workflow performs it; give GitLab container deploys a Docker-capable job.
+
+**Acceptance:** A generated container workflow logs in before the deploy step for each
+CI provider, and its GitLab deploy jobs can run Docker; the manual login steps in the
+Docker, AWS ECS and Azure guides are removed.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/deploy/_container.py::_check_docker_available` and the push;
+`src/haute/_scaffold.py::TARGETS` (secrets) and the workflow generators.
+
+### BUG-25 — The Databricks release tag carries the model version
+**Why:** The production workflows tag a Databricks release with `haute status
+--version-only 2>/dev/null || echo "unknown"`, but on GitHub Actions and Azure DevOps the
+Tag release step has no credentials, so `haute status` fails silently and the tag is
+`deploy/vunknown`; the next production run then fails because that tag exists. GitLab's
+job-level variables reach the tag script.
+
+**Plan:** Pass the MLflow credentials to the Tag release step on GitHub Actions and
+Azure DevOps, and stop masking a failed version read as `unknown`.
+
+**Acceptance:** Scaffold tests show the Tag release step receives the secrets on every
+provider, and a failed version read fails the step with its error.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_scaffold.py::_release_tag_script`, `github_deploy_prod_yml`,
+`azure_devops_yml`.
+
+### BUG-26 — The GitLab pipeline reuses uv's cache
+**Why:** The generated `.gitlab-ci.yml` caches `.cache/uv`, but uv keeps its cache in
+`~/.cache/uv` unless `UV_CACHE_DIR` says otherwise, so nothing is cached between runs.
+
+**Plan:** Set `UV_CACHE_DIR: "$CI_PROJECT_DIR/.cache/uv"` in the generated file's
+top-level `variables:`.
+
+**Acceptance:** A scaffold test shows the cache path and `UV_CACHE_DIR` agree; the
+caching note in `docs/deployment/ci/gitlab.md` loses its workaround.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_scaffold.py::gitlab_ci_yml`.

@@ -70,7 +70,7 @@ Each card reads as a sentence or a short form. The column boxes suggest the colu
 | Step | What it does | What you fill in |
 |---|---|---|
 | **Filter rows** | Keeps rows that match conditions (`filter`) | "Keep rows where", then one condition per row: a column, a test (**equals**, **is greater than**, **is one of**, **is missing**, **contains text**, **matches pattern (regex)** and more) and a value. **Add condition** adds a row; with several, choose whether **all** or **any** of them must be true. |
-| **Add column** | Computes a new or replaced column (`with_columns`) | **Column name**, then **Computed as**: **Value**, **Formula**, **Function**, **If-then**, **Window** or **Join text**. A formula is typed as text, e.g. `(premium + commission) * tax / 12`, and the box completes column names, earlier variables and function names. |
+| **Add column** | Computes a new or replaced column (`with_columns`) | **Column name**, then **Computed as**: **Value**, **Formula**, **Function**, **If-then**, **Window** or **Join text**. A formula is typed as text, e.g. `(premium + commission) * tax / 12`, and the box completes column names, earlier variables, [global constants](constant.md#global-constants) and function names. |
 | **Keep columns** | Keeps only the listed columns (`select`) | The columns to keep; **More options** adds **And every other column of type**. |
 | **Drop columns** | Removes the listed columns (`drop`) | The columns to drop; **More options** adds **And every other column of type**. |
 | **Rename columns** | Gives columns new names (`rename`) | "Rename *column* to *new name*"; **Add rename** adds another. |
@@ -101,7 +101,7 @@ df = df.with_columns(
 
 - You can add more steps afterwards, and move or delete the free-code step like any other.
 - Do not use `return`: the next step needs to run. The card says "Assign the result to df instead of using return." if you do.
-- Variables from earlier **Define variable** steps are available in your code.
+- Variables from earlier **Define variable** steps are available in your code, and [global constants](constant.md#global-constants) as `global_constants.<name>`.
 - If your code creates columns, type their names into the fields of later steps: the builder cannot see inside your code.
 - Use `df` for the current table so upstream renames keep working. Input names written in free code need updating by hand when those inputs change.
 - Code that is not valid Python is reported on the card, for example "Invalid Python on line 2: …".

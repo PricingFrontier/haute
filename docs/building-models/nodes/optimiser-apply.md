@@ -9,7 +9,11 @@ An online result applies to the node's single input. A ratebook result may have 
 
 ## The CONFIG tab
 
-The **INPUT** strip at the top names the connected inputs; each **×** removes that connection.
+The **INPUT** strip at the top names the connected inputs; each **×** removes that connection. The fields below it appear in this order.
+
+With **Registered** or **Experiment Run** chosen as the **ARTIFACT SOURCE**, the MLflow destination buttons (**Databricks**, **MLflow server** or **Local folder**) come first and choose where to look. Switching destination clears the selection and says **Selection cleared - run and model identifiers are not portable across destinations.**
+
+Once the chosen result is known to be a ratebook, **RATEBOOK INPUT** comes next: the connected input the factor tables are applied to (**Select input...** until you choose). It is required for a ratebook result, even with one input connected. A choice that is no longer connected shows **Missing input**.
 
 **ARTIFACT SOURCE** chooses where the saved result comes from:
 
@@ -23,9 +27,9 @@ With **File Path**:
 
 | Field | What it does |
 |---|---|
-| **ARTIFACT PATH** | The saved optimiser result, a JSON file (placeholder `artifacts/optimiser_v1.json`). The Optimisation node's **Use in Apply node** fills it in for you. Once the file loads, a **LOADED ARTIFACT** summary shows its **Mode**, **Version**, **Created** date and **Objective**, with its **LAMBDAS** (online) or its **FACTOR TABLES** and their level counts (ratebook). A file that cannot be read shows **Could not load artifact file**. |
+| **ARTIFACT PATH** | The saved optimiser result, a JSON file (placeholder `artifacts/optimiser_v1.json`). The Optimisation node's **Use in Apply node** fills it in for you. |
 
-With **Registered** or **Experiment Run**, the MLflow destination buttons (**Databricks**, **MLflow server** or **Local folder**) choose where to look. Switching destination clears the selection and says **Selection cleared - run and model identifiers are not portable across destinations.**
+With **Registered** or **Experiment Run**:
 
 | Field | What it does |
 |---|---|
@@ -39,9 +43,10 @@ Then, for every source:
 
 | Field | What it does |
 |---|---|
-| **RATEBOOK INPUT** | Shown once the chosen result is known to be a ratebook: the connected input the factor tables are applied to (**Select input...** until you choose). It is required for a ratebook result, even with one input connected. A choice that is no longer connected shows **Missing input**. |
 | **VERSION COLUMN** | The column added to the output for monitoring and version tracking. Defaults to `__optimiser_version__`. |
 | **OPTIMISED VALUE COLUMN** | The column holding the selected optimiser value: the chosen scenario value (online) or the combined factor (ratebook). A new node sets it to `optimised_value`; clear it to keep the names `optimal_scenario_value` (online) and `optimised_factor` (ratebook). |
+
+At the foot of the tab, once a **File Path** result loads, a **LOADED ARTIFACT** summary shows its **Mode**, **Version**, **Created** date and **Objective**, with its **LAMBDAS** (online) or its **FACTOR TABLES** and their level counts (ratebook). A file that cannot be read shows **Could not load artifact file**.
 
 ## The COLUMNS tab
 

@@ -69,6 +69,8 @@ dir = "tests/quotes"
 | `container_app_name` | Name of the container app | `"motor-pricing"` |
 | `environment_name` | Name of the Container Apps environment | `"pricing-env"` |
 
+`resource_group`, `container_app_name` and `environment_name` are recorded for the future service-update adapter; they do not affect the current deploy.
+
 ---
 
 ## Step 2: Add credentials to CI
@@ -83,6 +85,16 @@ CI needs registry credentials to push images to ACR. Credentials for a manual Co
 | `AZURE_TENANT_ID` | Your Azure tenant ID |
 | `AZURE_CLIENT_ID` | Your service principal app ID |
 | `AZURE_CLIENT_SECRET` | Your service principal password |
+
+Haute pushes with a plain `docker push` and does not log in to ACR, and the generated workflows do not either. Until they do, add a login line before `haute deploy` in both the staging and the production deploy step of your workflow file, for example on GitHub Actions:
+
+```yaml
+        run: |
+          echo "$DOCKER_PASSWORD" | docker login pricingregistry.azurecr.io --username "$DOCKER_USERNAME" --password-stdin
+          uv run haute deploy --endpoint-suffix "-staging"
+```
+
+With a service principal, `DOCKER_USERNAME` is its app ID.
 
 How to add them depends on your CI provider - see [GitHub Actions](../ci/github-actions.md#step-1-add-your-credentials-as-github-secrets), [GitLab](../ci/gitlab.md#step-1-add-your-credentials-as-cicd-variables), or [Azure DevOps](../ci/azure-devops.md#step-1-create-a-variable-group-for-credentials).
 
@@ -104,7 +116,7 @@ You don't run any deploy command. When you merge to main, CI automatically:
     1. **In your CI provider** - the deploy job is green after the image build and push
     2. **In the CI logs** - `Image pushed: pricingregistry.azurecr.io/motor-pricing:a1b2c3d`, followed by `The azure-container-apps service was not updated` and the tag to point it at
 
-    A green deploy job is not a Container Apps deployment. Your platform team must create or update a revision, then verify its health. Run `haute smoke` and `haute impact` once the app runs the new image.
+    A green deploy job is not a Container Apps deployment. Your platform team must create or update a revision, then verify its health. Run `haute smoke` and `haute impact` once the app runs the new image, after setting the service addresses in `haute.toml` (see [Docker](docker.md#step-3-give-smoke-and-impact-their-endpoints)); those commands do not accept `--endpoint-suffix` for this target.
 
 Use the pushed image tag when your IT team updates the container app manually in the Azure Portal:
 

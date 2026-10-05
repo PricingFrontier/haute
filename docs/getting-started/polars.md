@@ -30,7 +30,7 @@ If your pipeline selects ten columns but only three are used downstream, Polars 
 
 This is called lazy evaluation. You describe what you want; Polars figures out the fastest way to get there.
 
-In practice, this means Haute's batch execution - processing a full dataset end to end - is significantly faster than running each step individually. The engine sees the whole pipeline and optimises it as a single unit, rather than treating each node as an isolated calculation.
+In practice, this means Haute's batch execution - processing a full dataset end to end - is significantly faster than running each step individually. The engine optimises across the pipeline's nodes rather than treating each node as an isolated calculation, and stores intermediate results only at the few points described under [Memory and large datasets](#memory-and-large-datasets).
 
 You don't need to think about this when using Haute. It happens automatically. But it explains why batch runs are fast even on large datasets - the engine is doing less work, not more.
 
@@ -86,7 +86,7 @@ df = df.filter(pl.col("vehicle_age") < 20).with_columns(
 
 **Switch to code** turns a node's steps into editable code for good: the steps are removed and the generated code becomes editable, and there is no way back to steps. Code always assigns its result to `df`; do not end it with `return`.
 
-For more involved logic, you can write your own Python functions. `haute init` creates a `rating/utility/` folder for them, and the toolbar's **Utility** panel lets you edit its files or create new ones. A utility's functions are available in your code once its import is listed in the toolbar's **Imports** panel, for example `from utility.features import *`. A file you create in the Utility panel gets its import line added automatically; the starter `features.py` does not, so add its import yourself.
+For more involved logic, you can write your own Python functions. `haute init` creates a `rating/utility/` folder for them, and the toolbar's **Utility** button opens a panel where you can edit its files or create new ones. A utility's functions are available in your code once its import is listed under **Imports**, the first entry in the Utility panel's file list, for example `from utility.features import *`. A file you create in the Utility panel gets its import line added automatically; the starter `features.py` does not, so add its import yourself.
 
 ---
 
@@ -94,7 +94,7 @@ For more involved logic, you can write your own Python functions. `haute init` c
 
 Two of the most common operations in pricing - rating table lookups and banding - are handled by dedicated node types. Both use Polars under the hood, but you configure them through the visual editor rather than writing code.
 
-**Rating tables** are lookups. You define a table of factors and values, and Haute joins it to your data on the factor columns. The join is a standard Polars left join - every row in your data gets matched to the corresponding value in the lookup table. Rows that don't match take the table's default value (1.0 for a new table, unless you change it); if you clear the default, a row with no match stops the run with an error that names the missing keys. The lookup table is validated before the join runs: entries with NaN or infinite values are rejected, because a silent bad value in a rating table can corrupt an entire book of prices.
+**Rating tables** are lookups. You define a table of factors and values, and Haute joins it to your data on the factor columns. The join is a standard Polars left join - every row in your data gets matched to the corresponding value in the lookup table. A new table has no default value, so a row that doesn't match follows the table's **ON MISS** setting: **Stop the run** (the default) stops the run with an error that names the missing keys, and **Leave empty** leaves the value empty. Type a **DEFAULT** value to price every row that doesn't match at that value instead (see [Rating Step](../building-models/nodes/rating-step.md#what-happens-on-a-miss)). The lookup table is validated before the join runs: entries with NaN or infinite values are rejected, because a silent bad value in a rating table can corrupt an entire book of prices.
 
 **Banding** maps numeric, date or categorical values into groups. **Numeric** banding (for age, sum insured or a policy start date) uses breakpoints: each has an upper boundary and a band name, and the boundaries are numbers, dates (`YYYY-MM-DD`) or dates and times - one kind per factor. **Generate even bands** fills in evenly spaced breakpoints for you, in calendar steps for a date column. **Categorical** banding (for vehicle type) maps exact values to groups. Under the hood, numeric banding builds a chain of conditional expressions - the Polars equivalent of nested IF statements - and categorical banding uses strict value replacement. Both produce a new column with the banded result.
 
@@ -104,7 +104,7 @@ Two of the most common operations in pricing - rating table lookups and banding 
 
 When you click a cell in a preview and trace it, Haute explains that value from the same execution the preview used. It finds the clicked row in each upstream node's output and shows what happened to it at every step, so the trace always shows the data you see in the preview. It is not a separate calculation for one row.
 
-The trace panel opens on the clicked node's card and hides steps that only pass the row through; you can reveal them. Each card shows what its step did - the columns it added or changed and the formula evaluated on your row - with extra detail for Banding, Rating Step, Model Scoring, Apply Optimisation, Expander and Source Switch nodes. Derivation rows show how each input the value depends on was calculated. A chain of multiplications and additions is drawn as a waterfall, and a GLM or CatBoost model shows a ladder of contributions up to its linear predictor or raw score, then the prediction. Every card and derivation row links to its step and to its node on the canvas.
+The trace panel opens on the clicked node's card and hides steps that only pass the row through; you can reveal them. Each card shows what its step did - the columns it added or changed and the formula evaluated on your row - with extra detail for Banding, Rating Step, Model Scoring, Apply Optimisation, Expander and Source Switch nodes. Derivation rows show how each input the value depends on was calculated. A chain of multiplications and additions is drawn as a waterfall, and a model of a family Haute trains (CatBoost, XGBoost, LightGBM, t-boost, EBM or GLM) shows a ladder of contributions up to its linear predictor or raw score, then the prediction. Every card and derivation row links to its step and to its node on the canvas.
 
 The first trace runs through the pipeline and caches the result. Every trace after that on the same pipeline pulls from cache - click a different row, a different column, and the answer appears instantly. The cache is keyed to your pipeline's structure, so it refreshes automatically when you change something.
 
