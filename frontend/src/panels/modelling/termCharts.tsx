@@ -16,13 +16,7 @@ import {
   MODELLING_CHART_AXIS_TEXT_COLOR as TEXT,
   MODELLING_CHART_GRID_COLOR as GRID,
 } from "./ChartScaffold"
-import {
-  chartAxisLabel,
-  chartDomain,
-  chartTicks,
-  formatChartNumber,
-  formatChartTicks,
-} from "../../utils/chartHelpers"
+import { chartAxisLabel, chartDomain, chartTicks, formatChartNumber } from "../../utils/chartHelpers"
 
 /** An axis to draw: its feature and one label per cell. */
 export interface TermChartAxis {
@@ -32,6 +26,8 @@ export interface TermChartAxis {
 
 interface ShapeProps {
   title: string
+  /** The axis's feature, named under the x axis and heading a level table. */
+  feature: string
   labels: string[]
   values: number[]
   /** The value bars start from and the dashed reference line sits at. */
@@ -41,6 +37,30 @@ interface ShapeProps {
   /** Training mass per cell, shown beside each value when given. */
   mass?: number[]
   massLabel?: string
+}
+
+// Chart geometry (pixels), as the PDP and SHAP curve charts': the value axis
+// titled above the plot, tick labels under it and the feature named below them.
+const LEFT = 68
+const RIGHT = 24
+const TOP = 32
+const BOTTOM = 248
+const HEIGHT = 300
+
+/** The value axis's title above the plot and the feature's name under the x axis, as on PDP. */
+function AxisTitles({ value, feature, width }: { value: string; feature: string; width: number }) {
+  const plotWidth = Math.max(1, width - LEFT - RIGHT)
+  return (
+    <>
+      <text x={LEFT} y={16} fontSize={FONT} fill={TEXT}>
+        {value}
+      </text>
+      <text x={LEFT + plotWidth / 2} y={HEIGHT - 5} textAnchor="middle" fontSize={FONT} fill={TEXT}>
+        <title>{feature}</title>
+        {chartAxisLabel(feature, plotWidth)}
+      </text>
+    </>
+  )
 }
 
 /** The room an x-axis label takes: its axis's longest label, capped so one long label cannot crowd out the rest. */
@@ -62,7 +82,7 @@ function detail(props: ShapeProps, index: number): string {
 
 /** One bar per level, drawn from the reference value. */
 export function LevelBars(props: ShapeProps) {
-  const { title, labels, values, reference, mass } = props
+  const { title, labels, values, reference, valueLabel, mass } = props
   return (
     <ResponsiveChart>
       {(width) => {
@@ -71,6 +91,9 @@ export function LevelBars(props: ShapeProps) {
         const x = (value: number) => 4 + ((value - low) / (high - low)) * (barWidth - 8)
         return (
           <div role="img" aria-label={title}>
+            <div className="mb-3 text-xs" style={{ color: TEXT }}>
+              {valueLabel} · baseline at {formatChartNumber(reference)}
+            </div>
             {labels.map((label, i) => (
               <div
                 key={label}
@@ -120,7 +143,7 @@ export function LevelBars(props: ShapeProps) {
  * cell, stated on its own above the curve.
  */
 export function StepShape(props: ShapeProps) {
-  const { title, reference, valueLabel } = props
+  const { title, feature, reference, valueLabel } = props
   const [active, setActive] = useState<number | null>(null)
   const missing = props.values[0]
   const values = props.values.slice(1)
@@ -136,33 +159,22 @@ export function StepShape(props: ShapeProps) {
       </div>
       <ResponsiveChart>
         {(width) => {
-          const left = 68,
-            right = 24,
-            top = 24,
-            bottom = 240,
-            height = 280
-          const plotWidth = Math.max(1, width - left - right)
+          const plotWidth = Math.max(1, width - LEFT - RIGHT)
           const [low, high] = chartDomain([...values, reference])
           const step = plotWidth / Math.max(1, values.length)
-          const x = (index: number) => left + index * step
-          const y = (value: number) => bottom - ((value - low) / (high - low)) * (bottom - top)
+          const x = (index: number) => LEFT + index * step
+          const y = (value: number) => BOTTOM - ((value - low) / (high - low)) * (BOTTOM - TOP)
           const path = values
             .map((value, i) => `${i ? "L" : "M"}${x(i)},${y(value)} L${x(i + 1)},${y(value)}`)
             .join(" ")
           const labelWidth = axisLabelWidth(labels)
           return (
-            <ChartSvg width={width} height={height} ariaLabel={title}>
-              {chartTicks(low, high).map((value, index, all) => (
-                <g key={value}>
-                  <line x1={left} x2={width - right} y1={y(value)} y2={y(value)} stroke={GRID} />
-                  <text x={left - 8} y={y(value) + 4} textAnchor="end" fontSize={FONT} fill={TEXT}>
-                    {formatChartTicks(all)[index]}
-                  </text>
-                </g>
-              ))}
+            <ChartSvg width={width} height={HEIGHT} ariaLabel={title}>
+              <AxisTitles value={valueLabel} feature={feature} width={width} />
+              <ChartValueGrid ticks={chartTicks(low, high)} left={LEFT} right={width - RIGHT} y={y} labelGap={8} />
               <line
-                x1={left}
-                x2={width - right}
+                x1={LEFT}
+                x2={width - RIGHT}
                 y1={y(reference)}
                 y2={y(reference)}
                 stroke={TEXT}
@@ -173,9 +185,9 @@ export function StepShape(props: ShapeProps) {
                 <rect
                   key={i}
                   x={x(i)}
-                  y={top}
+                  y={TOP}
                   width={Math.max(1, step)}
-                  height={bottom - top}
+                  height={BOTTOM - TOP}
                   fill="transparent"
                   onMouseEnter={() => setActive(i)}
                 >
@@ -183,7 +195,7 @@ export function StepShape(props: ShapeProps) {
                 </rect>
               ))}
               {labelledCells(values.length, step, labelWidth).map((i) => (
-                <text key={i} x={x(i) + step / 2} y={bottom + 20} textAnchor="middle" fontSize={FONT} fill={TEXT}>
+                <text key={i} x={x(i) + step / 2} y={BOTTOM + 22} textAnchor="middle" fontSize={FONT} fill={TEXT}>
                   {chartAxisLabel(labels[i], labelWidth)}
                 </text>
               ))}
@@ -214,7 +226,7 @@ function surfaceColour(value: number, reference: number, extent: number): string
  * One row per cell of a single axis: its value, coloured by distance from the
  * reference as a surface is, and its training mass when given.
  */
-export function LevelTable(props: ShapeProps & { feature: string }) {
+export function LevelTable(props: ShapeProps) {
   const { title, feature, labels, values, reference, valueLabel, mass, massLabel } = props
   const extent = Math.max(0, ...values.map((value) => Math.abs(value - reference)))
   return (
@@ -271,17 +283,12 @@ export function InteractionLines({
     <>
       <ResponsiveChart>
         {(width) => {
-          const left = 68,
-            right = 24,
-            top = 16,
-            bottom = 240,
-            height = 272
-          const plotWidth = Math.max(1, width - left - right)
+          const plotWidth = Math.max(1, width - LEFT - RIGHT)
           const [low, high] = chartDomain([...grid.flat(), reference])
           const step = plotWidth / Math.max(1, across.labels.length)
           const gap = Math.min(step * 0.15, 12)
-          const x = (index: number) => left + index * step
-          const y = (value: number) => bottom - ((value - low) / (high - low)) * (bottom - top)
+          const x = (index: number) => LEFT + index * step
+          const y = (value: number) => BOTTOM - ((value - low) / (high - low)) * (BOTTOM - TOP)
           // A continuous range after the first joins the one before it.
           const joined = (cell: number) => across.continuous && cell > 1
           const startGap = (cell: number) => (joined(cell) ? 0 : gap)
@@ -295,14 +302,15 @@ export function InteractionLines({
               .join(" ")
           const labelWidth = axisLabelWidth(across.labels)
           return (
-            <ChartSvg width={width} height={height} ariaLabel={title}>
-              <ChartValueGrid ticks={chartTicks(low, high)} left={left} right={width - right} y={y} labelGap={8} />
+            <ChartSvg width={width} height={HEIGHT} ariaLabel={title}>
+              <AxisTitles value={valueLabel} feature={across.feature} width={width} />
+              <ChartValueGrid ticks={chartTicks(low, high)} left={LEFT} right={width - RIGHT} y={y} labelGap={8} />
               {active !== null && (
-                <rect x={x(active)} y={top} width={step} height={bottom - top} fill={GRID} opacity={0.5} />
+                <rect x={x(active)} y={TOP} width={step} height={BOTTOM - TOP} fill={GRID} opacity={0.5} />
               )}
               <line
-                x1={left}
-                x2={width - right}
+                x1={LEFT}
+                x2={width - RIGHT}
                 y1={y(reference)}
                 y2={y(reference)}
                 stroke={TEXT}
@@ -315,9 +323,9 @@ export function InteractionLines({
                 <rect
                   key={label}
                   x={x(cell)}
-                  y={top}
+                  y={TOP}
                   width={Math.max(1, step)}
-                  height={bottom - top}
+                  height={BOTTOM - TOP}
                   fill="transparent"
                   onMouseEnter={() => setActive(cell)}
                 >
@@ -325,7 +333,7 @@ export function InteractionLines({
                 </rect>
               ))}
               {labelledCells(across.labels.length, step, labelWidth).map((cell) => (
-                <text key={cell} x={x(cell) + step / 2} y={bottom + 20} textAnchor="middle" fontSize={FONT} fill={TEXT}>
+                <text key={cell} x={x(cell) + step / 2} y={BOTTOM + 22} textAnchor="middle" fontSize={FONT} fill={TEXT}>
                   {chartAxisLabel(across.labels[cell], labelWidth)}
                 </text>
               ))}

@@ -114,6 +114,7 @@ export function TermTableView({
     const axis = axes[0]
     const shape = {
       title,
+      feature: axis.feature,
       labels: axis.labels,
       values: values as number[],
       mass: mass as number[] | undefined,
@@ -121,7 +122,7 @@ export function TermTableView({
       reference,
       valueLabel,
     }
-    if (display === "table") return <LevelTable {...shape} feature={axis.feature} />
+    if (display === "table") return <LevelTable {...shape} />
     return axis.type === "nominal" ? <LevelBars {...shape} /> : <StepShape {...shape} />
   }
   const chooseAxis = (role: "row" | "column", axis: number) => {
