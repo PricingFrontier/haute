@@ -69,19 +69,28 @@ dir = "tests/quotes"
 | `cluster` | Name of your ECS cluster | `"pricing-cluster"` |
 | `service` | Name of your ECS service | `"motor-pricing"` |
 
+`region`, `cluster` and `service` are recorded for the future service-update adapter; they do not affect the current deploy.
+
 ---
 
 ## Step 2: Add credentials to CI
 
-CI needs registry credentials to push images to ECR. Credentials for a manual ECS service update belong to the tool and process your platform team uses, not to Haute's current adapter.
+CI needs AWS credentials to push images to ECR. Credentials for a manual ECS service update belong to the tool and process your platform team uses, not to Haute's current adapter.
 
 | Secret name | Value |
 |---|---|
-| `DOCKER_USERNAME` | `AWS` |
-| `DOCKER_PASSWORD` | ECR auth token (CI handles refresh automatically) |
 | `AWS_ACCESS_KEY_ID` | Your AWS access key |
 | `AWS_SECRET_ACCESS_KEY` | Your AWS secret key |
 | `AWS_DEFAULT_REGION` | e.g. `eu-west-1` |
+| `DOCKER_USERNAME`, `DOCKER_PASSWORD` | Not needed for ECR: its passwords last 12 hours, so the deploy fetches a fresh one each run (below) |
+
+Haute pushes with a plain `docker push` and does not log in to ECR, and the generated workflows do not either. Until they do, add a login line before `haute deploy` in both the staging and the production deploy step of your workflow file, for example on GitHub Actions:
+
+```yaml
+        run: |
+          aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin 123456789012.dkr.ecr.eu-west-1.amazonaws.com
+          uv run haute deploy --endpoint-suffix "-staging"
+```
 
 How to add them depends on your CI provider - see [GitHub Actions](../ci/github-actions.md#step-1-add-your-credentials-as-github-secrets), [GitLab](../ci/gitlab.md#step-1-add-your-credentials-as-cicd-variables), or [Azure DevOps](../ci/azure-devops.md#step-1-create-a-variable-group-for-credentials).
 
@@ -103,7 +112,7 @@ You don't run any deploy command. When you merge to main, CI automatically:
     1. **In your CI provider** - the deploy job is green after the image build and push
     2. **In the CI logs** - `Image pushed: 123456789012.dkr.ecr.eu-west-1.amazonaws.com/motor-pricing:a1b2c3d`, followed by `The aws-ecs service was not updated` and the tag to point it at
 
-    A green deploy job is not an ECS deployment. Your platform team must update the task definition or service, then verify its health. Run `haute smoke` and `haute impact` once the service runs the new image.
+    A green deploy job is not an ECS deployment. Your platform team must update the task definition or service, then verify its health. Run `haute smoke` and `haute impact` once the service runs the new image, after setting the service addresses in `haute.toml` (see [Docker](docker.md#step-3-give-smoke-and-impact-their-endpoints)); those commands do not accept `--endpoint-suffix` for this target.
 
 Use the pushed image tag when your IT team updates the ECS task definition manually, then deploy that new task-definition revision to the service. The command below only starts new tasks from the service's **current** task definition; it does not replace its image by itself.
 

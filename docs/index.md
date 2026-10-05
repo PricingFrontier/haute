@@ -13,11 +13,11 @@ hide:
 
     ---
 
-    Set up your machine, install Haute and find your way around the editor.
+    Set up your machine, install Haute and switch on the pricing assistant.
 
     - [Setting up your environment](getting-started/environment.md)
     - [Installing Haute](getting-started/installing-haute.md)
-    - [UI overview](getting-started/ui-overview.md)
+    - [Setting up the assistant](getting-started/assistant.md)
     - [Polars](getting-started/polars.md)
 
 -   :material-graph-outline:{ .lg .middle } __Building models__
@@ -63,9 +63,11 @@ hide:
 ## Quick start
 
 ```bash
+uv init my-pricing-project
+cd my-pricing-project
 uv add haute
-haute init
-haute serve
+uv run haute init
+uv run haute serve
 ```
 
-`haute serve` opens the editor in your browser. [Installing Haute](getting-started/installing-haute.md) walks through each step.
+`uv add` needs a project to add Haute to, which `uv init` creates. `haute serve` opens the editor in your browser. [Installing Haute](getting-started/installing-haute.md) walks through each step.

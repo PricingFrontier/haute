@@ -59,12 +59,14 @@ Haute connects standard tools rather than replacing them:
 ## Quick start
 
 ```bash
+uv init my-pricing-project
+cd my-pricing-project
 uv add haute
-haute init
-haute serve
+uv run haute init
+uv run haute serve
 ```
 
-`haute init` scaffolds a project with its configuration, test quotes and CI/CD workflows, and `haute serve` opens the editor in your browser. The [getting started guide](https://pricingfrontier.github.io/haute/getting-started/) covers setup in more detail.
+`uv add` needs a project to add Haute to, which `uv init` creates. `haute init` scaffolds a project with its configuration, test quotes and CI/CD workflows, and `haute serve` opens the editor in your browser. The [getting started guide](https://pricingfrontier.github.io/haute/getting-started/) covers setup in more detail.
 
 ## Features
 

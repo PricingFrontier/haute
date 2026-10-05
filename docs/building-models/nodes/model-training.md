@@ -47,7 +47,7 @@ while a model trains. The node has no **COLUMNS** tab.
 | Early stopping | `early_stopping_rounds` | `early_stopping_rounds` | `early_stopping_round` | On the validation rows, each bag at its own round; else on its own holdout | Never | — |
 | Final refit (when refitting) | Validation-weighted round count | Validation-weighted round count | Validation-weighted round count | Never: the early-stopped validation fit is the model | Winning `max_rounds`, unchanged | Same settings |
 | Tuning | Yes | Yes | Yes | Yes | Yes (`max_rounds` searchable) | No |
-| Monotone constraints | Yes | Yes, except with MAE | Yes, except with MAE | Yes | Yes, not on an interaction | Per term |
+| Monotone constraints | Yes | Yes, except with MAE | Yes, except with MAE | Yes, with `prune_main_effects` set to `false` | Yes, not on an interaction | Per term |
 | Feature weights | Yes (pipeline file only) | No | No | No | No | No |
 | Interactions | Learned by trees | Learned by trees | Learned by trees | Learned, up to `max_interaction_order` features per table | Chosen count or explicit pairs | Explicit cards |
 | Offset | Baseline | `base_margin` | `init_score` (added at prediction) | Exposure (Poisson, Gamma, Tweedie); added to the raw score (RMSE) | `init_score` | Offset term |
@@ -55,7 +55,7 @@ while a model trains. The node has no **COLUMNS** tab.
 | Model file | `.cbm` | `.ubj` | `.lgbm` | `.tboost` | `.ebm` | `.rsglm` |
 | Compute | CPU, optional GPU | CPU, optional CUDA GPU | CPU | CPU | CPU, one thread | CPU |
 
-Tree families train with `HAUTE_TRAINING_THREADS` threads (default: every logical CPU).
+Tree families and t-boost train with `HAUTE_TRAINING_THREADS` threads (default: every logical CPU).
 On macOS, XGBoost and LightGBM need Homebrew's `libomp` (`brew install libomp`).
 
 ## The TARGET pane
@@ -69,7 +69,7 @@ XGBoost, LightGBM, t-boost and EBM it has three sections; the GLM's version is d
 | Field | What it does |
 |---|---|
 | **Target column** | The column the model predicts. Pick it from the searchable list (**Select target…** until you do). Training is blocked with **Select a target column.** until it is set. |
-| **Objective** | The training loss, one button per loss the family supports (see the table above). Choosing a loss also sets the task (regression or classification) and switches on that loss's usual metrics; clicking the selected loss again clears it. Training is blocked until a loss is chosen, because an unset loss would silently train under the library default. MAE is not offered for an EBM. |
+| **Objective** | The training loss, one button per loss the family supports (see the table above). Choosing a loss also sets the task (regression or classification) and switches on that loss's usual metrics; clicking the selected loss again clears it. Training is blocked until a loss is chosen, because an unset loss would silently train under the library default. MAE is not offered for t-boost or an EBM. |
 | **Variance power** | Shown for the **Tweedie** loss: a slider with a number box beside it, between 1 (Poisson) and 2 (Gamma), exclusive. A new Tweedie selection starts at 1.5. A saved value outside that range shows **Saved variance power must be greater than 1 and less than 2.** |
 | **Positive class** | Shown for a classification loss when the target is not Boolean: the label the model predicts the probability of. Predictions above 0.5 are labelled with it. For a numeric target the label reads **Positive class (only if the labels are not 0/1)**; for text labels it is required and shows **Choose which label is the positive class.** until set. |
 
@@ -82,7 +82,7 @@ prediction positive when its positive-class probability is above 0.5.
 | Field | What it does |
 |---|---|
 | **Weight column (optional)** | A numeric column that weights each row in the loss (for example exposure). **None** leaves rows unweighted. |
-| **Offset column (optional)** | A numeric column the model folds in through its link function. Under a log link (a log-link GLM, or a `Poisson`, `Gamma` or `Tweedie` loss) it is a strictly positive exposure multiplier: 2× exposure gives 2× the expected count, and null, zero, or negative values are refused when training and when scoring. Under any other link it is added to the prediction. A constant column of 1 is the unit basis under a log link. The offset column must be present when the model scores. Different from the weight, which weights the loss. The info icon beside the label repeats this. |
+| **Offset column (optional)** | A numeric column the model folds in through its link function. Under a log link (a log-link GLM, or a `Poisson`, `Gamma` or `Tweedie` loss) it is a strictly positive exposure multiplier: 2× exposure gives 2× the expected count, and null, zero, or negative values are refused when training and when scoring. Under any other link it is added to the prediction. A constant column of 1 is the unit basis under a log link. The offset column must be present when the model scores. Different from the weight, which weights the loss. With the **Logloss** loss, XGBoost, LightGBM, t-boost and EBM take no offset: training stops when it starts, asking you to remove the offset column. The info icon beside the label gives a shorter version of this. |
 
 One column plays one role: the target is never offered as the weight or offset, and the
 weight and offset lists hold numeric columns only.
@@ -118,7 +118,7 @@ If an estimate fails, the pane shows **Estimation failed:** and the reason.
 
 ## The FEATURES pane
 
-For CatBoost, XGBoost, LightGBM and EBM the pane lists every column that could be a
+For CatBoost, XGBoost, LightGBM, t-boost and EBM the pane lists every column that could be a
 feature, with a count of how many are included and excluded. Every feature starts
 unticked on a new node: tick the ones the model should learn from. Columns that already have a
 role (target, weight, offset, and the group or date column the split uses) are left out
@@ -126,7 +126,7 @@ of the list and are never features.
 
 - **Search features** narrows the list by name.
 - **All**, **Included** and **Excluded** filter the list by membership; each shows its count.
-- **Include all** and **Exclude all** tick or clear every listed feature.
+- **Include all** and **Exclude all** tick or clear every feature, including any that the search or filter is hiding.
 - The tick box beside each feature includes or excludes it.
 - **Monotonicity** sets a constraint on an included numeric feature: **↓** decreasing, **−**
   no constraint (the default) and **↑** increasing. The buttons are disabled for a
@@ -258,7 +258,7 @@ from:
 | CatBoost | `iterations` 1000, `learning_rate` 0.05, `depth` 6, `l2_leaf_reg` 3, `early_stopping_rounds` 50, `one_hot_max_size` 10 |
 | XGBoost | `num_boost_round` 1000, `eta` 0.1, `max_depth` 6, `early_stopping_rounds` 50 |
 | LightGBM | `num_iterations` 1000, `learning_rate` 0.05, `num_leaves` 31, `early_stopping_round` 50 |
-| t-boost | `n_trees` 4000, `max_interaction_order` 3 (every other setting is t-boost's own recommended recipe) |
+| t-boost | `n_trees` 4000, `max_interaction_order` 3, `n_bags` 8, `interaction_gain_hurdle` 2, `prune` true, `prune_main_effects` true, `band_tolerance` 0.75, `graduate` true (t-boost's own recommended recipe, written out so you can see and change it, except `prune_main_effects`, which a new node switches on) |
 | EBM | `max_rounds` 2000, `learning_rate` 0.02, `interactions` 10 |
 
 Invalid JSON, or a key Haute sets itself, shows **Parameters JSON:** with the reason under
@@ -315,7 +315,7 @@ For CatBoost, GPU training is set in the **TRAIN** pane rather than here.
     (`validation_fraction`). t-boost also prunes tables that do not improve its
     own held-out deviance (`prune`). A new node also lets pruning drop a main effect
     (`prune_main_effects`), so a feature that earns no place leaves the model; set it to
-    `false` to keep every main effect, as a fit with monotonicity constraints must. `n_trees` is the ceiling every fit stops early within,
+    `false` to keep every main effect, as a fit with monotonicity constraints must: while `prune_main_effects` is `true`, training is blocked if a feature has a monotonicity constraint or `prune` is `false`. To switch pruning off, set `prune`, `prune_main_effects` and `graduate` to `false`, because t-boost refuses `graduate` without pruning when the fit starts. `n_trees` is the ceiling every fit stops early within,
     and is required. When the **SPLIT** pane groups rows by an entity column, t-boost's own
     holdouts keep each entity on one side. A fit gives the same model whatever the number of
     threads. The **Loss** view draws each round's training and early-stopping deviance,
@@ -334,7 +334,7 @@ For CatBoost, GPU training is set in the **TRAIN** pane rather than here.
     scores the rate times the offset. Under RMSE the offset is added to the prediction as it
     is. Logloss takes no offset, and MAE and CrossEntropy are not available. A categorical
     value the model never saw, such as a make that only appears in the validation rows or
-    arrives after training, never fails: t-boost scores it in its pooled rare level, like the levels too thin to model alone (the default level on a feature where nothing was pooled). t-boost scores numeric features as 32-bit floats. The `.tboost` file is t-boost's own JSON model with
+    arrives after training, never fails unless the node declares that feature's levels (see **In the pipeline file**): t-boost scores it in its pooled rare level, like the levels too thin to model alone (the default level on a feature where nothing was pooled). t-boost scores numeric features as 32-bit floats. The `.tboost` file is t-boost's own JSON model with
     Haute's record in its metadata, so it describes its own inputs and offset, and plain
     t-boost (0.8 or later) can read it too.
 
@@ -388,7 +388,7 @@ entry uses `{"choices": [...], "when": {...}}` instead (see **In the pipeline fi
 Haute rejects unknown fields, lists outside two through fifty distinct finite values, invalid
 or cyclic conditions, and keys Haute owns, such as a tree family's round budget,
 loss/objective, device, threads, callbacks, write directories, or random seed. Training is
-blocked until tuning is complete: 5–50 trials, a selection metric, a non-empty search space,
+blocked until tuning is complete: 5–50 trials, a selection metric, a search space of 1 to 32 entries,
 and at most 200 trial-validation fits in total.
 
 Tuning needs holdout validation or cross-validation and evaluates every trial in turn with a
@@ -573,7 +573,7 @@ evidence as artifacts.
 **FILENAME OR PATH** chooses where **Save model to file** writes a copy of the trained model
 and its feature contract, the same way a Data Output writes a file: type a name or pick a
 file. A bare filename saves in the project's `models/` folder, paths are relative to the
-project root, and the model's extension (`.cbm`, `.ubj`, `.lgbm`, `.ebm` or `.rsglm`, by
+project root, and the model's extension (`.cbm`, `.ubj`, `.lgbm`, `.tboost`, `.ebm` or `.rsglm`, by
 family) is added if you leave it off. The pane shows the **Destination:** before you save,
 refuses an extension that does not match the model format, and asks before replacing a file
 that already exists (**Replace existing file**). After saving it shows where the model and
@@ -756,9 +756,9 @@ A Poisson claim-frequency GLM with an exposure offset:
     | `cv_seed` | The GLM penalty's cross-validation seed; the editor writes 42 when you choose a regularisation. |
     | `evaluation.seed` | The split seed; the editor writes 42. |
     | `evaluation.validation.window` | `"expanding"` for time-based cross-validation; the editor sets it. |
-    | `categorical_levels` | Declared category levels for categorical feature columns. |
+    | `categorical_levels` | Declared category levels for categorical feature columns. They go into the model's feature contract, and scoring refuses a value outside them, for a t-boost model too. |
 
-    `feature_columns` and `monotone_constraints` apply to the tree and EBM
+    `feature_columns` and `monotone_constraints` apply to the tree, t-boost and EBM
     families (`feature_weights` to CatBoost only) and are ignored for a GLM, whose features
     are its terms and interaction factors. A node file with the removed `exclude` key is
     refused when the pipeline loads; list the features in `feature_columns` instead.

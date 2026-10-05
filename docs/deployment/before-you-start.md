@@ -122,7 +122,7 @@ When you open your project folder, you'll see files like these:
 | File | What it is |
 |---|---|
 | `haute.toml` | Your deployment configuration - what gets deployed and where |
-| `main.py` | Your pricing pipeline |
+| `rating/main.py` | Your pricing pipeline |
 | `.env` | Your credentials (passwords/tokens) for calling the live API locally - **never shared or committed** |
 | `.env.example` | A template showing which credentials are needed - safe to share. Give this to whoever sets up CI secrets. |
 | `.gitignore` | A list of files that Git should **not** track (like `.env`) |
@@ -141,7 +141,7 @@ When you open your project folder, you'll see files like these:
 
 ### Gitignore: keeping secrets safe
 
-The `.gitignore` file tells Git to ignore certain files - they won't be tracked, shared, or uploaded. Haute automatically adds `.env` to `.gitignore` so your passwords and tokens stay on your machine only.
+The `.gitignore` file tells Git to ignore certain files - they won't be tracked, shared, or uploaded. Haute automatically adds `.env` to `.gitignore` so your passwords and tokens stay on your machine only. It also adds the `data/` folder, so data files stay out of the repository, and a few folders Haute writes its working files to (`.haute/`, `mlruns/`).
 
 You don't need to edit `.gitignore` - just know that it's there to protect you.
 
@@ -234,7 +234,7 @@ That's the endpoint. Other systems send requests to that address to get premiums
 curl http://localhost:8080/health
 ```
 
-This sends a request to your API and shows the response. If you see `{"status": "ok"}`, it's working.
+This sends a request to your API and shows the response. If the response includes `"status": "ok"`, it's working.
 
 **You don't have to use `curl`.** Every `curl` example in these docs is just for testing. Your real systems (policy admin, quote engines) will call the API using their own code. If you prefer, you can test with Python instead:
 
@@ -253,7 +253,7 @@ Many release processes use **two copies** of an API:
 - **Staging** is a **private test copy** that only your team can see. It is an infrastructure and release-process choice: you configure a separate endpoint name (often with `--endpoint-suffix "-staging"`) and arrange for it to be deployed and protected by your target platform.
 - **Production** is the **real one** that your policy admin system calls. It serves actual quotes to customers.
 
-Haute does **not** automatically create a staging environment, wait for an asynchronously provisioned endpoint, require an approval, or promote a deployment. Its generated CI examples run staging deploy, smoke, and impact commands in sequence, but your CI-provider configuration controls approvals and production access. For a newly created Databricks endpoint, add a readiness wait before smoke testing; for container targets, arrange the hosting handoff before those commands. Set branch protection and environment rules before treating that sequence as a release gate.
+Haute does **not** automatically create a staging environment, require an approval, or promote a deployment, and `haute deploy` returns before a Databricks endpoint has finished provisioning. Its generated CI examples run staging deploy, smoke, and impact commands in sequence, but your CI-provider configuration controls approvals and production access. `haute smoke` waits for a Databricks endpoint to report Ready, but the generated smoke job stops after 10 minutes, so a newly created endpoint may need that job's timeout raised or smoke rerun; for container targets, arrange the hosting handoff before those commands. Set branch protection and environment rules before treating that sequence as a release gate.
 
 When you see "deploys to staging" in these docs, it means: "runs the selected target's staging deployment step." That creates or updates a test endpoint only when the target supports it and the endpoint is ready. When you see "promotes to production," it means: "runs the production deployment step configured by your release process."
 

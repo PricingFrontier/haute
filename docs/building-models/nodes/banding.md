@@ -30,7 +30,7 @@ Each banded column is a **factor**. The list shows one row per factor, named by 
 |---|---|
 | **TYPE** | **Numeric** bands numbers and dates by breakpoints; **Categorical** maps exact values to groups. **Numeric** is unavailable for a column that is neither a number nor a date (its tooltip names the column's type). Switching type puts the current rules aside, and switching back restores them until the pipeline is reloaded. |
 | **INPUT COLUMN** | The column to band, chosen from the input's columns (each with its type). Choosing a column sets **TYPE** to match it - **Numeric** for a number or date, otherwise **Categorical**, clearing the rules if the type changes - and fills in **OUTPUT COLUMN** as the column name with `_band` added, unless you have typed your own. |
-| **OUTPUT COLUMN** | The name of the new banded column. |
+| **OUTPUT COLUMN** | The name of the new banded column. Two factors cannot write the same column: both are marked ("Factor 2 also writes age_band"), and the run refuses them. |
 | **DEFAULT** (unmatched rows) | The band given to rows that match no rule, with the number of such rows beside it once the data is counted ("12 of 5000 rows"). Leave it empty to give them a missing value. |
 
 With the data counted, a **Numeric** factor shows a histogram of the whole dataset with the band boundaries drawn over it.
