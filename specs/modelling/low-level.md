@@ -2285,7 +2285,7 @@ used for staged input.
   `min_sum_hessian_in_leaf`, `min_split_gain`, `l1_leaf`, `path_smooth`, `colsample_bytree`,
   `subsample`, `n_bags`, `bag_subsample`, `validation_fraction`, `early_stopping_rounds`,
   `early_stopping_adaptive`, `leaf_refine_steps`, `interaction_gain_hurdle`, `prune`,
-  `prune_se_rule`, `prune_n_folds`, `prune_min_stability`, `cat_smooth`,
+  `prune_se_rule`, `prune_n_folds`, `prune_min_stability`, `band_tolerance`, `graduate`, `cat_smooth`,
   `cat_min_data_per_group` and `cat_direct_max_levels`; Haute owns `objective`, `tweedie_rho`,
   `seed`, `n_jobs`, `monotone_constraints`, `categorical_features` and `unknown_category`. Its
   `round_key` is

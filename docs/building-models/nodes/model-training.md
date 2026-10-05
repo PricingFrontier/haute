@@ -324,7 +324,7 @@ For CatBoost, GPU training is set in the **TRAIN** pane rather than here.
     `min_split_gain`, `l1_leaf`, `path_smooth`, `colsample_bytree`, `subsample`, `n_bags`,
     `bag_subsample`, `validation_fraction`, `early_stopping_rounds`,
     `early_stopping_adaptive`, `leaf_refine_steps`, `interaction_gain_hurdle`, `prune`,
-    `prune_se_rule`, `prune_n_folds`, `prune_min_stability`, `cat_smooth`,
+    `prune_se_rule`, `prune_n_folds`, `prune_min_stability`, `band_tolerance`, `graduate`, `cat_smooth`,
     `cat_min_data_per_group` and `cat_direct_max_levels`. t-boost checks their values itself
     when training starts.
 

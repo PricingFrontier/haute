@@ -677,6 +677,8 @@ TBOOST = AlgorithmDescriptor(
             "prune_se_rule",
             "prune_n_folds",
             "prune_min_stability",
+            "band_tolerance",
+            "graduate",
             "cat_smooth",
             "cat_min_data_per_group",
             "cat_direct_max_levels",

@@ -209,12 +209,14 @@
   "tboost": {
     "allowed_params": [
       "bag_subsample",
+      "band_tolerance",
       "cat_direct_max_levels",
       "cat_min_data_per_group",
       "cat_smooth",
       "colsample_bytree",
       "early_stopping_adaptive",
       "early_stopping_rounds",
+      "graduate",
       "interaction_gain_hurdle",
       "l1_leaf",
       "lambda_",
