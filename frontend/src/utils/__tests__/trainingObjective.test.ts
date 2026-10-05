@@ -125,6 +125,22 @@ describe("trainingConfigurationIssues", () => {
     expect(codes({ params: { n_trees: 2.5 } })).toEqual([["tboost-n-trees", "params"]])
   })
 
+  it("mirrors the backend's t-boost main-effect pruning rule", () => {
+    const base = { algorithm: "tboost", target: "y", feature_columns: ["age"], loss_function: "Poisson", evaluation }
+    const codes = (config: Record<string, unknown>) =>
+      trainingConfigurationIssues({ ...base, ...config }).map((issue) => [issue.code, trainingIssuePane(issue)])
+    const pruned = { n_trees: 4000, prune: true, prune_main_effects: true }
+    expect(codes({ params: pruned })).toEqual([])
+    expect(codes({ params: { ...pruned, prune: false } })).toEqual([["tboost-prune-main-effects", "params"]])
+    expect(codes({ params: pruned, monotone_constraints: { age: 1 } })).toEqual([
+      ["tboost-prune-main-effects", "params"],
+    ])
+    // A zero direction or an unselected feature constrains nothing.
+    expect(codes({ params: pruned, monotone_constraints: { age: 0 } })).toEqual([])
+    expect(codes({ params: pruned, monotone_constraints: { region: -1 } })).toEqual([])
+    expect(codes({ params: { ...pruned, prune_main_effects: false }, monotone_constraints: { age: 1 } })).toEqual([])
+  })
+
   it("reports conditional CatBoost Tweedie configuration", () => {
     expect(
       trainingConfigurationIssues({

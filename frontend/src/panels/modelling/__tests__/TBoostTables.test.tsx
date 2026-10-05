@@ -118,9 +118,13 @@ describe("TBoostTablesTab", () => {
       "title",
       `north: Relativity: ${Math.exp(0.4)}; Training mass (weight × exposure): 433`,
     )
+    expect(within(shape).getByText(/^Relativity . baseline at 1$/)).toBeInTheDocument()
     expect(screen.queryByRole("table")).toBeNull()
     select("age")
-    expect(screen.getByRole("img", { name: "Table for age" })).toBeInTheDocument()
+    // As on PDP: the value axis titled above the plot, the feature named under it.
+    const step = screen.getByRole("img", { name: "Table for age" })
+    expect(within(step).getByText("Relativity", { selector: "text" })).toBeInTheDocument()
+    expect(within(step).getByText("age", { selector: "text" })).toBeInTheDocument()
     expect(screen.getByText(/Missing values have relativity 1.05/)).toBeInTheDocument()
   })
 
@@ -190,6 +194,8 @@ describe("TBoostTablesTab", () => {
     expect(screen.getByRole("combobox", { name: "Lines" })).toHaveValue("0")
     expect(chart.querySelectorAll("path")).toHaveLength(2)
     expect(within(chart).getByText("<= 25", { selector: "text" })).toBeInTheDocument()
+    expect(within(chart).getByText("Relativity", { selector: "text" })).toBeInTheDocument()
+    expect(within(chart).getByText("age", { selector: "text" })).toBeInTheDocument()
     // Pointing at a slot states every line's value there.
     fireEvent.mouseEnter(within(chart).getByText("<= 25", { selector: "title" }).parentElement!)
     expect(screen.getByRole("status")).toHaveTextContent(

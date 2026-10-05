@@ -2285,12 +2285,14 @@ used for staged input.
   `min_sum_hessian_in_leaf`, `min_split_gain`, `l1_leaf`, `path_smooth`, `colsample_bytree`,
   `subsample`, `n_bags`, `bag_subsample`, `validation_fraction`, `early_stopping_rounds`,
   `early_stopping_adaptive`, `leaf_refine_steps`, `interaction_gain_hurdle`, `prune`,
-  `prune_se_rule`, `prune_n_folds`, `prune_min_stability`, `cat_smooth`,
+  `prune_se_rule`, `prune_n_folds`, `prune_min_stability`, `prune_main_effects`, `band_tolerance`, `graduate`, `cat_smooth`,
   `cat_min_data_per_group` and `cat_direct_max_levels`; Haute owns `objective`, `tweedie_rho`,
   `seed`, `n_jobs`, `monotone_constraints`, `categorical_features` and `unknown_category`. Its
   `round_key` is
   `n_trees`, searchable by tuning, its `refit_policy` is `validation_fit`, and `tboost_value_issue`
-  requires `n_trees` to be a positive integer. Every other value rule (depth and order ranges,
+  requires `n_trees` to be a positive integer and refuses `prune_main_effects: true` with
+  `prune: false` or with a non-zero monotone constraint on a selected feature (t-boost refuses
+  both only once the fit starts); the frontend mirrors it as `tboost-prune-main-effects`. Every other value rule (depth and order ranges,
   fractions) is t-boost's own, raised by the fit.
 - The `tboost` scoring family registers `.tboost` as self-describing with a Polars predict
   frame, the offset riding in the frame, explanation `tboost_tables`, and the `t-boost`

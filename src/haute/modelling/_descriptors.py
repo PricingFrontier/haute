@@ -624,10 +624,11 @@ def tboost_value_issue(
     """t-boost rules the key allowlist cannot express.
 
     ``n_trees`` is the round ceiling every fit stops early within, and the
-    fixed-budget refit reuses it unchanged, so it must be explicit. Every other
-    value rule (depth and order ranges, fractions) is t-boost's own.
+    fixed-budget refit reuses it unchanged, so it must be explicit.
+    ``prune_main_effects`` needs pruning on and no monotone constraint, which
+    t-boost would otherwise refuse only once the fit starts. Every other value
+    rule (depth and order ranges, fractions) is t-boost's own.
     """
-    del monotone_constraints
     if "n_trees" not in params:
         return (
             "t-boost needs an explicit n_trees: it is the round ceiling every fit stops early "
@@ -635,6 +636,18 @@ def tboost_value_issue(
         )
     if not _positive_int(params["n_trees"]):
         return f"t-boost n_trees must be a positive integer, got {params['n_trees']!r}."
+    if params.get("prune_main_effects") is True:
+        if params.get("prune", True) is False:
+            return (
+                "t-boost prune_main_effects needs prune: set prune to true, or "
+                "prune_main_effects to false, in Parameters."
+            )
+        if any(direction for direction in (monotone_constraints or {}).values()):
+            return (
+                "t-boost cannot prune main effects of a monotone fit: set prune_main_effects "
+                "to false in Parameters, or remove the monotonicity constraints in the "
+                "Features pane."
+            )
     return None
 
 
@@ -677,6 +690,9 @@ TBOOST = AlgorithmDescriptor(
             "prune_se_rule",
             "prune_n_folds",
             "prune_min_stability",
+            "prune_main_effects",
+            "band_tolerance",
+            "graduate",
             "cat_smooth",
             "cat_min_data_per_group",
             "cat_direct_max_levels",
