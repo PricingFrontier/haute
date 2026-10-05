@@ -232,6 +232,7 @@
       "n_trees",
       "path_smooth",
       "prune",
+      "prune_main_effects",
       "prune_min_stability",
       "prune_n_folds",
       "prune_se_rule",

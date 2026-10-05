@@ -1028,6 +1028,7 @@ def test_an_mlflow_run_artifact_loads_and_serves_through_the_shared_pyfunc(
         ({"n_trees": 100, "seed": 3}, "Haute owns it"),
         ({"n_trees": 100, "tweedie_rho": 1.5}, "Haute owns it"),
         ({"n_trees": 100, "dart_drop_rate": 0.1}, "is not supported"),
+        ({"n_trees": 100, "prune": False, "prune_main_effects": True}, "needs prune"),
     ],
 )
 def test_config_rejects_invalid_tboost_settings(params: dict, message: str) -> None:
@@ -1041,6 +1042,50 @@ def test_config_rejects_invalid_tboost_settings(params: dict, message: str) -> N
     }
     with pytest.raises(TrainingConfigError, match=message):
         build_training_job_kwargs(config, data="d.parquet")
+
+
+def test_config_refuses_pruning_main_effects_of_a_monotone_fit() -> None:
+    """t-boost refuses the pair only once the fit starts; Haute says so before training."""
+    config = {
+        "target": "claims",
+        "algorithm": "tboost",
+        "loss_function": "Poisson",
+        "params": {"n_trees": 100, "prune_main_effects": True},
+        "evaluation": EVALUATION,
+        "feature_columns": ["region", "age"],
+        "monotone_constraints": {"age": 1},
+    }
+    with pytest.raises(TrainingConfigError, match="cannot prune main effects of a monotone fit"):
+        build_training_job_kwargs(config, data="d.parquet")
+    # A zero direction, or a constraint on an unselected feature, constrains nothing.
+    for constraints in ({"age": 0}, {"policy": 1}):
+        accepted = build_training_job_kwargs(
+            {**config, "monotone_constraints": constraints}, data="d.parquet"
+        )
+        assert accepted["algorithm"] == "tboost"
+
+
+def test_pruning_main_effects_drops_a_noise_feature_and_still_scores_every_input(
+    tmp_path: Path,
+) -> None:
+    rng = np.random.default_rng(9)
+    data = frame(3000, seed=1).with_columns(pl.Series("noise", rng.uniform(0, 1, 3000)))
+    _job, result = train(
+        tmp_path,
+        target="claims",
+        loss="Poisson",
+        offset="exposure",
+        data=data,
+        feature_columns=["region", "age", "noise"],
+        params={**FAST, "n_bags": 4, "prune": True, "prune_main_effects": True},
+    )
+    assert result.diagnostics_errors == []
+    terms = {table["term"] for table in result.tboost_tables["tables"]}
+    assert "noise" not in terms and "region" in terms
+    # The dropped feature is still an input the model declares and scores.
+    model = TBoostModel.load(result.model_path)
+    assert model.feature_names_ == ["region", "age", "noise"]
+    assert np.isfinite(model.predict(data.head(20))).all()
 
 
 def test_config_refuses_mae_crossentropy_and_feature_weights_and_accepts_a_valid_one() -> None:

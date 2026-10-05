@@ -38,6 +38,7 @@ export type TrainingConfigurationIssueCode =
   | "ebm-max-rounds"
   | "ebm-interactions"
   | "tboost-n-trees"
+  | "tboost-prune-main-effects"
   | "evaluation-config"
   | "final-refit"
   | "validation-fit"
@@ -449,12 +450,31 @@ function tboostParameterIssues(config: Record<string, unknown>): TrainingConfigu
   )
     ? config.params as Record<string, unknown>
     : {}
+  const issues: TrainingConfigurationIssue[] = []
   const nTrees = params.n_trees
-  if (typeof nTrees === "number" && Number.isInteger(nTrees) && nTrees > 0) return []
-  return [{
-    code: "tboost-n-trees",
-    message: "Set n_trees to a positive whole number: it is the round ceiling every t-boost fit stops early within.",
-  }]
+  if (typeof nTrees !== "number" || !Number.isInteger(nTrees) || nTrees <= 0) {
+    issues.push({
+      code: "tboost-n-trees",
+      message: "Set n_trees to a positive whole number: it is the round ceiling every t-boost fit stops early within.",
+    })
+    return issues
+  }
+  if (params.prune_main_effects === true) {
+    if (params.prune === false) {
+      issues.push({
+        code: "tboost-prune-main-effects",
+        message: "Set prune to true, or prune_main_effects to false: main effects are pruned only when pruning is on.",
+      })
+    } else if (hasNonZeroMonotoneConstraints(config)) {
+      issues.push({
+        code: "tboost-prune-main-effects",
+        message:
+          "Set prune_main_effects to false, or remove the monotonicity constraints in the Features pane: "
+          + "t-boost cannot prune main effects of a monotone fit.",
+      })
+    }
+  }
+  return issues
 }
 
 /** Mirrors the backend's ``ebm_value_issue``; feature membership is checked at fit time. */
@@ -543,6 +563,16 @@ function hasMonotoneConstraints(config: Record<string, unknown>): boolean {
   return Object.keys(constraints).some((name) => selected.has(name))
 }
 
+/** Whether a selected feature carries a non-zero monotone direction, as t-boost counts one. */
+function hasNonZeroMonotoneConstraints(config: Record<string, unknown>): boolean {
+  const constraints = config.monotone_constraints
+  if (constraints === null || typeof constraints !== "object" || Array.isArray(constraints)) {
+    return false
+  }
+  const selected = new Set(selectedFeatureColumns(config))
+  return Object.entries(constraints).some(([name, direction]) => selected.has(name) && Boolean(direction))
+}
+
 /** Destination of a readiness issue, shared by tabs and the Train summary. */
 export function trainingIssuePane(issue: TrainingConfigurationIssue): "target" | "features" | "params" | "split" {
   switch (issue.code) {
@@ -560,7 +590,8 @@ export function trainingIssuePane(issue: TrainingConfigurationIssue): "target" |
     case "ebm-interactions":
     case "monotone-loss": return "features"
     case "ebm-max-rounds":
-    case "tboost-n-trees": return "params"
+    case "tboost-n-trees":
+    case "tboost-prune-main-effects": return "params"
     default: return "target"
   }
 }

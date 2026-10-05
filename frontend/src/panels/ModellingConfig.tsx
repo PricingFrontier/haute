@@ -115,13 +115,15 @@ const EBM_DEFAULT_PARAMS: Record<string, unknown> = {
 // t-boost's own defaults are its recommended recipe; n_trees is the ceiling every
 // fit stops early within, and the order caps how many features a table couples.
 // The bag count, interaction hurdle, pruning, banding and graduation are t-boost's defaults
-// too, written out so the node shows they are on and where to change them.
+// too, written out so the node shows they are on and where to change them. Pruning main
+// effects is not t-boost's default; a new node opts in.
 const TBOOST_DEFAULT_PARAMS: Record<string, unknown> = {
   n_trees: 4000,
   max_interaction_order: 3,
   n_bags: 8,
   interaction_gain_hurdle: 2,
   prune: true,
+  prune_main_effects: true,
   band_tolerance: 0.75,
   graduate: true,
 }

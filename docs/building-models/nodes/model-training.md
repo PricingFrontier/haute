@@ -313,7 +313,9 @@ For CatBoost, GPU training is set in the **TRAIN** pane rather than here.
     pane has no **Refit on training + validation** box and no **Cross-validation** option.
     With **No validation**, the one fit holds out a share of its own rows to stop on
     (`validation_fraction`). t-boost also prunes tables that do not improve its
-    own held-out deviance (`prune`). `n_trees` is the ceiling every fit stops early within,
+    own held-out deviance (`prune`). A new node also lets pruning drop a main effect
+    (`prune_main_effects`), so a feature that earns no place leaves the model; set it to
+    `false` to keep every main effect, as a fit with monotonicity constraints must. `n_trees` is the ceiling every fit stops early within,
     and is required. When the **SPLIT** pane groups rows by an entity column, t-boost's own
     holdouts keep each entity on one side. A fit gives the same model whatever the number of
     threads. The **Loss** view draws each round's training and early-stopping deviance,
@@ -324,7 +326,7 @@ For CatBoost, GPU training is set in the **TRAIN** pane rather than here.
     `min_split_gain`, `l1_leaf`, `path_smooth`, `colsample_bytree`, `subsample`, `n_bags`,
     `bag_subsample`, `validation_fraction`, `early_stopping_rounds`,
     `early_stopping_adaptive`, `leaf_refine_steps`, `interaction_gain_hurdle`, `prune`,
-    `prune_se_rule`, `prune_n_folds`, `prune_min_stability`, `band_tolerance`, `graduate`, `cat_smooth`,
+    `prune_se_rule`, `prune_n_folds`, `prune_min_stability`, `prune_main_effects`, `band_tolerance`, `graduate`, `cat_smooth`,
     `cat_min_data_per_group` and `cat_direct_max_levels`. t-boost checks their values itself
     when training starts.
 
