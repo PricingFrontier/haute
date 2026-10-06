@@ -86,6 +86,18 @@ def test_polars_floor_supports_ordered_and_sliced_streaming_joins() -> None:
     assert max(lower_bounds) >= Version("1.44.2")
 
 
+def test_openai_floor_constructs_a_client_with_current_httpx() -> None:
+    """openai 1.55.0 to 1.55.2 pass ``proxies=`` to httpx, which httpx 0.28 removed.
+
+    Every fresh install resolves httpx 0.28 or later, so at those releases the
+    assistant could not construct a client at all. The dependency-floors lane
+    found this the first time it imported the SDK (6 October 2026); the floor
+    stays at the first release that constructs.
+    """
+    assert _floor(_project_requirement("openai")) >= Version("1.55.3")
+    assert _cap(_project_requirement("openai")) == Version("3")
+
+
 def test_price_contour_guard_specifier_is_the_declared_dependency() -> None:
     """The runtime guard enforces exactly the range the package metadata declares.
 

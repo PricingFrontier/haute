@@ -33,7 +33,7 @@
 | `src/haute/schemas.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); the assistant slice of the server-api-owned shared HTTP/SSE contracts: status, session request/response and transcript entries (including the `outcome` entry), message request (with its optional closed `context`: `selected_node_ids`, unique, at most 20, and an optional `preview_error_node_id`), usage, the turn outcome `AssistantTurnOutcome` (a kind of applied, answered, needs_input, blocked, committed_unverified or incomplete, a non-empty detail exactly for the last four, and the required `changes`, the ids of the changes the turn saved in order: non-empty for applied, empty for answered, either for the rest), the build plan `AssistantBuildPlan` (see Key types) that the session and undo responses carry under the required, nullable `build_plan`, and the text-delta, thinking (no fields beyond its type), tool-started, tool-progress (`AssistantToolProgressEvent`: the running call's id and its new title), tool-finished, change-applied (its record's data check, an `AssistantChangeDataCheck` of `AssistantDataFinding`s, or null), build-plan-updated (the whole plan), completed (usage and required outcome), failed, and cancelled event union mirrored by `frontend/src/api/assistant.ts`. |
 | `src/haute/server.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); includes the assistant router with the other feature routers ahead of the API/WebSocket 404 catch-alls and supplies document-update fingerprint/wire-path helpers used by mutation publishing. |
 | `src/haute/routes/_save_pipeline.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); transactional save service used by assistant mutations; its `save_graph_transactionally` wrapper explicitly forwards the parsed graph's preserved blocks into `SavePipelineRequest` and owns rollback, self-write marking, and ledger-capture warnings. |
-| `pyproject.toml` | Cross-component dependency owned by [build-and-distribution](../build-and-distribution/low-level.md); declares `anthropic>=0.40,<1` and `openai>=1.55,<3` as core dependencies and omits `src/haute/assistant/assets/*` from import-coverage measurement because exemplar `.py` files are parsed package data, while ruff and parser tests still check them. |
+| `pyproject.toml` | Cross-component dependency owned by [build-and-distribution](../build-and-distribution/low-level.md); declares `anthropic>=0.40,<1` and `openai>=1.55.3,<3` as core dependencies and omits `src/haute/assistant/assets/*` from import-coverage measurement because exemplar `.py` files are parsed package data, while ruff and parser tests still check them. |
 
 Environment knobs: `HAUTE_ASSISTANT_TURN_TIMEOUT` (seconds, default 600) and
 `HAUTE_ASSISTANT_MAX_TOOL_CALLS` (default 40) read lazily via `haute._env`, matching the
@@ -1746,7 +1746,7 @@ the turn that follows.
 - Usage is **summed across the provider round-trips within one turn**; the `completed`
   event reports the aggregate.
 - SDK floors are core project dependencies, not an optional extra:
-  `anthropic>=0.40,<1` and `openai>=1.55,<3`. The adapters still import the SDKs lazily and
+  `anthropic>=0.40,<1` and `openai>=1.55.3,<3`. The adapters still import the SDKs lazily and
   readiness reports a missing SDK as a broken installation.
 
 ## Edge cases and invariants

@@ -1286,7 +1286,7 @@ requires-dist = [
     { name = "mlflow", specifier = ">=3.11.0,<4" },
     { name = "msgspec", specifier = ">=0.21.1,<0.22" },
     { name = "numpy", specifier = ">=2.0,<3" },
-    { name = "openai", specifier = ">=1.55,<3" },
+    { name = "openai", specifier = ">=1.55.3,<3" },
     { name = "optuna", specifier = ">=4.9.0,<4.10" },
     { name = "orjson", specifier = ">=3.11.7,<4" },
     { name = "packaging", specifier = ">=25.0,<26" },
