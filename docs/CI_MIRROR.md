@@ -28,10 +28,10 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
 
 | Workflow | Job | Trigger | PR-gating? | What it runs |
 |---|---|---|---|---|
-| `ci.yml` | `canary` | push+PR | **Yes** | `uv sync --group dev --locked` → `ruff check --output-format=github` + `ruff format --check` → pytest on the core test subset (`scripts/core_test_files.txt`, 8 files, `-n 4 --timeout=60`) |
+| `ci.yml` | `canary` | push+PR | **Yes** | `uv sync --group dev --locked` → `ruff check --output-format=github` + `ruff format --check` → pytest on the core test subset (`scripts/core_test_files.txt`, 11 files, `-n 4 --timeout=60`) |
 | `ci.yml` | `init-smoke` (×3: ubuntu, windows, macos) | push+PR | **Yes** | `uv run --no-project python scripts/init_smoke.py` — wheel build (frontend included) → fresh venv, fresh resolve → `haute init` in an empty dir → headless `haute serve` → session-cookie bootstrap → authed `/api/files` → clean shutdown |
 | `ci.yml` | `dependency-floors` | push+PR | **Yes** | `uv lock --resolution lowest-direct` (py3.11) → `uv sync --frozen --group dev` → core test subset run at the re-resolved floor lockfile — proves the published floor specifiers actually install and pass |
-| `ci.yml` | `backend-static` | push+PR | **Yes** | `uv sync --group dev --locked` (py3.12) → ruff lint + ruff format-check + mypy + `HAUTE_BUILD_FRONTEND=1 uv build` |
+| `ci.yml` | `backend-static` | push+PR | **Yes** | `uv sync --group dev --locked` (py3.12) → ruff lint + ruff format-check + mypy + `scripts/lint_pins.py` (dependency-pin doctrine: floor+cap for published deps, exact for tooling, no `npx` on executable surfaces) + `HAUTE_BUILD_FRONTEND=1 uv build` |
 | `ci.yml` | `backend-coverage-shard` (×4 shards) | push+PR | **Yes** | full suite (py3.12) split 4-way by test module (`--shard=K/4`, `tests/_ci_shards.py`, balanced by `scripts/test_file_durations.json`), coverage collected per shard (`--cov-fail-under=0`) and uploaded with a JUnit report (xunit1) |
 | `ci.yml` | `backend-coverage-gate` | push+PR | **Yes** | needs `backend-coverage-shard` → `coverage combine` the four shards → `coverage report --fail-under=90` → per-file critical floors → 100% changed statement/branch coverage for the safety-critical modules, with other changed files reported in the job summary |
 | `ci.yml` | `backend-compat` (×6: py3.11 and py3.13, 3 shards each) | push+PR | **Yes** | full suite split 3-way by test module (`--shard=K/3`), no coverage collected |
@@ -61,10 +61,12 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
 
 1. **`backend-static` + `backend-coverage-shard`/`backend-coverage-gate`** →
    `bash scripts/preflight.sh --backend-only` — runs ruff lint, ruff
-   format-check, mypy, pytest collect, pytest + 90% global coverage +
-   `scripts/check_critical_coverage.py` + `scripts/check_changed_coverage.py`,
-   and `HAUTE_BUILD_FRONTEND=1 uv build`,
-   all in one local pass. **Gap vs CI:** CI splits this across parallel jobs
+   format-check, mypy, `scripts/lint_pins.py`, pytest collect, pytest + 90%
+   global coverage + `scripts/check_critical_coverage.py` +
+   `scripts/check_changed_coverage.py`, and `HAUTE_BUILD_FRONTEND=1 uv build`,
+   all in one local pass. Note `lint_pins.py` also runs under `--frontend-only`
+   (it checks `frontend/package.json` as well as `pyproject.toml`), so the npm
+   half is covered from either entry point. **Gap vs CI:** CI splits this across parallel jobs
    (static gates + build on py3.12; four coverage shards; a gate job that
    combines them and enforces 90%) rather than one job, and separately runs
    `backend-compat` (full suite, **no** coverage) on py3.11 and py3.13 in
@@ -84,7 +86,7 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
    (`scripts/init_smoke.py`). Local runs mirror the **macOS leg**; the
    ubuntu/windows legs are CI-only (Deficiency 1).
 4. **`canary`** → no separate local run needed: it is a strict subset of
-   `--backend-only` (ruff lint/format + the eight test files in
+   `--backend-only` (ruff lint/format + the eleven test files in
    `scripts/core_test_files.txt`, all of which the full suite already
    contains), so a green `--backend-only` implies a green canary modulo
    runner load. To run the exact subset (matches how `canary`,
@@ -369,9 +371,9 @@ failure, fix, restart from the top of the affected block.
 ```bash
 # --- A. Static + unit gates, default interpreter (ci.yml backend-static + backend-coverage-shard/gate + frontend-static/frontend-tests + canary) ---
 # (Node must be on PATH: preflight's `uv build` shells into npm via hatch_build.py.)
-bash scripts/preflight.sh --backend-only      # ruff, ruff-format, mypy, pytest+cov(90%)+critical-cov, uv build
-bash scripts/preflight.sh --frontend-only     # tsc, eslint, vite build, bundle budget, vitest+cov
-# canary is a strict subset of --backend-only (ruff + the eight files in scripts/core_test_files.txt); no separate run needed.
+bash scripts/preflight.sh --backend-only      # ruff, ruff-format, mypy, dependency pins, pytest+cov(90%)+critical-cov, uv build
+bash scripts/preflight.sh --frontend-only     # dependency pins, tsc, eslint, vite build, bundle budget, vitest+cov
+# canary is a strict subset of --backend-only (ruff + the eleven files in scripts/core_test_files.txt); no separate run needed.
 
 # --- A-matrix. backend-compat: full suite, no coverage, on the supported version edges (ci.yml backend-compat) ---
 # ruff/mypy/format/build are config-pinned to py311 semantics (ruff target-version=py311,

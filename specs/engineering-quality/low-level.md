@@ -73,6 +73,7 @@
 | `scripts/update_assistant_example_manifests.py` | Checks or explicitly refreshes closed content-addressed assistant example inventories; unsafe, duplicate, missing, and undeclared paths fail in both modes. |
 | `scripts/update_assistant_prompt_golden.py` | Cross-component dependency owned by [assistant](../assistant/low-level.md); checks, or with `--write` refreshes, the golden snapshot of the assistant's system prompt and provider tool schemas, failing with a unified diff per changed file. |
 | `scripts/preflight.ps1` | Windows preflight entry point for selected backend/frontend/init-smoke checks. |
+| `scripts/lint_pins.py` | Enforces the asymmetric dependency-pinning doctrine against the declaration layer: published dependencies need an explicit floor and cap and may not be exact-pinned or prefix-matched, tooling dependencies must be exact with a concrete version, and executable surfaces may not invoke `npx`. |
 | `scripts/preflight.sh` | POSIX preflight entry point for selected backend/frontend/init-smoke checks. |
 | `scripts/regen_sanitize_parity_fixture.py` | Regenerates the retained backend compatibility golden when deliberately requested. |
 | `scripts/run_frontend_e2e_server.py` | Generates the isolated browser fixture, then starts and readiness-signals its dedicated-port backend and Vite proxy for Playwright. |
@@ -643,6 +644,15 @@
   unused acceptances, the invariant that an accepted parent meta-finding cannot
   waive a child's concrete GHSA, malformed fail-closed reports, and live-command
   return-code orchestration without contacting advisory services.
+- `tests/test_lint_pins.py` covers the published floor/cap rule and its
+  rejection of exact pins, prefix matching, compatible-release and direct
+  references; tooling exactness including the concrete-version requirement and
+  the project self-reference exemption; npm exactness across the install
+  sections and the deliberate `peerDependencies` exemption; `npx` detection in
+  shell grouping, line continuations and package scripts against its
+  non-detection of comments, prose and shim paths; annotation line selection;
+  and both ratchet directions against the real manifests — the live tree stays
+  clean, and removing a real cap is caught.
 - `mutation/` is tested as configuration/orchestration through its active
   script/tests and CI workflow. `specs/roadmap/`, `scripts/benchmarks/`, and generated
   artifacts are intentionally not claimed as a current test suite.

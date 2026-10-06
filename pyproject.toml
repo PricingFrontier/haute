@@ -94,7 +94,7 @@ dependencies = [
     # resolved either failed at the first assistant turn.
     "anthropic>=0.40,<1",
     "openai>=1.55,<3",
-    "tomlkit>=0.15.1",
+    "tomlkit>=0.15.1,<0.16",
     # One reader for process and host memory on every platform: resident, private and
     # virtual bytes for worker caps and supervision, and host available RAM.
     "psutil>=7.0,<8",
