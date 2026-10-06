@@ -140,7 +140,9 @@ jobs:
       # a single test runs (hypothesis did exactly that for four weeks from
       # 7 September 2026, when conftest started importing it). The list is
       # pinned by test_unlocked_lane_installs_every_dev_package_the_core_subset_
-      # imports in tests/test_dependency_contracts.py — extend both together.
+      # needs in tests/test_dependency_contracts.py, which derives what the
+      # subset imports and which plugins the pytest flags below rely on, so a
+      # new import needs only this grep extended.
       - name: Fresh venv with extras (unlocked resolve)
         run: |
           uv venv .unlocked --python 3.12
